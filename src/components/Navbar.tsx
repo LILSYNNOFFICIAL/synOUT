@@ -13,6 +13,7 @@ import {
   SearchCode,
   Archive,
   Landmark,
+  Flame,
 } from 'lucide-react';
 import { useEmailConnection } from '../services/emailConnectionStore';
 
@@ -40,6 +41,7 @@ interface NavbarProps {
   isPoaSigned?: boolean;
   onOpenPowerOfAttorney?: () => void;
   onOpenVault?: () => void;
+  onOpenNukeAll?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -51,9 +53,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   isPoaSigned,
   onOpenPowerOfAttorney,
   onOpenVault,
+  onOpenNukeAll,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const { isDirectSendConnected, isAnyEmailConnected, activeConnectedEmail } = useEmailConnection();
 
   const handleNavClick = (tab: AppTab) => {
     setActiveTab(tab);
@@ -185,8 +188,10 @@ export const Navbar: React.FC<NavbarProps> = ({
               activeTab === 'gmail' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
-            {isDirectSendConnected ? (
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+            {isAnyEmailConnected ? (
+              <CheckCircle2
+                className={`w-3.5 h-3.5 ${isDirectSendConnected ? 'text-emerald-400' : 'text-sky-400'}`}
+              />
             ) : (
               <Mail className="w-3.5 h-3.5 text-emerald-400" />
             )}
@@ -224,19 +229,25 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={() => handleNavClick('gmail')}
             title={
-              isDirectSendConnected && activeConnectedEmail
+              isAnyEmailConnected && activeConnectedEmail
                 ? `Connected sender: ${activeConnectedEmail}`
                 : 'Connect your email to send opt-out demands'
             }
             className={`hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer max-w-[180px] ${
               isDirectSendConnected
                 ? 'bg-emerald-950/50 text-emerald-300 border-emerald-500/40 hover:bg-emerald-950/70'
+                : isAnyEmailConnected
+                ? 'bg-sky-950/50 text-sky-300 border-sky-500/40 hover:bg-sky-950/70'
                 : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-emerald-500/40 hover:text-white'
             }`}
           >
-            {isDirectSendConnected ? (
+            {isAnyEmailConnected && activeConnectedEmail ? (
               <>
-                <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${
+                    isDirectSendConnected ? 'bg-emerald-400' : 'bg-sky-400'
+                  }`}
+                />
                 <span className="truncate font-mono">{activeConnectedEmail}</span>
               </>
             ) : (
@@ -273,9 +284,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           )}
 
+          {onOpenNukeAll && (
+            <button
+              type="button"
+              onClick={onOpenNukeAll}
+              title="Mass-email all data brokers, people-search websites, and clearinghouses to delete your data"
+              className="px-3.5 py-2 rounded-xl text-xs font-extrabold text-white bg-red-600 hover:bg-red-500 border border-red-400/30 shadow-lg shadow-red-600/20 inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Flame className="w-3.5 h-3.5" />
+              <span>NUKE ALL</span>
+            </button>
+          )}
+
           <button
             onClick={() => handleNavClick('scanner')}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 transition-all cursor-pointer whitespace-nowrap"
+            className="hidden sm:inline-flex px-3.5 py-2 rounded-xl text-xs font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 transition-all cursor-pointer whitespace-nowrap"
           >
             Scan Now
           </button>
@@ -293,6 +316,19 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Mobile Drawer */}
       {mobileMenuOpen && (
         <div className="xl:hidden border-b border-slate-800 bg-slate-950/98 px-4 py-4 space-y-1.5 text-xs">
+          {onOpenNukeAll && (
+            <button
+              type="button"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                onOpenNukeAll();
+              }}
+              className="w-full p-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-extrabold flex items-center justify-center gap-2 cursor-pointer mb-2"
+            >
+              <Flame className="w-4 h-4" />
+              <span>NUKE ALL — Mass Email Brokers &amp; Websites</span>
+            </button>
+          )}
           <button onClick={() => handleNavClick('home')} className="w-full text-left p-2.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-900">
             Overview
           </button>
@@ -328,7 +364,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             Public Records, Canary Aliases &amp; ID/EXIF Firewall
           </button>
           <button onClick={() => handleNavClick('gmail')} className="w-full text-left p-2.5 rounded-lg text-emerald-400 hover:bg-slate-900">
-            {isDirectSendConnected && activeConnectedEmail
+            {isAnyEmailConnected && activeConnectedEmail
               ? `Email Connected (${activeConnectedEmail})`
               : 'Email Dispatch (Connect Gmail / Outlook / Any Email)'}
           </button>

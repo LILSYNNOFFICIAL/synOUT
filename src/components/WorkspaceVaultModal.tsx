@@ -19,6 +19,7 @@ import {
 } from '../utils/workspaceVault';
 import { getSavedSearches } from '../utils/searchProfiles';
 import { findBrokerById } from '../services/emailConnectionStore';
+import { getBrokerContactOverrides } from '../utils/brokerContactResolver';
 import { downloadFile } from '../utils/exportEngines';
 import {
   X,
@@ -84,6 +85,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
     scanSnapshots,
     canaryAliases,
     publicRecordProgress,
+    brokerContactOverrides: getBrokerContactOverrides(),
   });
 
   const handleExportVault = async (e: React.FormEvent) => {

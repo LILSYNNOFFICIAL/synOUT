@@ -1,9 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { DataBroker, ScanResult, UserProfile } from '../types';
 import {
   useEmailConnection,
   sendEmailViaConnectedAccount,
 } from '../services/emailConnectionStore';
+import {
+  RecipientDeliverabilityVerification,
+  isValidEmailSyntax,
+  markBrokerEmailBounced,
+  resetBrokerContactOverride,
+  resolveBrokerContactProfile,
+  setBrokerCustomEmail,
+  useBrokerContactOverrides,
+  verifyRecipientDeliverabilityClient,
+} from '../utils/brokerContactResolver';
 import { buildWebmailComposeUrls } from '../utils/emailProviderConfig';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
 import { copyTextToClipboard } from '../utils/exportEngines';
@@ -18,6 +28,9 @@ import {
   Mail,
   FileCheck,
   ExternalLink,
+  ShieldCheck,
+  Edit3,
+  RotateCcw,
 } from 'lucide-react';
 
 type StatutePreset = 'CCPA' | 'TDPSA' | 'OMNIBUS' | 'GDPR';
@@ -68,6 +81,7 @@ const STATUTE_META: Record<
 
 function draftStatutoryNotice(
   broker: DataBroker,
+  recipientEmail: string,
   profile: UserProfile,
   statute: StatutePreset,
   senderEmail: string,
@@ -91,7 +105,7 @@ function draftStatutoryNotice(
 
   const subject = `LEGAL NOTICE: Statutory ${meta.subjectTag} Data Deletion & Suppression Demand - ${fullName}`;
   const body = `DATE: ${dateStr}
-TO: Privacy Officer / Compliance Department, ${broker.name} (${broker.privacyEmail || broker.domain})
+TO: Privacy Officer / Compliance Department, ${broker.name} (${recipientEmail || broker.domain})
 FROM: ${fullName} <${senderEmail}>
 RE: FORMAL STATUTORY DATA SUPPRESSION & DELETION DEMAND (${meta.subjectTag})
 
@@ -127,20 +141,35 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
   onOpenPowerOfAttorney,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const overrides = useBrokerContactOverrides();
+  const contact = useMemo(
+    () => resolveBrokerContactProfile(broker, overrides),
+    [broker, overrides]
+  );
+
   const initialStatute: StatutePreset = profile.currentState === 'TX' ? 'TDPSA' : 'CCPA';
   const effectiveSender = activeConnectedEmail || profile.emails[0] || 'consumer@example.com';
 
   const [selectedStatute, setSelectedStatute] = useState<StatutePreset>(initialStatute);
   const [includePoa, setIncludePoa] = useState<boolean>(Boolean(profile.powerOfAttorney?.isSigned));
   const [bccSelf, setBccSelf] = useState<boolean>(true);
+  const [ccBackupDpo, setCcBackupDpo] = useState<boolean>(true);
   const [copied, setCopied] = useState(false);
   const [confirmStep, setConfirmStep] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentReceipt, setSentReceipt] = useState<string | null>(null);
+  const [deliveredToEmail, setDeliveredToEmail] = useState<string | null>(null);
+
+  // Editable recipient & MX check state
+  const [isEditingRecipient, setIsEditingRecipient] = useState(false);
+  const [draftRecipient, setDraftRecipient] = useState(contact.effectivePrimaryEmail);
+  const [isCheckingMx, setIsCheckingMx] = useState(false);
+  const [mxCheck, setMxCheck] = useState<RecipientDeliverabilityVerification | null>(null);
 
   const initialDraft = draftStatutoryNotice(
     broker,
+    contact.effectivePrimaryEmail,
     profile,
     initialStatute,
     effectiveSender,
@@ -150,18 +179,20 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
   const [subjectLine, setSubjectLine] = useState<string>(initialDraft.subject);
   const [letterContent, setLetterContent] = useState<string>(initialDraft.body);
 
-  const handleSelectStatute = (statute: StatutePreset) => {
-    setSelectedStatute(statute);
-    const updated = draftStatutoryNotice(broker, profile, statute, effectiveSender, includePoa);
+  const refreshDraftRecipient = (nextEmail: string, statute = selectedStatute, poa = includePoa) => {
+    const updated = draftStatutoryNotice(broker, nextEmail, profile, statute, effectiveSender, poa);
     setSubjectLine(updated.subject);
     setLetterContent(updated.body);
   };
 
+  const handleSelectStatute = (statute: StatutePreset) => {
+    setSelectedStatute(statute);
+    refreshDraftRecipient(contact.effectivePrimaryEmail, statute, includePoa);
+  };
+
   const handleTogglePoa = (checked: boolean) => {
     setIncludePoa(checked);
-    const updated = draftStatutoryNotice(broker, profile, selectedStatute, effectiveSender, checked);
-    setSubjectLine(updated.subject);
-    setLetterContent(updated.body);
+    refreshDraftRecipient(contact.effectivePrimaryEmail, selectedStatute, checked);
   };
 
   const handleCopy = () => {
@@ -170,8 +201,42 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleVerifyMx = async () => {
+    if (!contact.effectivePrimaryEmail) return;
+    setIsCheckingMx(true);
+    setSendError(null);
+    try {
+      const report = await verifyRecipientDeliverabilityClient(
+        contact.effectivePrimaryEmail,
+        contact.fallbackEmails
+      );
+      setMxCheck(report);
+      if (report.valid && report.usedFallback && report.recommendedEmail) {
+        markBrokerEmailBounced(broker.id, contact.effectivePrimaryEmail);
+        refreshDraftRecipient(report.recommendedEmail);
+      }
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'MX lookup failed.');
+    } finally {
+      setIsCheckingMx(false);
+    }
+  };
+
+  const handleSaveRecipientOverride = () => {
+    const clean = draftRecipient.trim().toLowerCase();
+    if (!isValidEmailSyntax(clean)) {
+      setSendError('Enter a valid compliance email address.');
+      return;
+    }
+    setBrokerCustomEmail(broker.id, clean);
+    setIsEditingRecipient(false);
+    setMxCheck(null);
+    setSendError(null);
+    refreshDraftRecipient(clean);
+  };
+
   const handleConfirmedSend = async () => {
-    if (!broker.privacyEmail) {
+    if (!contact.effectivePrimaryEmail) {
       setSendError('This broker does not list a public privacy email.');
       return;
     }
@@ -179,7 +244,9 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
     setSendError(null);
     try {
       const res = await sendEmailViaConnectedAccount({
-        recipientEmail: broker.privacyEmail,
+        recipientEmail: contact.effectivePrimaryEmail,
+        fallbackRecipientEmails: contact.fallbackEmails,
+        ccEmails: ccBackupDpo ? contact.recommendedCcEmails : [],
         subject: subjectLine,
         body: letterContent,
         senderName: `${profile.firstName} ${profile.lastName}`.trim() || 'Authorized Consumer',
@@ -188,7 +255,11 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
         brokerDomain: broker.domain,
         bccSelf,
       });
+      if (res.usedFallback) {
+        markBrokerEmailBounced(broker.id, contact.effectivePrimaryEmail);
+      }
       setSentReceipt(res.messageId);
+      setDeliveredToEmail(res.deliveredTo || contact.effectivePrimaryEmail);
       setConfirmStep(false);
       onMarkSubmitted(broker.id, res.messageId, false);
     } catch (err) {
@@ -198,8 +269,8 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
     }
   };
 
-  const webmailLinks = broker.privacyEmail
-    ? buildWebmailComposeUrls(broker.privacyEmail, subjectLine, letterContent)
+  const webmailLinks = contact.effectivePrimaryEmail
+    ? buildWebmailComposeUrls(contact.effectivePrimaryEmail, subjectLine, letterContent)
     : null;
 
   return (
@@ -211,12 +282,10 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
               <span className="text-emerald-400 font-semibold">Statutory Deletion Notice</span>
               <span aria-hidden="true">·</span>
               <span>{broker.domain}</span>
+              <span aria-hidden="true">·</span>
+              <span>{contact.deliverabilityLabel}</span>
             </div>
             <h2 className="text-xl font-bold text-white">Custom Deletion Letter: {broker.name}</h2>
-            <p className="text-xs text-slate-400 font-mono">
-              To: {broker.privacyEmail || 'Portal Only'}
-              {activeConnectedEmail && <span> · From: {activeConnectedEmail}</span>}
-            </p>
           </div>
 
           <button
@@ -225,6 +294,148 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* Recipient Deliverability & Override Control Bar */}
+        <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="font-mono flex flex-wrap items-center gap-1.5 min-w-0">
+              <span className="text-slate-400">To:</span>
+              <span className="text-emerald-400 font-semibold break-all">
+                {contact.effectivePrimaryEmail || 'Portal Only'}
+              </span>
+              {activeConnectedEmail && (
+                <>
+                  <span aria-hidden="true" className="text-slate-600">
+                    ·
+                  </span>
+                  <span className="text-slate-300">From: {activeConnectedEmail}</span>
+                </>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              {contact.effectivePrimaryEmail && (
+                <button
+                  type="button"
+                  onClick={handleVerifyMx}
+                  disabled={isCheckingMx}
+                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  {isCheckingMx ? (
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-3 h-3" />
+                  )}
+                  <span>{isCheckingMx ? 'Checking...' : 'Check MX'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftRecipient(contact.effectivePrimaryEmail);
+                  setIsEditingRecipient((v) => !v);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              >
+                <Edit3 className="w-3 h-3" />
+                <span>{isEditingRecipient ? 'Close' : 'Edit Recipient'}</span>
+              </button>
+
+              <a
+                href={broker.optOutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white inline-flex items-center gap-1 whitespace-nowrap"
+              >
+                <span>Web Portal</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </div>
+
+          {mxCheck && (
+            <div
+              className={`text-[11px] font-mono ${
+                mxCheck.valid ? 'text-emerald-400' : 'text-rose-400'
+              }`}
+            >
+              {mxCheck.valid
+                ? `DNS MX Verified: ${mxCheck.mxHosts[0] || broker.domain}${
+                    mxCheck.usedFallback
+                      ? ` (auto-switched to ${mxCheck.recommendedEmail})`
+                      : ''
+                  }`
+                : mxCheck.reason ||
+                  'No active mail exchanger found — use the Web Portal button above.'}
+            </div>
+          )}
+
+          {contact.requiresPortalWarning && (
+            <p className="text-[11px] text-amber-300 leading-relaxed">
+              Deliverability note: {broker.name} primarily processes removals via its interactive
+              web portal. Sending this statutory email establishes a dated legal record, and
+              completing the Web Portal ensures immediate directory suppression.
+            </p>
+          )}
+
+          {isEditingRecipient && (
+            <div className="pt-2 border-t border-slate-800 space-y-2">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <input
+                  type="email"
+                  value={draftRecipient}
+                  onChange={(e) => setDraftRecipient(e.target.value)}
+                  placeholder="privacy@broker.com"
+                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
+                />
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleSaveRecipientOverride}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                  >
+                    Save Override
+                  </button>
+                  {(contact.hasCustomOverride || contact.bouncedEmails.length > 0) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetBrokerContactOverride(broker.id);
+                        setIsEditingRecipient(false);
+                        refreshDraftRecipient(broker.privacyEmail);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reset</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {contact.allValidCandidates.length > 1 && (
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="text-slate-400">Verified alternatives:</span>
+                  {contact.allValidCandidates.map((cand) => (
+                    <button
+                      key={cand}
+                      type="button"
+                      onClick={() => {
+                        setBrokerCustomEmail(broker.id, cand);
+                        setIsEditingRecipient(false);
+                        refreshDraftRecipient(cand);
+                      }}
+                      className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 font-mono text-emerald-300 cursor-pointer"
+                    >
+                      {cand}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Statute Switcher + Copy Controls */}
@@ -312,16 +523,28 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
           <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>
-              Sent from <strong>{activeConnectedEmail}</strong> to <strong>{broker.privacyEmail}</strong> · Receipt:{' '}
+              Sent from <strong>{activeConnectedEmail}</strong> to{' '}
+              <strong>{deliveredToEmail || contact.effectivePrimaryEmail}</strong> · Receipt:{' '}
               <span className="font-mono">{sentReceipt}</span>
             </span>
           </div>
         )}
 
         {sendError && (
-          <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{sendError}</span>
+          <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{sendError}</span>
+            </div>
+            <a
+              href={broker.optOutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-emerald-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+            >
+              <span>Use Portal</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
           </div>
         )}
 
@@ -331,7 +554,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
               <span className="text-slate-200">
                 Confirm sending this statutory demand from{' '}
                 <strong className="text-emerald-400 font-mono">{activeConnectedEmail}</strong> to{' '}
-                <strong className="font-mono">{broker.privacyEmail}</strong>?
+                <strong className="font-mono">{contact.effectivePrimaryEmail}</strong>?
               </span>
               <div className="flex items-center gap-2 shrink-0">
                 <button
@@ -354,17 +577,36 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
               </div>
             </div>
 
-            <label className="flex items-center gap-2 text-slate-300 cursor-pointer pt-2 border-t border-slate-800/80">
-              <input
-                type="checkbox"
-                checked={bccSelf}
-                onChange={(e) => setBccSelf(e.target.checked)}
-                className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
-              />
-              <span>
-                Send a BCC copy to my own inbox (<span className="font-mono">{activeConnectedEmail}</span>)
-              </span>
-            </label>
+            <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
+              {contact.recommendedCcEmails.length > 0 && (
+                <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ccBackupDpo}
+                    onChange={(e) => setCcBackupDpo(e.target.checked)}
+                    className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+                  />
+                  <span>
+                    Also CC backup compliance desk (
+                    <span className="font-mono text-emerald-300">
+                      {contact.recommendedCcEmails[0]}
+                    </span>
+                    )
+                  </span>
+                </label>
+              )}
+              <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={bccSelf}
+                  onChange={(e) => setBccSelf(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+                />
+                <span>
+                  Send a BCC copy to my own inbox (<span className="font-mono">{activeConnectedEmail}</span>)
+                </span>
+              </label>
+            </div>
           </div>
         )}
 
@@ -392,7 +634,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
 
           <div className="flex flex-wrap items-center gap-2.5">
             {isDirectSendConnected ? (
-              !confirmStep && !sentReceipt && broker.privacyEmail && (
+              !confirmStep && !sentReceipt && contact.effectivePrimaryEmail && (
                 <button
                   type="button"
                   onClick={() => setConfirmStep(true)}

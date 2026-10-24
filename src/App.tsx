@@ -20,7 +20,10 @@ import {
   findBrokerById,
   disconnectSmtpAccount,
   disconnectGoogleOAuthAccount,
+  purgeAllEmailConnections,
   getEmailConnectionState,
+  resolveActiveConnectedEmailFromState,
+  useEmailConnection,
 } from './services/emailConnectionStore';
 import {
   SearchTypeCategory,
@@ -32,6 +35,7 @@ import {
   clearDeindexQueue,
   loadDeindexQueue,
   saveDeindexQueue,
+  updateDeindexItemStatus,
 } from './utils/searchDeindexEngine';
 import {
   BureauChecklistState,
@@ -53,6 +57,11 @@ import {
   saveCanaryAliases,
   savePublicRecordProgress,
 } from './utils/publicRecordsFirewall';
+import {
+  clearBrokerContactOverrides,
+  clearClientMxCache,
+  restoreBrokerContactOverrides,
+} from './utils/brokerContactResolver';
 import { Navbar, AppTab } from './components/Navbar';
 import { SplashScreen } from './components/SplashScreen';
 import { HeroSection } from './components/HeroSection';
@@ -80,6 +89,7 @@ import { ExposureVectorModal } from './components/ExposureVectorModal';
 import { WorkspaceVaultModal } from './components/WorkspaceVaultModal';
 import { PublicRecordsFirewallCenter } from './components/PublicRecordsFirewallCenter';
 import { BrokerReplyTriageModal } from './components/BrokerReplyTriageModal';
+import { NukeAllModal } from './components/NukeAllModal';
 import { Footer } from './components/Footer';
 import { CheckCircle2 } from 'lucide-react';
 
@@ -159,6 +169,7 @@ export default function App() {
   const [isVectorModalOpen, setIsVectorModalOpen] = useState(false);
   const [isPowerOfAttorneyOpen, setIsPowerOfAttorneyOpen] = useState(false);
   const [isVaultModalOpen, setIsVaultModalOpen] = useState(false);
+  const [isNukeAllModalOpen, setIsNukeAllModalOpen] = useState(false);
   const [emailDispatchQueue, setEmailDispatchQueue] = useState<ScanResult[] | null>(null);
 
   // Toast notifications
@@ -170,6 +181,20 @@ export default function App() {
       setToastMessage(null);
     }, 3500);
   };
+
+  const { activeConnectedEmail } = useEmailConnection();
+
+  useEffect(() => {
+    if (!activeConnectedEmail || !userProfile) return;
+    const normalized = activeConnectedEmail.trim().toLowerCase();
+    const existingNonEmpty = userProfile.emails.filter((e) => Boolean(e && e.trim()));
+    if (existingNonEmpty.some((e) => e.trim().toLowerCase() === normalized)) {
+      return;
+    }
+    if (existingNonEmpty.length === 0) {
+      setUserProfile((prev) => (prev ? { ...prev, emails: [activeConnectedEmail] } : prev));
+    }
+  }, [activeConnectedEmail, userProfile]);
 
   useEffect(() => {
     if (userProfile) {
@@ -215,8 +240,7 @@ export default function App() {
   const ensureActiveProfile = (): UserProfile => {
     if (userProfile) return userProfile;
     const connState = getEmailConnectionState();
-    const connectedEmail =
-      connState.smtp?.userEmail || connState.oauthUser?.email || '';
+    const connectedEmail = resolveActiveConnectedEmailFromState(connState) || '';
     const seeded: UserProfile = {
       ...DEFAULT_FALLBACK_PROFILE,
       emails: connectedEmail ? [connectedEmail] : [],
@@ -543,6 +567,72 @@ export default function App() {
     }));
   };
 
+  // Records a mass NUKE ALL deletion email receipt for any exposed or catalog broker/website
+  const handleBrokerNuked = (broker: DataBroker, receiptMessageId: string) => {
+    const activeProfile = ensureActiveProfile();
+    const nowIso = new Date().toISOString();
+    const dateLabel = new Date(nowIso).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    setScanResults((prev) => {
+      const exists = prev.some((item) => item.brokerId === broker.id);
+      if (exists) {
+        return prev.map((item) =>
+          item.brokerId === broker.id
+            ? {
+                ...item,
+                status: 'exposed',
+                removalStatus: 'submitted',
+                optOutConfirmationCode: receiptMessageId,
+                submissionDate: dateLabel,
+                submittedAtIso: item.submittedAtIso || nowIso,
+                isRegression: false,
+              }
+            : item
+        );
+      }
+
+      const created: ScanResult = {
+        id: `nuke-${broker.id}-${Date.now()}`,
+        brokerId: broker.id,
+        status: 'exposed',
+        removalStatus: 'submitted',
+        optOutConfirmationCode: receiptMessageId,
+        submissionDate: dateLabel,
+        submittedAtIso: nowIso,
+        mockListingData: {
+          fullName: `${activeProfile.firstName} ${activeProfile.lastName}`.trim(),
+          age: 36,
+          locations: [`${activeProfile.currentCity}, ${activeProfile.currentState}`],
+          phones: activeProfile.phoneNumbers.length > 0 ? activeProfile.phoneNumbers : ['On file'],
+          emails: activeProfile.emails.length > 0 ? activeProfile.emails : ['On file'],
+          relatives: activeProfile.relatives,
+          recordsCount: broker.dataExposedList.length || 3,
+          riskLevel: broker.risk,
+          leakTypes: broker.dataExposedList,
+          profiles: [`https://${broker.domain}`],
+          matchConfidence: 'HIGH_CONFIDENCE_MATCH',
+          evidenceBasis: `Mass statutory deletion & suppression notice dispatched via NUKE ALL (${broker.domain}).`,
+        },
+      };
+
+      return [created, ...prev];
+    });
+  };
+
+  const handleBureauNuked = (bureauId: string, receiptMessageId: string) => {
+    handleUpdateBureauProgress(bureauId, { emailSentReceipt: receiptMessageId });
+  };
+
+  const handleDeindexNuked = (deindexId: string, receiptMessageId: string) => {
+    setDeindexQueue((prev) =>
+      updateDeindexItemStatus(prev, deindexId, 'cache_purge_emailed', receiptMessageId)
+    );
+  };
+
   const handleSaveTicketAndNotes = (
     brokerId: string,
     ticketId: string | undefined,
@@ -593,6 +683,7 @@ export default function App() {
     setScanSnapshots(bundle.scanSnapshots);
     setCanaryAliases(bundle.canaryAliases || []);
     setPublicRecordProgress(bundle.publicRecordProgress || {});
+    restoreBrokerContactOverrides(bundle.brokerContactOverrides || {});
     if (bundle.savedSearches) {
       restoreSavedSearches(bundle.savedSearches);
     }
@@ -603,6 +694,7 @@ export default function App() {
   const handlePurgeSession = async () => {
     await disconnectSmtpAccount();
     await disconnectGoogleOAuthAccount().catch(() => null);
+    await purgeAllEmailConnections();
     await fetch('/api/user/purge-session', { method: 'POST' }).catch(() => null);
     clearAllSavedSearches();
     clearDeindexQueue();
@@ -610,6 +702,8 @@ export default function App() {
     clearScanSnapshots();
     clearCanaryAliases();
     clearPublicRecordProgress();
+    clearBrokerContactOverrides();
+    clearClientMxCache();
     try {
       localStorage.removeItem('synout_profile');
       localStorage.removeItem('synout_results');
@@ -644,6 +738,7 @@ export default function App() {
         isPoaSigned={userProfile?.powerOfAttorney?.isSigned}
         onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
         onOpenVault={() => setIsVaultModalOpen(true)}
+        onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
       />
 
       {/* Main Container */}
@@ -653,6 +748,7 @@ export default function App() {
             <HeroSection
               onStartScan={() => setActiveTab('scanner')}
               onExploreBrokers={() => setActiveTab('directory')}
+              onNukeAll={() => setIsNukeAllModalOpen(true)}
             />
             <div className="max-w-7xl mx-auto px-4">
               <ScanForm onScan={handleStartScan} isScanning={isScanning} />
@@ -700,6 +796,7 @@ export default function App() {
                 setActiveTab('firewall');
               }}
               onOpenReplyTriage={() => setActiveReplyTriageModal({})}
+              onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
             />
           ) : (
             <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
@@ -795,6 +892,7 @@ export default function App() {
             }}
             onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
             onStartScan={() => setActiveTab('scanner')}
+            onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
           />
         )}
 
@@ -811,6 +909,7 @@ export default function App() {
               onBatchOptOut={handleOpenBatchEmailOptOut}
               onAutomatedOptOut={handleSingleBrokerOptOutRequest}
               onOpenDiyAssistantModal={(b, r) => setActiveDiyModal({ broker: b, result: r })}
+              onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
             />
           ) : (
             <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
@@ -832,6 +931,7 @@ export default function App() {
           <BrokerDirectory
             scanResults={scanResults}
             onSendBrokerOptOut={handleDirectBrokerOptOut}
+            onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
           />
         )}
         {activeTab === 'guide' && (
@@ -996,6 +1096,25 @@ export default function App() {
           onRestoreWorkspace={handleRestoreWorkspace}
           onCaptureManualSnapshot={handleCaptureManualSnapshot}
           onClose={() => setIsVaultModalOpen(false)}
+        />
+      )}
+
+      {isNukeAllModalOpen && (
+        <NukeAllModal
+          profile={userProfile || DEFAULT_FALLBACK_PROFILE}
+          hasCustomProfile={Boolean(userProfile)}
+          scanResults={scanResults}
+          bureauProgress={bureauProgress}
+          deindexQueue={deindexQueue}
+          onUpdateProfile={(updated) => {
+            setUserProfile(updated);
+            saveStateToStorage('profile', updated);
+          }}
+          onBrokerNuked={handleBrokerNuked}
+          onBureauNuked={handleBureauNuked}
+          onDeindexNuked={handleDeindexNuked}
+          onOpenConnectEmail={() => setActiveTab('gmail')}
+          onClose={() => setIsNukeAllModalOpen(false)}
         />
       )}
 

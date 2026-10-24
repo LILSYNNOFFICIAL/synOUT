@@ -8,8 +8,16 @@ import { GoogleGenAI } from '@google/genai';
 import {
   type EmailProviderId,
   type ResolvedSmtpConfig,
-  resolveSmtpTransportSettings,
+  classifySmtpAuthError,
+  normalizeAppPassword,
+  resolveSmtpFailoverCandidates,
 } from './src/utils/emailProviderConfig.ts';
+import {
+  checkEmailDomainDeliverability,
+  clearDnsMxCache,
+  isRecipientRejectionSmtpError,
+  verifyRecipientCandidatesDns,
+} from './src/server/dnsMxValidator.ts';
 
 dotenv.config();
 
@@ -120,6 +128,7 @@ app.post('/api/user/purge-session', (req, res) => {
   realtimeProtectionEvents.length = 0;
   rateLimitMap.clear();
   clearAllPooledTransporters();
+  clearDnsMxCache();
   res.json({ success: true, message: 'All in-memory session events and audit traces expunged.' });
 });
 
@@ -247,15 +256,16 @@ function isValidEmailAddress(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function formatFriendlySmtpError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : 'SMTP connection failed.';
-  if (/535|Username and Password not accepted|Application-specific password/i.test(raw)) {
-    return 'Authentication rejected by mail server. Use an App Password (not your regular login password) and verify your email address.';
-  }
-  if (/ETIMEDOUT|ECONNREFUSED|ENOTFOUND/i.test(raw)) {
-    return `Could not reach outbound SMTP server (${raw.slice(0, 90)}). Verify your host and port settings.`;
-  }
-  return raw.slice(0, 180);
+function isNetworkOrSocketSmtpError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  const code = (err as { code?: string })?.code || '';
+  return (
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ESOCKET' ||
+    code === 'ECONNRESET' ||
+    /ETIMEDOUT|ECONNREFUSED|ESOCKET|ECONNRESET|Greeting never received|Connection timeout/i.test(msg)
+  );
 }
 
 // Short-lived in-memory pooled SMTP transport cache (90s idle auto-evict, zero disk storage)
@@ -322,13 +332,14 @@ function getOrCreatePooledTransporter(
     host: smtp.host,
     port: smtp.port,
     secure: smtp.secure,
+    requireTLS: !smtp.secure && smtp.port === 587,
     auth: {
       user: userEmail,
       pass: normalizedAuthPass,
     },
-    connectionTimeout: 12000,
-    greetingTimeout: 12000,
-    socketTimeout: 20000,
+    connectionTimeout: 9000,
+    greetingTimeout: 9000,
+    socketTimeout: 18000,
   });
 
   const timer = scheduleEviction(key);
@@ -345,9 +356,10 @@ app.post('/api/email/disconnect', (_req, res) => {
 });
 
 // Endpoint: Stateless verification of user-connected email account (Zero persistent storage)
+// Automatically fails over between Port 465 (SSL) and Port 587 (STARTTLS) if network filters one port
 app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
   const provider = sanitizeString(req.body.provider || 'gmail', 20) as EmailProviderId;
-  const userEmail = sanitizeString(req.body.userEmail, 160);
+  const userEmail = sanitizeString(req.body.userEmail, 160).toLowerCase();
   const appPassword = typeof req.body.appPassword === 'string' ? req.body.appPassword.trim() : '';
   const customHost = sanitizeString(req.body.customHost, 160);
   const customPort = Number(req.body.customPort || 587);
@@ -356,13 +368,14 @@ app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
   if (!isValidEmailAddress(userEmail)) {
     return res.status(400).json({ error: 'Enter a valid email address to connect.' });
   }
-  if (!appPassword || appPassword.length < 4 || appPassword.length > 256) {
+  const normalizedAuthPass = normalizeAppPassword(provider, appPassword);
+  if (!normalizedAuthPass || normalizedAuthPass.length < 4 || normalizedAuthPass.length > 256) {
     return res.status(400).json({ error: 'Enter a valid App Password or SMTP token.' });
   }
 
-  let smtp: ResolvedSmtpConfig;
+  let candidates: ResolvedSmtpConfig[];
   try {
-    smtp = resolveSmtpTransportSettings({
+    candidates = resolveSmtpFailoverCandidates({
       provider,
       customHost,
       customPort,
@@ -373,32 +386,66 @@ app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
     return res.status(400).json({ error: msg });
   }
 
-  // Strip spaces in 16-char Google/Apple/Yahoo app passwords if pasted in 4x4 groups
-  const normalizedAuthPass =
-    provider === 'gmail' || provider === 'yahoo' || provider === 'icloud'
-      ? appPassword.replace(/\s+/g, '')
-      : appPassword;
+  let lastVerifyError: unknown = null;
 
-  const { key, transporter } = getOrCreatePooledTransporter(smtp, userEmail, normalizedAuthPass);
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    const { key, transporter } = getOrCreatePooledTransporter(
+      candidate,
+      userEmail,
+      normalizedAuthPass
+    );
 
-  try {
-    await transporter.verify();
-    return res.json({
-      verified: true,
-      provider: smtp.provider,
-      host: smtp.host,
-      port: smtp.port,
-    });
-  } catch (err) {
-    evictPooledTransporter(key);
-    return res.status(401).json({
-      verified: false,
-      error: formatFriendlySmtpError(err),
-    });
+    try {
+      await transporter.verify();
+      return res.json({
+        verified: true,
+        provider: candidate.provider,
+        host: candidate.host,
+        port: candidate.port,
+        secure: candidate.secure,
+        failoverUsed: i > 0,
+      });
+    } catch (err) {
+      evictPooledTransporter(key);
+      lastVerifyError = err;
+      // Only try alternate port/host when socket/network failed (do not double-attempt wrong passwords)
+      if (!isNetworkOrSocketSmtpError(err)) {
+        break;
+      }
+    }
   }
+
+  const classified = classifySmtpAuthError(lastVerifyError, provider);
+  return res.status(401).json({
+    verified: false,
+    errorCode: classified.code,
+    suggestOAuth: classified.suggestOAuth,
+    suggestWebmail: classified.suggestWebmail,
+    error: classified.message,
+  });
+});
+
+// Endpoint: Pre-flight DNS MX & Fallback DPO Deliverability Check (Prevents Bounce-Backs)
+app.post('/api/email/verify-recipient', apiRateLimiter, async (req, res) => {
+  const recipientEmail = sanitizeString(req.body.recipientEmail, 160).toLowerCase();
+  const rawFallbacks: unknown[] = Array.isArray(req.body.fallbackEmails)
+    ? req.body.fallbackEmails
+    : [];
+  const fallbackEmails = rawFallbacks
+    .map((item) => sanitizeString(item, 160).toLowerCase())
+    .filter((item) => isValidEmailAddress(item));
+
+  if (!recipientEmail) {
+    return res.status(400).json({ error: 'Recipient email address is required.' });
+  }
+
+  const verification = await verifyRecipientCandidatesDns(recipientEmail, fallbackEmails);
+  return res.json(verification);
 });
 
 // Endpoint: Send statutory opt-out email directly from user's own email on their behalf
+// Includes live DNS MX pre-flight verification + automatic fallback DPO failover
 app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
   const provider = sanitizeString(req.body.provider || 'gmail', 20) as EmailProviderId;
   const userEmail = sanitizeString(req.body.userEmail, 160);
@@ -409,7 +456,19 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
   const customSecure = typeof req.body.customSecure === 'boolean' ? req.body.customSecure : undefined;
   const bccSelf = Boolean(req.body.bccSelf);
 
-  const recipientEmail = sanitizeString(req.body.recipientEmail, 160);
+  const recipientEmail = sanitizeString(req.body.recipientEmail, 160).toLowerCase();
+  const rawFallbacks: unknown[] = Array.isArray(req.body.fallbackRecipientEmails)
+    ? req.body.fallbackRecipientEmails
+    : [];
+  const fallbackRecipientEmails = rawFallbacks
+    .map((item) => sanitizeString(item, 160).toLowerCase())
+    .filter((item) => isValidEmailAddress(item) && item !== recipientEmail);
+
+  const rawCc: unknown[] = Array.isArray(req.body.ccEmails) ? req.body.ccEmails : [];
+  const requestedCcEmails = rawCc
+    .map((item) => sanitizeString(item, 160).toLowerCase())
+    .filter((item) => isValidEmailAddress(item));
+
   const subject = sanitizeString(req.body.subject, 240);
   const rawBody = typeof req.body.body === 'string' ? req.body.body.trim().slice(0, 12000) : '';
   const safeBrokerId = sanitizeString(req.body.brokerId || 'broker', 80);
@@ -429,9 +488,50 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Subject line and legal notice body cannot be empty.' });
   }
 
-  let smtp: ResolvedSmtpConfig;
+  // Step 1: Pre-flight DNS MX verification across primary + fallback compliance addresses
+  // (Prevents 550 / NXDOMAIN bounce-backs in the user's inbox!)
+  let deliveryQueue: string[] = [recipientEmail, ...fallbackRecipientEmails];
+  let verifiedMxHosts: string[] = [];
+
+  if (safeBrokerId !== 'synout-self-test') {
+    const mxReport = await verifyRecipientCandidatesDns(recipientEmail, fallbackRecipientEmails);
+    const validCandidates = mxReport.candidateResults.filter((c) => c.mxValid);
+
+    if (validCandidates.length === 0) {
+      return res.status(422).json({
+        success: false,
+        code: 'RECIPIENT_MX_UNRESOLVABLE',
+        portalFallbackRequired: true,
+        testedEmails: mxReport.candidateResults.map((c) => c.email),
+        error:
+          mxReport.reason ||
+          `Recipient domain for ${recipientEmail} has no active mail server (MX missing). Blocked prior to send to prevent bounce-back; use the broker's official web opt-out portal or override the DPO email.`,
+      });
+    }
+
+    deliveryQueue = validCandidates.map((c) => c.email);
+    verifiedMxHosts = validCandidates[0].mxHosts;
+  }
+
+  // Filter any optional CC compliance addresses so dead CC addresses never trigger partial bounces
+  const verifiedCcEmails: string[] = [];
+  for (const ccAddr of requestedCcEmails.slice(0, 3)) {
+    if (deliveryQueue.includes(ccAddr)) continue;
+    const ccCheck = await checkEmailDomainDeliverability(ccAddr);
+    if (ccCheck.mxValid) {
+      verifiedCcEmails.push(ccAddr);
+    }
+  }
+
+  const userEmailNormalized = userEmail.toLowerCase();
+  const normalizedAuthPass = normalizeAppPassword(provider, appPassword);
+  if (!normalizedAuthPass || normalizedAuthPass.length < 4 || normalizedAuthPass.length > 256) {
+    return res.status(400).json({ error: 'Valid App Password or SMTP token is required.' });
+  }
+
+  let smtpCandidates: ResolvedSmtpConfig[];
   try {
-    smtp = resolveSmtpTransportSettings({
+    smtpCandidates = resolveSmtpFailoverCandidates({
       provider,
       customHost,
       customPort,
@@ -442,65 +542,112 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
     return res.status(400).json({ error: msg });
   }
 
-  const normalizedAuthPass =
-    provider === 'gmail' || provider === 'yahoo' || provider === 'icloud'
-      ? appPassword.replace(/\s+/g, '')
-      : appPassword;
-
-  const mailOptions: Parameters<SmtpTransporter['sendMail']>[0] = {
-    from: senderName ? `"${senderName}" <${userEmail}>` : userEmail,
-    replyTo: userEmail,
-    to: recipientEmail,
-    bcc: bccSelf ? userEmail : undefined,
-    subject,
-    text: scrubSensitivePII(rawBody),
-  };
-
-  let { key, transporter } = getOrCreatePooledTransporter(smtp, userEmail, normalizedAuthPass);
-
-  try {
-    let info;
-    try {
-      info = await transporter.sendMail(mailOptions);
-    } catch (firstErr) {
-      // Retry once on fresh TLS connection if a pooled socket closed mid-batch
-      evictPooledTransporter(key);
-      const retryPool = getOrCreatePooledTransporter(smtp, userEmail, normalizedAuthPass);
-      key = retryPool.key;
-      transporter = retryPool.transporter;
-      info = await transporter.sendMail(mailOptions);
-    }
-
-    const nowIso = new Date().toISOString();
-    const messageId = info.messageId || `<synout-${Date.now()}@${smtp.host}>`;
-
-    realtimeProtectionEvents.unshift({
-      id: `ev-smtp-${Date.now()}`,
-      timestamp: nowIso,
-      brokerId: safeBrokerId,
-      brokerName: safeBrokerName,
-      brokerDomain: safeBrokerDomain,
-      action: 'DISPATCHING_REMOVAL',
-      externalConfirmationToken: messageId,
-      statusText: `Statutory deletion demand sent from ${userEmail} via ${smtp.host} to ${safeBrokerName} (${recipientEmail}).`,
-      externalStatusCode: 200,
-    });
-
-    return res.json({
-      success: true,
-      messageId,
-      sentFrom: userEmail,
-      recipientEmail,
-      sentAt: nowIso,
-      brokerName: safeBrokerName,
-    });
-  } catch (err) {
-    evictPooledTransporter(key);
-    return res.status(502).json({
-      success: false,
-      error: formatFriendlySmtpError(err),
-    });
+  // Prefer the exact port that previously verified if provided by client
+  const preferredPort = Number(req.body.resolvedPort || 0);
+  if (preferredPort === 465 || preferredPort === 587) {
+    smtpCandidates.sort((a, b) => (a.port === preferredPort ? -1 : b.port === preferredPort ? 1 : 0));
   }
+
+  let smtp = smtpCandidates[0];
+  const cleanTextBody = scrubSensitivePII(rawBody);
+  let { key, transporter } = getOrCreatePooledTransporter(
+    smtp,
+    userEmailNormalized,
+    normalizedAuthPass
+  );
+
+  // Step 2: Transmit with automatic failover across verified DPO candidates & submission ports
+  let lastSendError: unknown = null;
+
+  for (let attemptIdx = 0; attemptIdx < deliveryQueue.length; attemptIdx++) {
+    const activeRecipient = deliveryQueue[attemptIdx];
+    const activeCc = verifiedCcEmails.filter((c) => c !== activeRecipient);
+
+    const mailOptions: Parameters<SmtpTransporter['sendMail']>[0] = {
+      from: senderName ? `"${senderName}" <${userEmailNormalized}>` : userEmailNormalized,
+      replyTo: userEmailNormalized,
+      to: activeRecipient,
+      cc: activeCc.length > 0 ? activeCc : undefined,
+      bcc: bccSelf ? userEmailNormalized : undefined,
+      subject,
+      text: cleanTextBody,
+    };
+
+    try {
+      let info;
+      try {
+        info = await transporter.sendMail(mailOptions);
+      } catch (firstErr) {
+        if (isRecipientRejectionSmtpError(firstErr)) {
+          throw firstErr;
+        }
+        evictPooledTransporter(key);
+        // If socket/port failed and an alternate submission port exists, switch to it
+        if (isNetworkOrSocketSmtpError(firstErr) && smtpCandidates.length > 1) {
+          smtp = smtpCandidates[1];
+        }
+        const retryPool = getOrCreatePooledTransporter(
+          smtp,
+          userEmailNormalized,
+          normalizedAuthPass
+        );
+        key = retryPool.key;
+        transporter = retryPool.transporter;
+        info = await transporter.sendMail(mailOptions);
+      }
+
+      const nowIso = new Date().toISOString();
+      const messageId = info.messageId || `<synout-${Date.now()}@${smtp.host}>`;
+      const usedFallback = activeRecipient.toLowerCase() !== recipientEmail.toLowerCase();
+
+      realtimeProtectionEvents.unshift({
+        id: `ev-smtp-${Date.now()}`,
+        timestamp: nowIso,
+        brokerId: safeBrokerId,
+        brokerName: safeBrokerName,
+        brokerDomain: safeBrokerDomain,
+        action: 'DISPATCHING_REMOVAL',
+        externalConfirmationToken: messageId,
+        statusText: usedFallback
+          ? `Statutory deletion demand auto-routed to verified backup DPO (${activeRecipient}) from ${userEmailNormalized}.`
+          : `Statutory deletion demand sent from ${userEmailNormalized} via ${smtp.host} to ${safeBrokerName} (${activeRecipient}).`,
+        externalStatusCode: 200,
+      });
+
+      return res.json({
+        success: true,
+        messageId,
+        sentFrom: userEmailNormalized,
+        recipientEmail: activeRecipient,
+        originalRecipientEmail: recipientEmail,
+        usedFallback,
+        ccDelivered: activeCc,
+        mxVerified: true,
+        mxHost: verifiedMxHosts[0] || null,
+        sentAt: nowIso,
+        brokerName: safeBrokerName,
+      });
+    } catch (err) {
+      lastSendError = err;
+      const canFailoverToBackup =
+        attemptIdx + 1 < deliveryQueue.length && isRecipientRejectionSmtpError(err);
+      if (canFailoverToBackup) {
+        continue;
+      }
+      break;
+    }
+  }
+
+  evictPooledTransporter(key);
+  const classified = classifySmtpAuthError(lastSendError, provider);
+  return res.status(502).json({
+    success: false,
+    portalFallbackRequired: isRecipientRejectionSmtpError(lastSendError),
+    errorCode: classified.code,
+    suggestOAuth: classified.suggestOAuth,
+    suggestWebmail: classified.suggestWebmail,
+    error: classified.message,
+  });
 });
 
 // Endpoint: Optional Public Google OAuth Client ID (Zero Firebase / Zero API Keys Needed)

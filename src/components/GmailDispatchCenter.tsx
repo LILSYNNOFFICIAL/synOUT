@@ -5,7 +5,10 @@ import { getExhaustiveBrokerRegistry } from '../utils/dynamicBrokerRegistry';
 import {
   EMAIL_PROVIDER_PRESETS,
   EmailProviderId,
+  WebmailLauncherId,
   detectProviderFromEmail,
+  detectWebmailLauncherFromEmail,
+  inferCustomSmtpDefaults,
   buildWebmailComposeUrls,
 } from '../utils/emailProviderConfig';
 import { getAccessToken } from '../services/googleAuth';
@@ -14,18 +17,33 @@ import {
   GmailMessageSummary,
 } from '../services/gmailApi';
 import {
+  SmtpVerificationError,
   useEmailConnection,
   setEmailConnectionMode,
   verifyAndConnectSmtpAccount,
   disconnectSmtpAccount,
   connectGoogleOAuthAccount,
+  connectGoogleOAuthWithToken,
+  saveGoogleOAuthClientConfig,
+  clearGoogleOAuthClientConfig,
   disconnectGoogleOAuthAccount,
+  connectWebmailSenderAccount,
+  disconnectWebmailSenderAccount,
   findBrokerById,
   hasVerifiedEmailReceipt,
   buildStatutoryNoticeForBroker,
   sendEmailViaConnectedAccount,
 } from '../services/emailConnectionStore';
 import { copyTextToClipboard } from '../utils/exportEngines';
+import {
+  resolveBrokerContactProfile,
+  useBrokerContactOverrides,
+  setBrokerCustomEmail,
+  resetBrokerContactOverride,
+  markBrokerEmailBounced,
+  verifyRecipientDeliverabilityClient,
+  RecipientDeliverabilityVerification,
+} from '../utils/brokerContactResolver';
 import {
   Mail,
   Send,
@@ -44,6 +62,13 @@ import {
   Lock,
   X,
   Layers,
+  Edit3,
+  RotateCcw,
+  Flame,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Settings2,
 } from 'lucide-react';
 
 interface GmailDispatchCenterProps {
@@ -52,11 +77,20 @@ interface GmailDispatchCenterProps {
   onMarkDispatched: (brokerId: string, messageId: string, silent?: boolean) => void;
   onOpenPowerOfAttorney: () => void;
   onStartScan?: () => void;
+  onOpenNukeAll?: () => void;
 }
 
 interface PendingSendConfirmation {
   type: 'single' | 'batch';
-  targets: { broker: DataBroker; subject: string; body: string }[];
+  targets: {
+    broker: DataBroker;
+    recipientEmail: string;
+    fallbackEmails: string[];
+    ccEmails: string[];
+    deliverabilityLabel: string;
+    subject: string;
+    body: string;
+  }[];
 }
 
 export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
@@ -65,27 +99,40 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   onMarkDispatched,
   onOpenPowerOfAttorney,
   onStartScan,
+  onOpenNukeAll,
 }) => {
   const {
     mode: connectionMode,
     smtp: smtpConnection,
     oauthUser,
     oauthAccessToken: accessToken,
+    oauthTokenExpired,
     oauthConfigured,
+    oauthClientSource,
+    customOAuthClientId,
+    webmailSender,
+    backendAvailable,
     isDirectSendConnected: isAccountConnectedForDirectSend,
+    isWebmailConnected,
     activeConnectedEmail,
   } = useEmailConnection();
 
   // Form inputs for Direct Email / App Password connection
-  const initialEmail = smtpConnection?.userEmail || profile.emails[0] || '';
+  const initialEmail =
+    smtpConnection?.userEmail ||
+    webmailSender?.userEmail ||
+    profile.emails.find((e) => Boolean(e && e.trim())) ||
+    '';
   const [smtpEmail, setSmtpEmail] = useState<string>(initialEmail);
   const [smtpProvider, setSmtpProvider] = useState<EmailProviderId>(() =>
     smtpConnection?.provider || detectProviderFromEmail(initialEmail)
   );
   const [smtpAppPassword, setSmtpAppPassword] = useState<string>('');
+  const [showSmtpPassword, setShowSmtpPassword] = useState<boolean>(false);
   const [customHost, setCustomHost] = useState<string>(smtpConnection?.customHost || '');
   const [customPort, setCustomPort] = useState<number>(smtpConnection?.customPort || 587);
   const [customSecure, setCustomSecure] = useState<boolean>(smtpConnection?.customSecure || false);
+  const [customProviderHint, setCustomProviderHint] = useState<string | null>(null);
   const [rememberInBrowser, setRememberInBrowser] = useState<boolean>(
     smtpConnection ? smtpConnection.rememberInBrowser : true
   );
@@ -93,9 +140,27 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
   const [isVerifyingSmtp, setIsVerifyingSmtp] = useState<boolean>(false);
   const [smtpError, setSmtpError] = useState<string | null>(null);
+  const [smtpSuggestOAuth, setSmtpSuggestOAuth] = useState<boolean>(false);
+  const [smtpSuggestWebmail, setSmtpSuggestWebmail] = useState<boolean>(false);
 
+  // Google OAuth 2.0 & Direct Token Login state
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [isAuthenticatingOAuth, setIsAuthenticatingOAuth] = useState<boolean>(false);
+  const [showOAuthConfigDrawer, setShowOAuthConfigDrawer] = useState<boolean>(false);
+  const [oauthClientIdDraft, setOauthClientIdDraft] = useState<string>(customOAuthClientId || '');
+  const [oauthConfigFeedback, setOauthConfigFeedback] = useState<string | null>(null);
+  const [originCopied, setOriginCopied] = useState<boolean>(false);
+  const [showTokenFallback, setShowTokenFallback] = useState<boolean>(false);
+  const [manualAccessTokenDraft, setManualAccessTokenDraft] = useState<string>('');
+
+  // Instant Webmail Sender Login state
+  const [webmailEmailInput, setWebmailEmailInput] = useState<string>(
+    webmailSender?.userEmail || initialEmail
+  );
+  const [webmailLauncher, setWebmailLauncher] = useState<WebmailLauncherId>(
+    webmailSender?.preferredLauncher || detectWebmailLauncherFromEmail(initialEmail)
+  );
+  const [webmailError, setWebmailError] = useState<string | null>(null);
 
   // Queue & Letter state
   const [selectedBrokerId, setSelectedBrokerId] = useState<string>('');
@@ -125,6 +190,15 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   const [isSearchingInbox, setIsSearchingInbox] = useState<boolean>(false);
   const [inboxSearched, setInboxSearched] = useState<boolean>(false);
 
+  // Recipient DPO Mitigation, Custom Override & Live DNS MX Check State
+  const contactOverrides = useBrokerContactOverrides();
+  const [ccBackupDpo, setCcBackupDpo] = useState<boolean>(true);
+  const [isEditingRecipient, setIsEditingRecipient] = useState<boolean>(false);
+  const [recipientDraft, setRecipientDraft] = useState<string>('');
+  const [recipientOverrideError, setRecipientOverrideError] = useState<string | null>(null);
+  const [mxCheckState, setMxCheckState] = useState<RecipientDeliverabilityVerification | null>(null);
+  const [isCheckingMx, setIsCheckingMx] = useState<boolean>(false);
+
   const activeSenderEmail = activeConnectedEmail || smtpEmail || profile.emails[0] || '';
 
   const exposedBrokers = useMemo(() => {
@@ -149,11 +223,14 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   }, [exposedBrokers]);
 
   const filteredQueue = useMemo(() => {
+    const q = searchQuery.toLowerCase();
     return exposedBrokers.filter(({ broker, result }) => {
+      const resolved = resolveBrokerContactProfile(broker, contactOverrides);
       const matchesSearch =
-        broker.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        broker.domain.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (broker.privacyEmail || '').toLowerCase().includes(searchQuery.toLowerCase());
+        broker.name.toLowerCase().includes(q) ||
+        broker.domain.toLowerCase().includes(q) ||
+        resolved.effectivePrimaryEmail.toLowerCase().includes(q) ||
+        (broker.privacyEmail || '').toLowerCase().includes(q);
       if (!matchesSearch) return false;
       const verifiedSent = hasVerifiedEmailReceipt(result);
       if (queueFilter === 'pending') {
@@ -164,7 +241,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
       }
       return true;
     });
-  }, [exposedBrokers, searchQuery, queueFilter]);
+  }, [exposedBrokers, searchQuery, queueFilter, contactOverrides]);
 
   useEffect(() => {
     if (!selectedBrokerId && exposedBrokers.length > 0) {
@@ -177,15 +254,26 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     [selectedBrokerId]
   );
 
+  const activeContact = useMemo(
+    () => (activeBroker ? resolveBrokerContactProfile(activeBroker, contactOverrides) : null),
+    [activeBroker, contactOverrides]
+  );
+
   const activeResult = useMemo(
     () => results.find((r) => r.brokerId === selectedBrokerId),
     [results, selectedBrokerId]
   );
 
+  useEffect(() => {
+    setIsEditingRecipient(false);
+    setRecipientOverrideError(null);
+    setMxCheckState(null);
+  }, [selectedBrokerId]);
+
   const generatedNotice = useMemo(() => {
     if (!activeBroker) return { subject: '', body: '' };
     return buildStatutoryNoticeForBroker(activeBroker, profile, activeSenderEmail);
-  }, [activeBroker, profile, activeSenderEmail]);
+  }, [activeBroker, profile, activeSenderEmail, contactOverrides]);
 
   useEffect(() => {
     setCustomSubject(generatedNotice.subject);
@@ -196,8 +284,24 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
   const handleEmailInputChange = (val: string) => {
     setSmtpEmail(val);
+    setWebmailEmailInput(val);
     if (val.includes('@')) {
-      setSmtpProvider(detectProviderFromEmail(val));
+      const detected = detectProviderFromEmail(val);
+      setSmtpProvider(detected);
+      setWebmailLauncher(detectWebmailLauncherFromEmail(val));
+      if (detected === 'custom') {
+        const inferred = inferCustomSmtpDefaults(val);
+        if (inferred) {
+          setCustomHost(inferred.host);
+          setCustomPort(inferred.port);
+          setCustomSecure(inferred.secure);
+          setCustomProviderHint(inferred.providerHint);
+        } else {
+          setCustomProviderHint(null);
+        }
+      } else {
+        setCustomProviderHint(null);
+      }
     }
   };
 
@@ -205,6 +309,8 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     e.preventDefault();
     setIsVerifyingSmtp(true);
     setSmtpError(null);
+    setSmtpSuggestOAuth(false);
+    setSmtpSuggestWebmail(false);
 
     try {
       await verifyAndConnectSmtpAccount({
@@ -219,7 +325,15 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
       setSmtpAppPassword('');
       setSmtpError(null);
     } catch (err) {
-      setSmtpError(err instanceof Error ? err.message : 'Connection verification failed.');
+      if (err instanceof SmtpVerificationError) {
+        setSmtpError(err.message);
+        setSmtpSuggestOAuth(err.suggestOAuth);
+        setSmtpSuggestWebmail(err.suggestWebmail);
+      } else {
+        setSmtpError(err instanceof Error ? err.message : 'Connection verification failed.');
+        setSmtpSuggestOAuth(smtpProvider === 'gmail');
+        setSmtpSuggestWebmail(true);
+      }
     } finally {
       setIsVerifyingSmtp(false);
     }
@@ -231,11 +345,37 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     setSmtpError(null);
   };
 
-  const handleGoogleOAuthSignIn = async () => {
+  const handleSaveOAuthClientId = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setOauthError(null);
+    setOauthConfigFeedback(null);
+    try {
+      await saveGoogleOAuthClientConfig(oauthClientIdDraft);
+      setOauthConfigFeedback(
+        'Saved Google OAuth Client ID in this browser. Click "Sign in with Google" to authorize.'
+      );
+      setShowOAuthConfigDrawer(false);
+    } catch (err) {
+      setOauthError(err instanceof Error ? err.message : 'Invalid Google OAuth Client ID.');
+    }
+  };
+
+  const handleClearOAuthClientId = async () => {
+    await clearGoogleOAuthClientConfig();
+    setOauthClientIdDraft('');
+    setOauthConfigFeedback(null);
+  };
+
+  const handleGoogleOAuthSignIn = async (silentIfPossible = false) => {
     setIsAuthenticatingOAuth(true);
     setOauthError(null);
+    setOauthConfigFeedback(null);
     try {
-      await connectGoogleOAuthAccount();
+      await connectGoogleOAuthAccount({
+        loginHint: oauthUser?.email || (smtpEmail.endsWith('@gmail.com') ? smtpEmail : undefined),
+        rememberInBrowser,
+        silentIfPossible,
+      });
     } catch (err) {
       setOauthError(err instanceof Error ? err.message : 'Google OAuth sign-in failed.');
     } finally {
@@ -243,8 +383,59 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     }
   };
 
+  const handleManualTokenSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsAuthenticatingOAuth(true);
+    setOauthError(null);
+    try {
+      await connectGoogleOAuthWithToken(manualAccessTokenDraft, rememberInBrowser);
+      setManualAccessTokenDraft('');
+      setShowTokenFallback(false);
+    } catch (err) {
+      setOauthError(err instanceof Error ? err.message : 'Gmail OAuth token verification failed.');
+    } finally {
+      setIsAuthenticatingOAuth(false);
+    }
+  };
+
   const handleGoogleOAuthSignOut = async () => {
     await disconnectGoogleOAuthAccount();
+    setSelfTestReceipt(null);
+    setSelfTestError(null);
+  };
+
+  const handleConnectWebmailSender = (e?: React.FormEvent, emailOverride?: string) => {
+    if (e) e.preventDefault();
+    setWebmailError(null);
+    const targetEmail = (emailOverride ?? webmailEmailInput).trim();
+    try {
+      connectWebmailSenderAccount({
+        userEmail: targetEmail,
+        senderName: `${profile.firstName} ${profile.lastName}`.trim() || undefined,
+        preferredLauncher: emailOverride
+          ? detectWebmailLauncherFromEmail(emailOverride)
+          : webmailLauncher,
+        rememberInBrowser,
+      });
+      setWebmailEmailInput(targetEmail.toLowerCase());
+      setSmtpError(null);
+    } catch (err) {
+      setWebmailError(err instanceof Error ? err.message : 'Enter a valid email address.');
+    }
+  };
+
+  const handleDisconnectWebmailSender = () => {
+    disconnectWebmailSenderAccount();
+    setWebmailError(null);
+  };
+
+  const currentOrigin =
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+
+  const handleCopyOrigin = () => {
+    void copyTextToClipboard(currentOrigin);
+    setOriginCopied(true);
+    setTimeout(() => setOriginCopied(false), 2000);
   };
 
   const handleConfirmSendSelfTest = async () => {
@@ -272,8 +463,63 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     }
   };
 
+  const handleOpenRecipientEditor = () => {
+    if (!activeContact) return;
+    setRecipientDraft(activeContact.effectivePrimaryEmail);
+    setRecipientOverrideError(null);
+    setIsEditingRecipient(true);
+  };
+
+  const handleSaveRecipientOverride = (emailToSave?: string) => {
+    if (!activeBroker) return;
+    const candidate = (emailToSave ?? recipientDraft).trim();
+    try {
+      setBrokerCustomEmail(activeBroker.id, candidate);
+      setIsEditingRecipient(false);
+      setRecipientOverrideError(null);
+      setMxCheckState(null);
+    } catch (err) {
+      setRecipientOverrideError(
+        err instanceof Error ? err.message : 'Enter a valid compliance email address.'
+      );
+    }
+  };
+
+  const handleResetRecipientOverride = () => {
+    if (!activeBroker) return;
+    resetBrokerContactOverride(activeBroker.id);
+    setIsEditingRecipient(false);
+    setRecipientOverrideError(null);
+    setMxCheckState(null);
+  };
+
+  const handleMarkCurrentRecipientBounced = () => {
+    if (!activeBroker || !activeContact?.effectivePrimaryEmail) return;
+    markBrokerEmailBounced(activeBroker.id, activeContact.effectivePrimaryEmail);
+    setMxCheckState(null);
+  };
+
+  const handleCheckActiveRecipientMx = async () => {
+    if (!activeContact?.effectivePrimaryEmail) return;
+    setIsCheckingMx(true);
+    setSendErrorMsg(null);
+    try {
+      const result = await verifyRecipientDeliverabilityClient(
+        activeContact.effectivePrimaryEmail,
+        activeContact.fallbackEmails
+      );
+      setMxCheckState(result);
+    } catch (err) {
+      setSendErrorMsg(
+        err instanceof Error ? err.message : 'DNS MX verification check failed.'
+      );
+    } finally {
+      setIsCheckingMx(false);
+    }
+  };
+
   const requestSingleSendConfirmation = () => {
-    if (!activeBroker?.privacyEmail) {
+    if (!activeBroker || !activeContact?.effectivePrimaryEmail) {
       setSendErrorMsg('Selected broker does not publish a statutory opt-out email address.');
       return;
     }
@@ -287,6 +533,10 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
       targets: [
         {
           broker: activeBroker,
+          recipientEmail: activeContact.effectivePrimaryEmail,
+          fallbackEmails: activeContact.fallbackEmails,
+          ccEmails: ccBackupDpo ? activeContact.recommendedCcEmails : [],
+          deliverabilityLabel: activeContact.deliverabilityLabel,
           subject: customSubject,
           body: customBody,
         },
@@ -306,9 +556,14 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     }
 
     const targets = targetPool.map(({ broker }) => {
+      const contact = resolveBrokerContactProfile(broker, contactOverrides);
       const notice = buildStatutoryNoticeForBroker(broker, profile, activeSenderEmail);
       return {
         broker,
+        recipientEmail: contact.effectivePrimaryEmail,
+        fallbackEmails: contact.fallbackEmails,
+        ccEmails: ccBackupDpo ? contact.recommendedCcEmails : [],
+        deliverabilityLabel: contact.deliverabilityLabel,
         subject: notice.subject,
         body: notice.body,
       };
@@ -333,7 +588,9 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
       const target = confirmation.targets[0];
       try {
         const res = await sendEmailViaConnectedAccount({
-          recipientEmail: target.broker.privacyEmail,
+          recipientEmail: target.recipientEmail,
+          fallbackRecipientEmails: target.fallbackEmails,
+          ccEmails: target.ccEmails,
           subject: target.subject,
           body: target.body,
           senderName,
@@ -342,9 +599,19 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
           brokerDomain: target.broker.domain,
           bccSelf,
         });
+        const actualRecipient = res.deliveredTo || target.recipientEmail;
+        if (res.usedFallback && actualRecipient.toLowerCase() !== target.recipientEmail.toLowerCase()) {
+          markBrokerEmailBounced(target.broker.id, target.recipientEmail);
+        }
         onMarkDispatched(target.broker.id, res.messageId, false);
         setSendSuccessMsg(
-          `Sent from ${res.sentFrom} to ${target.broker.privacyEmail} · Message Receipt: ${res.messageId}`
+          `Sent from ${res.sentFrom} to ${actualRecipient}${
+            res.usedFallback ? ' (auto-rerouted via verified backup DPO)' : ''
+          }${
+            res.ccDelivered && res.ccDelivered.length > 0
+              ? ` · CC: ${res.ccDelivered.join(', ')}`
+              : ''
+          } · Message Receipt: ${res.messageId}`
         );
       } catch (err) {
         setSendErrorMsg(err instanceof Error ? err.message : 'Failed to send email on your behalf.');
@@ -356,6 +623,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
     // Batch send across all pending exposed brokers
     let sentCount = 0;
+    let reroutedCount = 0;
     const failures: string[] = [];
     const total = confirmation.targets.length;
 
@@ -369,7 +637,9 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
       try {
         const res = await sendEmailViaConnectedAccount({
-          recipientEmail: target.broker.privacyEmail,
+          recipientEmail: target.recipientEmail,
+          fallbackRecipientEmails: target.fallbackEmails,
+          ccEmails: target.ccEmails,
           subject: target.subject,
           body: target.body,
           senderName,
@@ -378,6 +648,10 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
           brokerDomain: target.broker.domain,
           bccSelf,
         });
+        if (res.usedFallback) {
+          reroutedCount++;
+          markBrokerEmailBounced(target.broker.id, target.recipientEmail);
+        }
         sentCount++;
         onMarkDispatched(target.broker.id, res.messageId, true);
       } catch (err) {
@@ -392,11 +666,17 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
     if (sentCount > 0 && failures.length === 0) {
       setSendSuccessMsg(
-        `Sent all ${sentCount} statutory opt-out emails directly from ${activeSenderEmail}. Copies are in your Sent folder.`
+        `Sent all ${sentCount} statutory opt-out emails directly from ${activeSenderEmail}${
+          reroutedCount > 0 ? ` (${reroutedCount} auto-rerouted to verified backup DPO)` : ''
+        }. Copies are in your Sent folder.`
       );
     } else if (sentCount > 0 && failures.length > 0) {
-      setSendSuccessMsg(`Sent ${sentCount} of ${total} notices from ${activeSenderEmail}.`);
-      setSendErrorMsg(`${failures.length} failed: ${failures[0]}`);
+      setSendSuccessMsg(
+        `Sent ${sentCount} of ${total} notices from ${activeSenderEmail}${
+          reroutedCount > 0 ? ` (${reroutedCount} auto-rerouted)` : ''
+        }.`
+      );
+      setSendErrorMsg(`${failures.length} require manual portal action: ${failures[0]}`);
     } else {
       setSendErrorMsg(failures[0] || 'Batch email dispatch failed.');
     }
@@ -431,9 +711,10 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
   const activePreset = EMAIL_PROVIDER_PRESETS[smtpProvider];
   const webmailLinks = useMemo(() => {
-    if (!activeBroker?.privacyEmail) return null;
-    return buildWebmailComposeUrls(activeBroker.privacyEmail, customSubject, customBody);
-  }, [activeBroker, customSubject, customBody]);
+    const targetEmail = activeContact?.effectivePrimaryEmail || activeBroker?.privacyEmail;
+    if (!targetEmail) return null;
+    return buildWebmailComposeUrls(targetEmail, customSubject, customBody);
+  }, [activeContact, activeBroker, customSubject, customBody]);
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
@@ -459,7 +740,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
             <button
               onClick={onOpenPowerOfAttorney}
               className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
@@ -467,6 +748,17 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               <FileText className="w-4 h-4 text-emerald-400" />
               <span>Power of Attorney</span>
             </button>
+
+            {onOpenNukeAll && (
+              <button
+                type="button"
+                onClick={onOpenNukeAll}
+                className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-red-600/25 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+              >
+                <Flame className="w-4 h-4" />
+                <span>NUKE ALL</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -483,7 +775,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                Connect Any Email (Gmail, Outlook, Yahoo, iCloud)
+                App Password / SMTP (Gmail, Outlook, Yahoo, iCloud)
               </button>
               <button
                 type="button"
@@ -494,7 +786,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                Google OAuth Popup
+                Google OAuth (HTTPS · Gmail API)
               </button>
               <button
                 type="button"
@@ -505,7 +797,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                1-Click Webmail Compose
+                Instant Webmail Login (No Password)
               </button>
             </div>
 
@@ -526,9 +818,40 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             )}
           </div>
 
-          {/* Mode 1: Universal Direct SMTP */}
+          {/* Mode 1: Universal Direct SMTP / App Password */}
           {connectionMode === 'smtp' && (
             <div className="space-y-4">
+              {backendAvailable === false && !smtpConnection?.verified && (
+                <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200">
+                  <div className="space-y-0.5">
+                    <span className="font-semibold text-amber-300 block">
+                      Static Deployment Detected (No Server SMTP Socket)
+                    </span>
+                    <span className="text-slate-300">
+                      Browsers on static hosts (such as GitHub Pages) cannot open raw TCP ports
+                      465/587. Use <strong>Google OAuth (HTTPS)</strong> for automated Gmail API
+                      sending or <strong>Instant Webmail Login</strong> to connect immediately.
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setEmailConnectionMode('oauth')}
+                      className="px-3 py-1.5 rounded-lg bg-white text-slate-900 font-bold cursor-pointer whitespace-nowrap"
+                    >
+                      Google OAuth (HTTPS)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEmailConnectionMode('webmail')}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                    >
+                      Instant Webmail Login
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {smtpConnection?.verified ? (
                 <div className="space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3.5 px-4 bg-slate-950 border border-emerald-500/30 rounded-xl">
@@ -567,51 +890,6 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       </button>
                     </div>
                   </div>
-
-                  {confirmSelfTest && (
-                    <div className="p-3.5 bg-slate-950 border border-emerald-500/40 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                      <span className="text-slate-200">
-                        Send a real verification test email to your own inbox (<strong className="font-mono text-emerald-400">{smtpConnection.userEmail}</strong>) now?
-                      </span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => setConfirmSelfTest(false)}
-                          disabled={isSendingSelfTest}
-                          className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleConfirmSendSelfTest}
-                          disabled={isSendingSelfTest}
-                          className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                        >
-                          {isSendingSelfTest ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Send className="w-3.5 h-3.5" />
-                          )}
-                          <span>{isSendingSelfTest ? 'Sending...' : 'Confirm & Send Test'}</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {selfTestReceipt && (
-                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span className="font-mono">{selfTestReceipt}</span>
-                    </div>
-                  )}
-
-                  {selfTestError && (
-                    <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-                      <span>{selfTestError}</span>
-                    </div>
-                  )}
                 </div>
               ) : (
                 <form onSubmit={handleVerifySmtp} className="space-y-4">
@@ -669,15 +947,33 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                           </a>
                         )}
                       </div>
-                      <input
-                        type="password"
-                        required
-                        autoComplete="off"
-                        value={smtpAppPassword}
-                        onChange={(e) => setSmtpAppPassword(e.target.value)}
-                        placeholder="xxxx xxxx xxxx xxxx"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-mono focus:outline-none focus:border-emerald-500/60"
-                      />
+                      <div className="relative">
+                        <input
+                          type={showSmtpPassword ? 'text' : 'password'}
+                          required
+                          autoComplete="off"
+                          value={smtpAppPassword}
+                          onChange={(e) => setSmtpAppPassword(e.target.value)}
+                          placeholder={
+                            smtpProvider === 'icloud'
+                              ? 'xxxx-xxxx-xxxx-xxxx'
+                              : 'xxxx xxxx xxxx xxxx'
+                          }
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-3.5 pr-9 py-2.5 text-xs text-white placeholder-slate-500 font-mono focus:outline-none focus:border-emerald-500/60"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowSmtpPassword((v) => !v)}
+                          aria-label={showSmtpPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                        >
+                          {showSmtpPassword ? (
+                            <EyeOff className="w-3.5 h-3.5" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     <div className="md:col-span-2">
@@ -705,7 +1001,12 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                       <div className="space-y-1.5">
                         <label className="block text-xs font-semibold text-slate-300">
-                          Outbound SMTP Host
+                          Outbound SMTP Host{' '}
+                          {customProviderHint && (
+                            <span className="text-emerald-400 font-normal">
+                              ({customProviderHint})
+                            </span>
+                          )}
                         </label>
                         <input
                           type="text"
@@ -761,7 +1062,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
                     {smtpProvider !== 'custom' && (
                       <span className="text-xs font-mono text-slate-500 tabular-nums">
-                        Server: {activePreset.host}:{activePreset.port}
+                        Auto-Failover: {activePreset.host} (465 SSL / 587 STARTTLS)
                       </span>
                     )}
                   </div>
@@ -771,78 +1072,317 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               )}
 
               {smtpError && (
-                <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
-                  <span>{smtpError}</span>
+                <div className="p-3.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-xs text-rose-200 space-y-2.5">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                    <span>{smtpError}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 pl-6">
+                    {smtpSuggestOAuth && (
+                      <button
+                        type="button"
+                        onClick={() => setEmailConnectionMode('oauth')}
+                        className="px-3 py-1.5 rounded-lg bg-white text-slate-950 font-bold hover:bg-slate-100 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Switch to Google OAuth (HTTPS)
+                      </button>
+                    )}
+                    {activePreset.appPasswordUrl && (
+                      <a
+                        href={activePreset.appPasswordUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+                      >
+                        <span>Generate {activePreset.shortLabel} App Password</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                    {(smtpSuggestWebmail || smtpEmail.includes('@')) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (smtpEmail.includes('@')) {
+                            handleConnectWebmailSender(undefined, smtpEmail);
+                          } else {
+                            setEmailConnectionMode('webmail');
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        {smtpEmail.includes('@')
+                          ? `Sign In Instantly via Webmail (${smtpEmail.trim()})`
+                          : 'Switch to Instant Webmail Login'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* Mode 2: Google Identity Services OAuth Popup */}
+          {/* Mode 2: Google Identity Services OAuth 2.0 (HTTPS Port 443 · Works on Static & Cloud Hosts) */}
           {connectionMode === 'oauth' && (
-            <div className="space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3 px-4 bg-slate-950 border border-slate-800 rounded-xl">
-                <div className="space-y-1">
-                  <div className="text-xs font-semibold text-white">
-                    Google Identity Services OAuth 2.0
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    {oauthConfigured
-                      ? 'Authorize with Google in a popup to send opt-out demands and scan your Gmail inbox for broker verification links.'
-                      : 'Optional Google OAuth Client ID is not configured in this environment. Connect your Gmail immediately in the "Connect Any Email" tab using a 16-character Google App Password.'}
-                  </p>
-                </div>
-
-                {oauthUser ? (
-                  <div className="flex items-center gap-3 shrink-0">
-                    <div className="text-right">
-                      <div className="text-xs font-semibold text-emerald-400">
-                        {oauthUser.email}
+            <div className="space-y-4">
+              {oauthUser && accessToken && !oauthTokenExpired ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3.5 px-4 bg-slate-950 border border-emerald-500/30 rounded-xl">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-white truncate">
+                        Connected as {oauthUser.email}
                       </div>
-                      <div className="text-[11px] text-slate-500">Gmail API Authorized</div>
+                      <div className="text-xs text-slate-400 font-mono">
+                        Gmail REST API Authorized (HTTPS Port 443) · Send &amp; Inbox Reply Scanner Active
+                      </div>
                     </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelfTestError(null);
+                        setSelfTestReceipt(null);
+                        setConfirmSelfTest(true);
+                      }}
+                      className="px-3.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-semibold text-emerald-300 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      Send Test Email to Myself
+                    </button>
                     <button
                       type="button"
                       onClick={handleGoogleOAuthSignOut}
-                      className="px-3 py-1.5 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                      className="px-3.5 py-1.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
                     >
-                      Disconnect
+                      Disconnect Google
                     </button>
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleGoogleOAuthSignIn}
-                    disabled={isAuthenticatingOAuth}
-                    className="px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs flex items-center gap-2.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0"
-                  >
-                    {isAuthenticatingOAuth ? (
-                      <RefreshCw className="w-4 h-4 animate-spin text-slate-900" />
-                    ) : (
-                      <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          fill="#4285F4"
-                          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                </div>
+              ) : oauthUser && oauthTokenExpired ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3.5 px-4 bg-slate-950 border border-amber-500/30 rounded-xl">
+                  <div className="space-y-0.5">
+                    <div className="text-xs font-semibold text-amber-300">
+                      Google Session Expired for {oauthUser.email}
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Google OAuth tokens expire hourly for security. Click Reconnect to refresh your
+                      Gmail session in one click.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleGoogleOAuthSignIn(true)}
+                      disabled={isAuthenticatingOAuth}
+                      className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs cursor-pointer whitespace-nowrap"
+                    >
+                      {isAuthenticatingOAuth ? 'Reconnecting...' : 'Reconnect Google'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGoogleOAuthSignOut}
+                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 cursor-pointer whitespace-nowrap"
+                    >
+                      Sign Out
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3.5 px-4 bg-slate-950 border border-slate-800 rounded-xl">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold text-white">
+                          Google Identity Services OAuth 2.0 (Gmail API over HTTPS)
+                        </span>
+                        <span className="text-[11px] font-mono text-emerald-400">
+                          {oauthConfigured
+                            ? `Ready (${oauthClientSource} Client ID)`
+                            : 'Client ID Setup Available Below'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400">
+                        Works on both Cloud Run and static GitHub Pages without SMTP ports. Authorize
+                        Gmail to send statutory demands and scan incoming broker replies.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setShowOAuthConfigDrawer((v) => !v)}
+                        className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <Settings2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>{oauthConfigured ? 'OAuth Client ID' : 'Configure Client ID'}</span>
+                      </button>
+
+                      {oauthConfigured && (
+                        <button
+                          type="button"
+                          onClick={() => void handleGoogleOAuthSignIn(false)}
+                          disabled={isAuthenticatingOAuth}
+                          className="px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-semibold text-xs flex items-center gap-2.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {isAuthenticatingOAuth ? (
+                            <RefreshCw className="w-4 h-4 animate-spin text-slate-900" />
+                          ) : (
+                            <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+                              <path
+                                fill="#4285F4"
+                                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                              />
+                              <path
+                                fill="#34A853"
+                                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                              />
+                              <path
+                                fill="#FBBC05"
+                                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                              />
+                              <path
+                                fill="#EA4335"
+                                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                              />
+                            </svg>
+                          )}
+                          <span>Sign in with Google</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Inline Google OAuth Client ID Setup Panel */}
+                  {(!oauthConfigured || showOAuthConfigDrawer) && (
+                    <form
+                      onSubmit={handleSaveOAuthClientId}
+                      className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold text-white">
+                          Connect Your Own Google OAuth 2.0 Web Client ID (Zero Backend Needed)
+                        </span>
+                        <a
+                          href="https://console.cloud.google.com/apis/credentials"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <span>Open Google Cloud Credentials</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-slate-900 border border-slate-800 rounded-lg">
+                        <div className="text-slate-300">
+                          Authorized JavaScript Origin to add in Google Cloud:{' '}
+                          <code className="text-emerald-400 font-mono">{currentOrigin}</code>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleCopyOrigin}
+                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+                        >
+                          {originCopied ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-400" />
+                              <span className="text-emerald-400">Copied Origin</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span>Copy Origin</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          required
+                          value={oauthClientIdDraft}
+                          onChange={(e) => setOauthClientIdDraft(e.target.value)}
+                          placeholder="1234567890-abcdefg.apps.googleusercontent.com"
+                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
                         />
-                        <path
-                          fill="#34A853"
-                          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                        <button
+                          type="submit"
+                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          Save Client ID
+                        </button>
+                        {customOAuthClientId && (
+                          <button
+                            type="button"
+                            onClick={() => void handleClearOAuthClientId()}
+                            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold cursor-pointer whitespace-nowrap"
+                          >
+                            Reset
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  )}
+
+                  {/* Direct Gmail OAuth Token Fallback for Popup-Restricted Sandboxes */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setShowTokenFallback((v) => !v)}
+                      className="text-slate-400 hover:text-emerald-400 inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      <span>
+                        {showTokenFallback
+                          ? 'Hide Direct Gmail OAuth Token Login'
+                          : 'Popup blocked by iframe/browser? Sign in with a Gmail OAuth Access Token'}
+                      </span>
+                    </button>
+                  </div>
+
+                  {showTokenFallback && (
+                    <form
+                      onSubmit={handleManualTokenSignIn}
+                      className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5 text-xs"
+                    >
+                      <p className="text-slate-400">
+                        Paste a short-lived Google OAuth 2.0 Bearer Access Token authorized for{' '}
+                        <code className="text-emerald-400 font-mono">
+                          https://www.googleapis.com/auth/gmail.send
+                        </code>{' '}
+                        (for example from Google OAuth Playground). synOUT verifies it directly
+                        against <code className="font-mono text-slate-300">gmail.googleapis.com</code>.
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="password"
+                          required
+                          autoComplete="off"
+                          value={manualAccessTokenDraft}
+                          onChange={(e) => setManualAccessTokenDraft(e.target.value)}
+                          placeholder="ya29.a0..."
+                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
                         />
-                        <path
-                          fill="#FBBC05"
-                          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                        />
-                        <path
-                          fill="#EA4335"
-                          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                        />
-                      </svg>
-                    )}
-                    <span>Sign in with Google</span>
-                  </button>
-                )}
-              </div>
+                        <button
+                          type="submit"
+                          disabled={isAuthenticatingOAuth}
+                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {isAuthenticatingOAuth ? 'Verifying Token...' : 'Verify & Connect Gmail'}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
+
+              {oauthConfigFeedback && (
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                  <span>{oauthConfigFeedback}</span>
+                </div>
+              )}
 
               {oauthError && (
                 <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex items-center gap-2">
@@ -853,12 +1393,151 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             </div>
           )}
 
-          {/* Mode 3: Zero-Auth 1-Click Webmail Launchers */}
+          {/* Mode 3: Instant Webmail / Mail Client Sender Login (Zero Password, Zero Server Required) */}
           {connectionMode === 'webmail' && (
-            <div className="py-3 px-4 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300">
-              Launch pre-filled statutory deletion notices directly inside your signed-in Gmail,
-              Outlook.com, Yahoo Mail, or desktop mail client without entering any password or
-              OAuth token. Select a broker below and click your preferred mail launcher.
+            <div className="space-y-3">
+              {isWebmailConnected && webmailSender ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3.5 px-4 bg-slate-950 border border-sky-500/35 rounded-xl">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CheckCircle2 className="w-5 h-5 text-sky-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-white truncate">
+                        Signed in as {webmailSender.userEmail}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        Instant Webmail Sender Mode · Launches pre-addressed statutory notices in{' '}
+                        <strong className="text-sky-300 uppercase">
+                          {webmailSender.preferredLauncher}
+                        </strong>{' '}
+                        (works on static GitHub Pages &amp; all browsers)
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {onOpenNukeAll && (
+                      <button
+                        type="button"
+                        onClick={onOpenNukeAll}
+                        className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <Flame className="w-3.5 h-3.5" />
+                        <span>Launch Mass BCC Batches</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleDisconnectWebmailSender}
+                      className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 cursor-pointer whitespace-nowrap"
+                    >
+                      Sign Out
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <form
+                  onSubmit={(e) => handleConnectWebmailSender(e)}
+                  className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3"
+                >
+                  <p className="text-xs text-slate-300">
+                    Sign in with your sender email address (no password, no 2FA App Password, and no
+                    backend server needed). synOUT embeds your email into every legal notice and
+                    opens pre-addressed single or Mass BCC removal demands directly in your signed-in
+                    webmail or desktop mail client.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                    <div className="md:col-span-6 space-y-1">
+                      <label className="block text-xs font-semibold text-slate-300">
+                        Your Sender Email Address
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        value={webmailEmailInput}
+                        onChange={(e) => {
+                          setWebmailEmailInput(e.target.value);
+                          if (e.target.value.includes('@')) {
+                            setWebmailLauncher(detectWebmailLauncherFromEmail(e.target.value));
+                          }
+                        }}
+                        placeholder="synovamedia@gmail.com"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
+                      />
+                    </div>
+                    <div className="md:col-span-3 space-y-1">
+                      <label className="block text-xs font-semibold text-slate-300">
+                        Preferred Mail Client
+                      </label>
+                      <select
+                        value={webmailLauncher}
+                        onChange={(e) => setWebmailLauncher(e.target.value as WebmailLauncherId)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500/60"
+                      >
+                        <option value="gmail">Gmail Web</option>
+                        <option value="outlook">Outlook.com Web</option>
+                        <option value="yahoo">Yahoo Mail Web</option>
+                        <option value="mailto">Default Desktop/Mobile Mail App</option>
+                      </select>
+                    </div>
+                    <div className="md:col-span-3">
+                      <button
+                        type="submit"
+                        className="w-full px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Mail className="w-3.5 h-3.5" />
+                        <span>Sign In with Email</span>
+                      </button>
+                    </div>
+                  </div>
+                  {webmailError && <p className="text-xs text-rose-400">{webmailError}</p>}
+                </form>
+              )}
+            </div>
+          )}
+
+          {/* Shared Self-Test Verification Confirmation & Receipt Banner (Works for Both SMTP & Google OAuth) */}
+          {isAccountConnectedForDirectSend && confirmSelfTest && activeConnectedEmail && (
+            <div className="p-3.5 bg-slate-950 border border-emerald-500/40 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <span className="text-slate-200">
+                Send a real verification test email to your own inbox (
+                <strong className="font-mono text-emerald-400">{activeConnectedEmail}</strong>) now?
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setConfirmSelfTest(false)}
+                  disabled={isSendingSelfTest}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmSendSelfTest}
+                  disabled={isSendingSelfTest}
+                  className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {isSendingSelfTest ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Send className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isSendingSelfTest ? 'Sending...' : 'Confirm & Send Test'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {selfTestReceipt && (
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="font-mono">{selfTestReceipt}</span>
+            </div>
+          )}
+
+          {selfTestError && (
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{selfTestError}</span>
             </div>
           )}
 
@@ -932,6 +1611,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             {filteredQueue.map(({ broker, result }) => {
               const isSelected = broker.id === selectedBrokerId;
               const isSubmitted = hasVerifiedEmailReceipt(result);
+              const rowContact = resolveBrokerContactProfile(broker, contactOverrides);
               return (
                 <button
                   key={broker.id}
@@ -963,8 +1643,24 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         {isSubmitted ? 'Email Sent' : `${broker.risk} Risk`}
                       </span>
                     </div>
-                    <div className="text-[11px] text-slate-400 font-mono truncate">
-                      {broker.privacyEmail}
+                    <div className="text-[11px] text-slate-400 font-mono truncate flex items-center gap-1.5">
+                      <span className="truncate">{rowContact.effectivePrimaryEmail}</span>
+                      {rowContact.hasCustomOverride && (
+                        <>
+                          <span aria-hidden="true" className="text-slate-600">
+                            ·
+                          </span>
+                          <span className="text-sky-400 font-sans shrink-0">Custom</span>
+                        </>
+                      )}
+                      {rowContact.reroutedFromBounced && (
+                        <>
+                          <span aria-hidden="true" className="text-slate-600">
+                            ·
+                          </span>
+                          <span className="text-amber-400 font-sans shrink-0">Rerouted</span>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -1009,57 +1705,288 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
         {/* Right: Statutory Notice Editor & Dispatch Controls */}
         <div className="lg:col-span-8 space-y-6">
-          {activeBroker ? (
+          {activeBroker && activeContact ? (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 space-y-6">
               {/* Target Broker Summary */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-800">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <span>Recipient Compliance Desk</span>
-                    {activeResult?.optOutConfirmationCode && hasVerifiedEmailReceipt(activeResult) && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="text-emerald-400 font-mono">
-                          Receipt: {activeResult.optOutConfirmationCode}
-                        </span>
-                      </>
-                    )}
+              <div className="space-y-4 pb-6 border-b border-slate-800">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                      <span>Recipient Compliance Desk</span>
+                      <span aria-hidden="true">·</span>
+                      <span
+                        className={
+                          activeContact.requiresPortalWarning
+                            ? 'text-amber-400'
+                            : activeContact.hasCustomOverride
+                            ? 'text-sky-400'
+                            : 'text-emerald-400'
+                        }
+                      >
+                        {activeContact.deliverabilityLabel}
+                      </span>
+                      {activeResult?.optOutConfirmationCode && hasVerifiedEmailReceipt(activeResult) && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-emerald-400 font-mono">
+                            Receipt: {activeResult.optOutConfirmationCode}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h3 className="text-xl font-bold text-white">{activeBroker.name}</h3>
+                      <a
+                        href={`https://${activeBroker.domain}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-slate-400 hover:text-emerald-400 inline-flex items-center gap-1 font-mono"
+                      >
+                        <span>{activeBroker.domain}</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                    <div className="text-xs text-emerald-400 font-mono flex flex-wrap items-center gap-1.5 pt-0.5">
+                      <Mail className="w-3.5 h-3.5 shrink-0" />
+                      <span>To: {activeContact.effectivePrimaryEmail}</span>
+                      {ccBackupDpo && activeContact.recommendedCcEmails.length > 0 && (
+                        <>
+                          <span className="text-slate-600">·</span>
+                          <span className="text-sky-300">
+                            CC: {activeContact.recommendedCcEmails.join(', ')}
+                          </span>
+                        </>
+                      )}
+                      {activeSenderEmail && (
+                        <>
+                          <span className="text-slate-600">·</span>
+                          <span className="text-slate-300">From: {activeSenderEmail}</span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2.5">
-                    <h3 className="text-xl font-bold text-white">{activeBroker.name}</h3>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleCheckActiveRecipientMx}
+                      disabled={isCheckingMx}
+                      className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isCheckingMx ? 'animate-spin' : ''}`} />
+                      <span>{isCheckingMx ? 'Checking MX...' : 'Check MX'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={
+                        isEditingRecipient
+                          ? () => setIsEditingRecipient(false)
+                          : handleOpenRecipientEditor
+                      }
+                      className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 text-sky-400" />
+                      <span>{isEditingRecipient ? 'Close DPO Editor' : 'Edit DPO Email'}</span>
+                    </button>
                     <a
-                      href={`https://${activeBroker.domain}`}
+                      href={activeBroker.optOutUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-xs text-slate-400 hover:text-emerald-400 inline-flex items-center gap-1 font-mono"
+                      className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
                     >
-                      <span>{activeBroker.domain}</span>
-                      <ExternalLink className="w-3 h-3" />
+                      <span>Opt-Out Portal</span>
+                      <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
                     </a>
-                  </div>
-                  <div className="text-xs text-emerald-400 font-mono flex flex-wrap items-center gap-1.5 pt-0.5">
-                    <Mail className="w-3.5 h-3.5" />
-                    <span>To: {activeBroker.privacyEmail}</span>
-                    {activeSenderEmail && (
-                      <>
-                        <span className="text-slate-600">·</span>
-                        <span className="text-slate-300">From: {activeSenderEmail}</span>
-                      </>
-                    )}
+                    <a
+                      href={getBrokerRecordSearchUrl(activeBroker, profile)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-2 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                    >
+                      <Search className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Verify Listing</span>
+                    </a>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  <a
-                    href={getBrokerRecordSearchUrl(activeBroker, profile)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3.5 py-2 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                {/* Portal-Primary Advisory */}
+                {activeContact.requiresPortalWarning && (
+                  <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200">
+                    <div className="space-y-0.5">
+                      <span className="font-semibold text-amber-300 block">
+                        Hybrid Channel Advisory · Web Portal + Statutory Email
+                      </span>
+                      <span className="text-slate-300">
+                        {activeBroker.name} processes instant automated suppressions through its web
+                        portal while accepting statutory CCPA/CPRA legal notices at{' '}
+                        <span className="font-mono text-white">
+                          {activeContact.effectivePrimaryEmail}
+                        </span>
+                        . Submit both for fastest removal and binding legal proof.
+                      </span>
+                    </div>
+                    <a
+                      href={activeBroker.optOutUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap"
+                    >
+                      <span>Open Official Portal</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
+
+                {/* Live DNS MX Deliverability Readout */}
+                {mxCheckState && (
+                  <div
+                    className={`p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      mxCheckState.mxVerified
+                        ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-200'
+                        : 'bg-rose-500/10 border-rose-500/30 text-rose-200'
+                    }`}
                   >
-                    <Search className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Verify Broker Listing</span>
-                  </a>
-                </div>
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2 font-semibold">
+                        <span>
+                          {mxCheckState.mxVerified
+                            ? mxCheckState.usedFallback
+                              ? `Primary Address Rejected · Verified Backup Found (${mxCheckState.recommendedEmail})`
+                              : `DNS Mail Exchange Verified for ${mxCheckState.recommendedEmail || activeContact.effectivePrimaryEmail}`
+                            : 'Recipient Domain Has No Active Mail Exchange (MX) Server'}
+                        </span>
+                        {mxCheckState.mxHosts.length > 0 && (
+                          <>
+                            <span aria-hidden="true" className="text-slate-500">
+                              ·
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-300">
+                              MX: {mxCheckState.mxHosts.slice(0, 2).join(', ')}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      {mxCheckState.reason && (
+                        <p className="text-slate-300">{mxCheckState.reason}</p>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {mxCheckState.usedFallback && mxCheckState.recommendedEmail && (
+                        <button
+                          type="button"
+                          onClick={() => handleSaveRecipientOverride(mxCheckState.recommendedEmail!)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          Use {mxCheckState.recommendedEmail}
+                        </button>
+                      )}
+                      {!mxCheckState.mxVerified && (
+                        <a
+                          href={activeBroker.optOutUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <span>Use Official Opt-Out Portal</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Inline Recipient DPO Override & Verified Alias Switcher */}
+                {isEditingRecipient && (
+                  <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-white">
+                        Override Compliance Recipient Email for {activeBroker.name}
+                      </span>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={handleMarkCurrentRecipientBounced}
+                          className="text-amber-400 hover:text-amber-300 font-medium cursor-pointer whitespace-nowrap"
+                        >
+                          Blacklist Current as Bounced
+                        </button>
+                        {(activeContact.hasCustomOverride ||
+                          activeContact.bouncedEmails.length > 0) && (
+                          <button
+                            type="button"
+                            onClick={handleResetRecipientOverride}
+                            className="text-slate-400 hover:text-white inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Reset to Catalog Default</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="email"
+                        value={recipientDraft}
+                        onChange={(e) => setRecipientDraft(e.target.value)}
+                        placeholder="privacy@brokerdomain.com"
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-emerald-500/60"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveRecipientOverride()}
+                        className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Save Custom DPO
+                      </button>
+                    </div>
+
+                    {recipientOverrideError && (
+                      <p className="text-xs text-rose-400">{recipientOverrideError}</p>
+                    )}
+
+                    {/* Quick-Select Known Compliance & Parent-Entity Desks */}
+                    <div className="space-y-1.5 pt-1">
+                      <span className="text-[11px] text-slate-400 block">
+                        Known Compliance &amp; Parent-Entity DPO Desks (click to apply):
+                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {Array.from(
+                          new Set(
+                            [
+                              activeBroker.privacyEmail,
+                              ...(activeBroker.fallbackEmails || []),
+                            ].filter(Boolean)
+                          )
+                        ).map((candidate) => {
+                          const isCurrent =
+                            candidate.toLowerCase() ===
+                            activeContact.effectivePrimaryEmail.toLowerCase();
+                          const isBounced = activeContact.bouncedEmails.includes(
+                            candidate.toLowerCase()
+                          );
+                          return (
+                            <button
+                              key={candidate}
+                              type="button"
+                              onClick={() => handleSaveRecipientOverride(candidate)}
+                              className={`px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-colors cursor-pointer ${
+                                isCurrent
+                                  ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                                  : isBounced
+                                  ? 'bg-rose-500/10 border-rose-500/30 text-rose-300 line-through'
+                                  : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-600'
+                              }`}
+                            >
+                              {candidate}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Status Feedback */}
@@ -1074,9 +2001,20 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               )}
 
               {sendErrorMsg && (
-                <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2.5">
-                  <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
-                  <span>{sendErrorMsg}</span>
+                <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
+                    <span>{sendErrorMsg}</span>
+                  </div>
+                  <a
+                    href={activeBroker.optOutUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 font-semibold inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap"
+                  >
+                    <span>Open Opt-Out Portal</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
                 </div>
               )}
 
@@ -1128,17 +2066,37 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
               {/* Dispatch Controls */}
               <div className="pt-4 border-t border-slate-800 space-y-4">
-                {isAccountConnectedForDirectSend && smtpConnection?.verified && (
-                  <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={bccSelf}
-                      onChange={(e) => setBccSelf(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-950 text-emerald-500"
-                    />
-                    <span>BCC a copy of sent opt-out emails to {activeSenderEmail}</span>
-                  </label>
-                )}
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                  {activeContact.recommendedCcEmails.length > 0 && (
+                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={ccBackupDpo}
+                        onChange={(e) => setCcBackupDpo(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-950 text-emerald-500"
+                      />
+                      <span>
+                        CC verified backup / parent DPO (
+                        <span className="font-mono text-sky-300">
+                          {activeContact.recommendedCcEmails.join(', ')}
+                        </span>
+                        )
+                      </span>
+                    </label>
+                  )}
+
+                  {isAccountConnectedForDirectSend && smtpConnection?.verified && (
+                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={bccSelf}
+                        onChange={(e) => setBccSelf(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-950 text-emerald-500"
+                      />
+                      <span>BCC a copy to {activeSenderEmail}</span>
+                    </label>
+                  )}
+                </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   {/* Left Secondary Action: Check Gmail Inbox when OAuth connected */}
@@ -1155,7 +2113,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         ) : (
                           <Inbox className="w-3.5 h-3.5 text-sky-400" />
                         )}
-                        <span>Check Gmail for Broker Replies</span>
+                        <span>Check Gmail for Broker Replies &amp; Bounces</span>
                       </button>
                     )}
                   </div>
@@ -1172,7 +2130,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         {isSending ? (
                           <>
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>Sending on Your Behalf...</span>
+                            <span>Verifying MX &amp; Sending...</span>
                           </>
                         ) : (
                           <>
@@ -1345,8 +2303,11 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     : `Confirm Sending ${pendingConfirmation.targets.length} Opt-Out Emails on Your Behalf`}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  synOUT will transmit statutory deletion demands directly from{' '}
-                  <strong className="text-emerald-400 font-mono">{activeSenderEmail}</strong>.
+                  synOUT will verify DNS Mail Exchange (MX) records and transmit statutory deletion
+                  demands directly from{' '}
+                  <strong className="text-emerald-400 font-mono">{activeSenderEmail}</strong>,
+                  automatically failing over to verified backup DPO desks if any primary address
+                  rejects mail.
                 </p>
               </div>
               <button
@@ -1365,13 +2326,20 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 {pendingConfirmation.targets.length}):
               </div>
               <div className="max-h-48 overflow-y-auto bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800/80">
-                {pendingConfirmation.targets.map(({ broker }) => (
+                {pendingConfirmation.targets.map(({ broker, recipientEmail, ccEmails }) => (
                   <div
                     key={broker.id}
-                    className="px-3.5 py-2 flex items-center justify-between gap-3 text-xs"
+                    className="px-3.5 py-2 flex flex-col gap-0.5 text-xs"
                   >
-                    <span className="font-medium text-white truncate">{broker.name}</span>
-                    <span className="text-slate-400 font-mono truncate">{broker.privacyEmail}</span>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium text-white truncate">{broker.name}</span>
+                      <span className="text-emerald-400 font-mono truncate">{recipientEmail}</span>
+                    </div>
+                    {ccEmails.length > 0 && (
+                      <div className="text-[11px] text-slate-400 font-mono truncate">
+                        Backup DPO CC: {ccEmails.join(', ')}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

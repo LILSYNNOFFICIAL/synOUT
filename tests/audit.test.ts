@@ -1261,6 +1261,400 @@ test('24. Cryptographic SHA-256 Chain-of-Custody Manifest & Statutory Civil Pena
   assert(md.includes('$9,500'));
 });
 
+test('25. Broker Contact Mitigation: Custom DPO Overrides, Bounced Failover, Vault Persistence & Verified Real Expansion Domains', async () => {
+  const {
+    resolveBrokerContactProfile,
+    setBrokerCustomEmail,
+    markBrokerEmailBounced,
+    clearBrokerContactOverrides,
+    getBrokerContactOverrides,
+  } = await import('../src/utils/brokerContactResolver');
+  const { findBrokerById, buildStatutoryNoticeForBroker } = await import(
+    '../src/services/emailConnectionStore'
+  );
+  const { encryptWorkspaceBundle, decryptWorkspaceBundle } = await import(
+    '../src/utils/workspaceVault'
+  );
 
+  clearBrokerContactOverrides();
 
+  try {
+    const intelius = findBrokerById('intelius')!;
+    assert(intelius, 'Intelius must exist in broker catalog');
+
+    // 1. Default resolution includes parent-entity fallback DPOs (PeopleConnect)
+    const initialContact = resolveBrokerContactProfile(intelius);
+    assert(
+      initialContact.allValidCandidates.includes('privacy@peopleconnect.us'),
+      'PeopleConnect subsidiary brokers must expose privacy@peopleconnect.us in valid DPO candidates'
+    );
+
+    // 2. Marking primary email as bounced automatically promotes the verified fallback DPO
+    const defaultPrimary = initialContact.effectivePrimaryEmail;
+    markBrokerEmailBounced('intelius', defaultPrimary);
+    const reroutedContact = resolveBrokerContactProfile(intelius);
+    assert.strictEqual(reroutedContact.reroutedFromBounced, true);
+    assert.notStrictEqual(reroutedContact.effectivePrimaryEmail, defaultPrimary);
+
+    // 3. Explicit custom DPO override takes top priority and propagates into statutory notices
+    setBrokerCustomEmail('intelius', 'dpo-custom@peopleconnect.us');
+    const customContact = resolveBrokerContactProfile(intelius);
+    assert.strictEqual(customContact.hasCustomOverride, true);
+    assert.strictEqual(customContact.effectivePrimaryEmail, 'dpo-custom@peopleconnect.us');
+
+    const profile: UserProfile = {
+      firstName: 'Jane',
+      lastName: 'Doe',
+      currentCity: 'Sacramento',
+      currentState: 'CA',
+      birthYear: '1988',
+      phoneNumbers: ['(916) 555-0144'],
+      emails: ['synovamedia@gmail.com'],
+      relatives: [],
+      previousLocations: [],
+    };
+    const notice = buildStatutoryNoticeForBroker(intelius, profile, 'synovamedia@gmail.com');
+    assert(
+      notice.body.includes('dpo-custom@peopleconnect.us'),
+      'Statutory notice must address the active custom DPO override'
+    );
+
+    // 4. Encrypted Workspace Vault preserves brokerContactOverrides
+    const encrypted = await encryptWorkspaceBundle(
+      {
+        schema: 'synOUT-workspace-vault-v1',
+        exportedAtIso: new Date().toISOString(),
+        profile,
+        scanResults: [],
+        deindexQueue: [],
+        bureauProgress: {},
+        scanSnapshots: [],
+        brokerContactOverrides: getBrokerContactOverrides(),
+      },
+      'vault-contact-passphrase'
+    );
+    const restored = await decryptWorkspaceBundle(encrypted, 'vault-contact-passphrase');
+    assert.strictEqual(
+      restored.brokerContactOverrides?.intelius?.customEmail,
+      'dpo-custom@peopleconnect.us'
+    );
+
+    // 5. Dynamic expansion pool uses real MX-capable domains (zero dead truepeoplesearch.net or omnidataindex.org)
+    triggerAutonomousRegistryExpansion();
+    triggerAutonomousRegistryExpansion();
+    const fullPool = getExhaustiveBrokerRegistry();
+    for (const broker of fullPool) {
+      assert(
+        !broker.domain.includes('truepeoplesearch.net') &&
+          !broker.domain.endsWith('index.org') &&
+          !isSyntheticDomain(broker.domain),
+        `Registry broker ${broker.id} (${broker.domain}) must not use dead or synthetic domains`
+      );
+    }
+  } finally {
+    clearBrokerContactOverrides();
+  }
+});
+
+test('26. Server-Side DNS MX / RFC 7505 Null MX Pre-Flight Failover & Mailer-Daemon 550 Bounce Triage', async () => {
+  const {
+    verifyRecipientCandidatesDns,
+    isRecipientRejectionSmtpError,
+  } = await import('../src/server/dnsMxValidator');
+  const { analyzeBrokerReplyEmail } = await import('../src/utils/replyTriageEngine');
+  const { findBrokerById } = await import('../src/services/emailConnectionStore');
+
+  const mockDnsAdapter = {
+    async resolveMx(hostname: string) {
+      if (hostname === 'dead-broker-domain.com') {
+        const err = new Error('queryMx ENOTFOUND dead-broker-domain.com') as NodeJS.ErrnoException;
+        err.code = 'ENOTFOUND';
+        throw err;
+      }
+      if (hostname === 'null-mx-broker.com') {
+        // RFC 7505 Null MX explicitly rejects all inbound mail
+        return [{ exchange: '.', priority: 0 }];
+      }
+      if (hostname === 'peopleconnect.us') {
+        return [{ exchange: 'mx1.peopleconnect.us', priority: 10 }];
+      }
+      return [];
+    },
+    async resolve4() {
+      const err = new Error('ENOTFOUND') as NodeJS.ErrnoException;
+      err.code = 'ENOTFOUND';
+      throw err;
+    },
+  };
+
+  // 1. Dead primary NXDOMAIN automatically fails over to verified parent DPO
+  const failoverRes = await verifyRecipientCandidatesDns(
+    'privacy@dead-broker-domain.com',
+    ['privacy@null-mx-broker.com', 'privacy@peopleconnect.us'],
+    mockDnsAdapter
+  );
+  assert.strictEqual(failoverRes.valid, true);
+  assert.strictEqual(failoverRes.mxVerified, true);
+  assert.strictEqual(failoverRes.usedFallback, true);
+  assert.strictEqual(failoverRes.recommendedEmail, 'privacy@peopleconnect.us');
+
+  // 2. RFC 7505 Null MX with zero valid fallbacks blocks send cleanly before SMTP bounce
+  const blockedRes = await verifyRecipientCandidatesDns(
+    'privacy@null-mx-broker.com',
+    ['optout@dead-broker-domain.com'],
+    mockDnsAdapter
+  );
+  assert.strictEqual(blockedRes.valid, false);
+  assert.strictEqual(blockedRes.mxVerified, false);
+  assert.strictEqual(blockedRes.recommendedEmail, null);
+
+  // 3. SMTP 550 / 5.1.1 recipient rejection classifier
+  assert.strictEqual(
+    isRecipientRejectionSmtpError(new Error('550 5.1.1 <optout@broker.com>: Recipient address rejected: User unknown')),
+    true
+  );
+  assert.strictEqual(
+    isRecipientRejectionSmtpError(new Error('Connection timeout')),
+    false
+  );
+
+  // 4. Mailer-Daemon NDR bounce triage extracts bounced address & recommends verified fallback DPO
+  const fastPeople = findBrokerById('fastpeoplesearch')!;
+  const ndrRaw = `From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>
+Subject: Delivery Status Notification (Failure)
+
+Address not found
+Your message wasn't delivered to privacy@fastpeoplesearch.com because the address couldn't be found, or is unable to receive mail.
+550 5.1.1 The email account that you tried to reach does not exist.
+Final-Recipient: rfc822; privacy@fastpeoplesearch.com`;
+
+  const bounceAnalysis = analyzeBrokerReplyEmail(ndrRaw, fastPeople);
+  assert.strictEqual(bounceAnalysis.category, 'DELIVERY_BOUNCE_NDR');
+  assert(bounceAnalysis.bouncedAddresses.includes('privacy@fastpeoplesearch.com'));
+  assert(
+    bounceAnalysis.recommendedFallbackEmail &&
+      bounceAnalysis.recommendedFallbackEmail !== 'privacy@fastpeoplesearch.com',
+    'Must recommend a non-bounced fallback compliance email when primary bounces'
+  );
+});
+
+test('27. Red NUKE ALL Mass Removal Engine, Multi-Channel Target Matrix & Mass BCC Webmail Batches', async () => {
+  const {
+    buildNukeAllTargetMatrix,
+    buildMassBccWebmailBatches,
+  } = await import('../src/utils/nukeAllEngine');
+
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: ['Austin, TX'],
+  };
+
+  const scanResults = runBrokerScan(profile);
+  const deindexQueue = [
+    {
+      id: 'deindex-spokeo-1',
+      url: 'https://www.spokeo.com/Jane-Doe/California/p12345',
+      brokerId: 'spokeo',
+      brokerName: 'Spokeo',
+      engine: 'google' as const,
+      status: 'detected' as const,
+      createdAtIso: new Date().toISOString(),
+      updatedAtIso: new Date().toISOString(),
+    },
+  ];
+
+  const targets = buildNukeAllTargetMatrix({
+    profile,
+    senderEmail: 'synovamedia@gmail.com',
+    scanResults,
+    bureauProgress: {},
+    deindexQueue,
+    includeExposedBrokers: true,
+    includeFullBrokerCatalog: true,
+    includeSpecialtyBureaus: true,
+    includeWebmasterDeindex: true,
+    includeAlreadyDispatched: false,
+  });
+
+  assert(targets.length >= 25, 'NUKE ALL matrix must aggregate exposed brokers, website catalog, bureaus, and deindex URLs');
+  assert(targets.some((t) => t.kind === 'exposed_broker'), 'Must include exposed scan brokers');
+  assert(targets.some((t) => t.kind === 'catalog_broker'), 'Must include remaining catalog websites');
+  assert(targets.some((t) => t.kind === 'specialty_bureau'), 'Must include commercial specialty bureaus');
+  assert(targets.some((t) => t.kind === 'webmaster_deindex'), 'Must include cached website de-index URLs');
+  assert(
+    targets.every((t) => !t.recipientEmail.endsWith('.gov')),
+    'Must never mass-blast .gov regulatory agency addresses during commercial broker nuke'
+  );
+
+  const bccBatches = buildMassBccWebmailBatches(targets, profile, 'synovamedia@gmail.com', 15);
+  assert(bccBatches.length >= 2, 'Should split large recipient pools into URL-safe BCC batches');
+  assert(bccBatches[0].gmailUrl.includes('mail.google.com/mail/?view=cm'));
+  assert(bccBatches[0].gmailUrl.includes('&bcc='));
+  assert(bccBatches[0].outlookUrl.includes('outlook.live.com'));
+
+  // Verify red NUKE ALL buttons and NukeAllModal are wired across key UI components
+  const rootDir = process.cwd();
+  for (const relFile of [
+    'src/components/Navbar.tsx',
+    'src/components/HeroSection.tsx',
+    'src/components/ExposureReport.tsx',
+    'src/components/BrokerDirectory.tsx',
+    'src/components/RemovalTracker.tsx',
+    'src/components/GmailDispatchCenter.tsx',
+    'src/components/NukeAllModal.tsx',
+  ]) {
+    const src = fs.readFileSync(path.join(rootDir, relFile), 'utf8');
+    assert(
+      src.includes('NUKE ALL') && src.includes('bg-red-600'),
+      `${relFile} must render a prominent red NUKE ALL action`
+    );
+  }
+});
+
+test('28. Email Login System: Multi-Port SMTP Failover, App Password Normalization, OAuth Client Validation & Instant Webmail Login', async () => {
+  const {
+    normalizeAppPassword,
+    inferCustomSmtpDefaults,
+    resolveSmtpFailoverCandidates,
+    classifySmtpAuthError,
+    detectWebmailLauncherFromEmail,
+  } = await import('../src/utils/emailProviderConfig');
+  const { isValidGoogleOAuthClientId } = await import('../src/services/googleAuth');
+  const {
+    connectWebmailSenderAccount,
+    disconnectWebmailSenderAccount,
+    purgeAllEmailConnections,
+    getEmailConnectionState,
+    resolveActiveConnectedEmailFromState,
+    buildStatutoryNoticeForBroker,
+  } = await import('../src/services/emailConnectionStore');
+
+  // 1. Provider-aware App Password normalization
+  assert.strictEqual(
+    normalizeAppPassword('gmail', ' abcd efgh-ijkl mnop '),
+    'abcdefghijklmnop',
+    'Gmail App Password must strip spaces and hyphens'
+  );
+  assert.strictEqual(
+    normalizeAppPassword('icloud', ' abcd-efgh-ijkl-mnop '),
+    'abcd-efgh-ijkl-mnop',
+    'Apple iCloud App-Specific Password must preserve hyphens while trimming whitespace'
+  );
+  assert.strictEqual(
+    normalizeAppPassword('outlook', 'wxyz 1234 abcd 5678'),
+    'wxyz1234abcd5678',
+    'Outlook 4x4 grouped App Password must strip block spaces'
+  );
+
+  // 2. Custom domain SMTP auto-detection (Zoho, Fastmail, AOL)
+  const zohoDefaults = inferCustomSmtpDefaults('privacy@zoho.com');
+  assert(zohoDefaults && zohoDefaults.host === 'smtp.zoho.com' && zohoDefaults.port === 465);
+  const fastmailDefaults = inferCustomSmtpDefaults('ops@fastmail.com');
+  assert(fastmailDefaults && fastmailDefaults.host === 'smtp.fastmail.com');
+  const aolDefaults = inferCustomSmtpDefaults('member@aol.com');
+  assert(aolDefaults && aolDefaults.host === 'smtp.aol.com');
+
+  // 3. Multi-port SMTP failover candidates (465 <-> 587 + Outlook secondary relay)
+  const gmailCandidates = resolveSmtpFailoverCandidates({ provider: 'gmail' });
+  assert.strictEqual(gmailCandidates.length, 2);
+  assert.strictEqual(gmailCandidates[0].port, 465);
+  assert.strictEqual(gmailCandidates[1].port, 587);
+
+  const outlookCandidates = resolveSmtpFailoverCandidates({ provider: 'outlook' });
+  assert(outlookCandidates.length >= 3);
+  assert(outlookCandidates.some((c) => c.host === 'smtp-mail.outlook.com' && c.port === 587));
+
+  // 4. Structured SMTP error diagnostics
+  const appPassErr = classifySmtpAuthError(
+    new Error('535-5.7.8 Username and Password not accepted'),
+    'gmail'
+  );
+  assert.strictEqual(appPassErr.code, 'APP_PASSWORD_REQUIRED');
+  assert.strictEqual(appPassErr.suggestOAuth, true);
+  assert.strictEqual(appPassErr.suggestWebmail, true);
+
+  const msBasicErr = classifySmtpAuthError(
+    new Error('535 5.7.139 Authentication unsuccessful, basic authentication is disabled'),
+    'outlook'
+  );
+  assert.strictEqual(msBasicErr.code, 'MICROSOFT_BASIC_AUTH_DISABLED');
+
+  const blockedPortErr = classifySmtpAuthError(new Error('connect ETIMEDOUT 142.250.1.108:465'), 'gmail');
+  assert.strictEqual(blockedPortErr.code, 'SMTP_PORT_BLOCKED');
+
+  // 5. Google OAuth 2.0 Web Client ID validator rejects API keys & client secrets
+  assert.strictEqual(
+    isValidGoogleOAuthClientId('123456789012-abc123def456ghi.apps.googleusercontent.com'),
+    true
+  );
+  assert.strictEqual(isValidGoogleOAuthClientId('AIzaShortKeyRejectCheck'), false);
+  assert.strictEqual(isValidGoogleOAuthClientId('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d'), false);
+  assert.strictEqual(isValidGoogleOAuthClientId('invalid-client-id'), false);
+
+  // 6. Instant Webmail Sender Login & active sender propagation
+  assert.strictEqual(detectWebmailLauncherFromEmail('alice@gmail.com'), 'gmail');
+  assert.strictEqual(detectWebmailLauncherFromEmail('bob@outlook.com'), 'outlook');
+  assert.strictEqual(detectWebmailLauncherFromEmail('carol@yahoo.com'), 'yahoo');
+  assert.strictEqual(detectWebmailLauncherFromEmail('dan@proton.me'), 'mailto');
+
+  const webmailConn = connectWebmailSenderAccount({
+    userEmail: 'Alice.Privacy@Gmail.com',
+    senderName: 'Alice Privacy',
+    rememberInBrowser: false,
+  });
+  assert.strictEqual(webmailConn.userEmail, 'alice.privacy@gmail.com');
+  assert.strictEqual(webmailConn.preferredLauncher, 'gmail');
+  assert.strictEqual(
+    resolveActiveConnectedEmailFromState(getEmailConnectionState()),
+    'alice.privacy@gmail.com'
+  );
+
+  const sampleProfile: UserProfile = {
+    firstName: 'Alice',
+    lastName: 'Privacy',
+    currentCity: 'San Jose',
+    currentState: 'CA',
+    birthYear: '1991',
+    phoneNumbers: [],
+    emails: [],
+    relatives: [],
+    previousLocations: [],
+  };
+  const notice = buildStatutoryNoticeForBroker(
+    DATA_BROKERS[0],
+    sampleProfile,
+    resolveActiveConnectedEmailFromState(getEmailConnectionState()) || 'fallback@example.com'
+  );
+  assert(
+    notice.body.includes('alice.privacy@gmail.com'),
+    'Statutory opt-out notice must embed the signed-in Webmail sender address'
+  );
+
+  disconnectWebmailSenderAccount();
+  await purgeAllEmailConnections();
+  assert.strictEqual(getEmailConnectionState().webmailSender, null);
+
+  // 7. Entry point & GitHub Pages build hygiene: canonical /index.html without stale public/index.html overwrite
+  const rootDir = process.cwd();
+  assert(
+    !fs.existsSync(path.join(rootDir, 'public', 'index.html')),
+    'public/index.html must not exist or Vite publicDir copy will overwrite dist/index.html'
+  );
+  assert(
+    !fs.existsSync(path.join(rootDir, 'app.html')),
+    'Duplicate app.html must not exist; index.html is the single canonical entry point'
+  );
+  const rootIndexHtml = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');
+  assert(
+    rootIndexHtml.includes('synOUT') && !rootIndexHtml.includes('<title>Cookie check</title>'),
+    'index.html must serve the canonical synOUT app shell, never the Cookie check placeholder'
+  );
+});
 

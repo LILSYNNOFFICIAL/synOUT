@@ -3,35 +3,45 @@ import { DataBroker, ScanResult } from '../types';
 import { getExhaustiveBrokerRegistry } from '../utils/dynamicBrokerRegistry';
 import { hasVerifiedEmailReceipt } from '../services/emailConnectionStore';
 import {
+  resolveBrokerContactProfile,
+  useBrokerContactOverrides,
+} from '../utils/brokerContactResolver';
+import {
   Search,
   ExternalLink,
   Clock,
   Mail,
   Send,
   CheckCircle2,
+  Flame,
 } from 'lucide-react';
 
 interface BrokerDirectoryProps {
   scanResults?: ScanResult[];
   onSendBrokerOptOut?: (broker: DataBroker) => void;
+  onOpenNukeAll?: () => void;
 }
 
 export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
   scanResults = [],
   onSendBrokerOptOut,
+  onOpenNukeAll,
 }) => {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
   const [risk, setRisk] = useState('all');
+  const overrides = useBrokerContactOverrides();
 
   const registry = getExhaustiveBrokerRegistry();
 
   const filtered = registry.filter((b) => {
     const q = search.toLowerCase();
+    const contact = resolveBrokerContactProfile(b, overrides);
     const matchesSearch =
       b.name.toLowerCase().includes(q) ||
       b.domain.toLowerCase().includes(q) ||
-      (b.privacyEmail && b.privacyEmail.toLowerCase().includes(q)) ||
+      (contact.effectivePrimaryEmail && contact.effectivePrimaryEmail.toLowerCase().includes(q)) ||
+      (b.parentEntity && b.parentEntity.toLowerCase().includes(q)) ||
       b.dataExposedList.some((d) => d.toLowerCase().includes(q));
 
     const matchesCat = category === 'all' || b.category === category;
@@ -42,23 +52,35 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-6">
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
+      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400 tabular-nums">
             <span className="text-emerald-400 font-semibold">Verified Registry</span>
             <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{registry.length} Active Clearinghouses Indexed</span>
+            <span>{registry.length} Active Clearinghouses Indexed</span>
+            <span aria-hidden="true">·</span>
+            <span className="text-slate-500">
+              Showing {filtered.length} of {registry.length}
+            </span>
           </div>
-          <span className="text-xs font-mono text-slate-500 tabular-nums">
-            Showing {filtered.length} of {registry.length}
-          </span>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
+            700+ Data Broker &amp; Clearinghouse Directory
+          </h1>
+          <p className="text-xs text-slate-400 max-w-3xl leading-relaxed">
+            Search our catalog of commercial data brokers, advertising aggregators, and public record indexes. Send a statutory CCPA/CPRA opt-out demand directly from your connected email or open the broker&apos;s official suppression portal.
+          </p>
         </div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
-          700+ Data Broker &amp; Clearinghouse Directory
-        </h1>
-        <p className="text-xs text-slate-400 max-w-3xl leading-relaxed">
-          Search our catalog of commercial data brokers, advertising aggregators, and public record indexes. Send a statutory CCPA/CPRA opt-out demand directly from your connected email or open the broker&apos;s official suppression portal.
-        </p>
+
+        {onOpenNukeAll && (
+          <button
+            type="button"
+            onClick={onOpenNukeAll}
+            className="px-5 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-extrabold inline-flex items-center justify-center gap-2 shadow-lg shadow-red-600/25 transition-colors cursor-pointer shrink-0 whitespace-nowrap tabular-nums"
+          >
+            <Flame className="w-4 h-4" />
+            <span>NUKE ALL ({registry.length}+ Brokers)</span>
+          </button>
+        )}
       </div>
 
       {/* Filter Bar */}
@@ -125,6 +147,7 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
           {filtered.map((broker) => {
             const existingResult = scanResults.find((r) => r.brokerId === broker.id);
             const emailSent = existingResult ? hasVerifiedEmailReceipt(existingResult) : false;
+            const contact = resolveBrokerContactProfile(broker, overrides);
 
             return (
               <div
@@ -152,12 +175,17 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
                     <h3 className="text-base font-bold text-white">{broker.name}</h3>
                     <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 font-mono mt-0.5">
                       <span>{broker.domain}</span>
-                      {broker.privacyEmail && (
+                      {contact.effectivePrimaryEmail && (
                         <>
                           <span aria-hidden="true">·</span>
-                          <span className="text-slate-400 truncate">{broker.privacyEmail}</span>
+                          <span className="text-slate-300 truncate">
+                            {contact.effectivePrimaryEmail}
+                          </span>
                         </>
                       )}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">
+                      {contact.deliverabilityLabel}
                     </div>
                   </div>
 

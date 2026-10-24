@@ -1,10 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { DataBroker, ScanResult, UserProfile } from '../types';
 import {
   useEmailConnection,
   sendEmailViaConnectedAccount,
   buildStatutoryNoticeForBroker,
 } from '../services/emailConnectionStore';
+import {
+  isValidEmailSyntax,
+  markBrokerEmailBounced,
+  resetBrokerContactOverride,
+  resolveBrokerContactProfile,
+  setBrokerCustomEmail,
+  useBrokerContactOverrides,
+} from '../utils/brokerContactResolver';
 import { copyTextToClipboard } from '../utils/exportEngines';
 import {
   X,
@@ -19,6 +27,8 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
+  Edit3,
+  RotateCcw,
 } from 'lucide-react';
 
 interface DiyOptOutAssistantModalProps {
@@ -40,12 +50,21 @@ export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = (
   onOpenConnectEmail,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const overrides = useBrokerContactOverrides();
+  const contact = useMemo(
+    () => resolveBrokerContactProfile(broker, overrides),
+    [broker, overrides]
+  );
+
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [confirmEmailSend, setConfirmEmailSend] = useState(false);
   const [bccSelf, setBccSelf] = useState(true);
+  const [ccBackupDpo, setCcBackupDpo] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentReceipt, setSentReceipt] = useState<string | null>(null);
+  const [isEditingEmail, setIsEditingEmail] = useState(false);
+  const [draftEmail, setDraftEmail] = useState(contact.effectivePrimaryEmail);
 
   const copyToClipboard = (text: string, fieldName: string) => {
     void copyTextToClipboard(text);
@@ -59,8 +78,8 @@ export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = (
   const location = `${profile.currentCity}, ${profile.currentState} ${profile.currentZip || ''}`.trim();
 
   const statutoryDraft = buildStatutoryNoticeForBroker(broker, profile, primaryEmail || undefined);
-  const mailtoUrl = broker.privacyEmail
-    ? `mailto:${broker.privacyEmail}?subject=${encodeURIComponent(
+  const mailtoUrl = contact.effectivePrimaryEmail
+    ? `mailto:${contact.effectivePrimaryEmail}?subject=${encodeURIComponent(
         statutoryDraft.subject
       )}&body=${encodeURIComponent(statutoryDraft.body)}`
     : '';
@@ -83,13 +102,26 @@ I declare under penalty of perjury that I am the individual identified above and
 Signature: ___________________________
 Printed Name: ${fullName}`;
 
+  const handleSaveCustomEmail = () => {
+    const clean = draftEmail.trim().toLowerCase();
+    if (!isValidEmailSyntax(clean)) {
+      setSendError('Enter a valid compliance email address.');
+      return;
+    }
+    setBrokerCustomEmail(broker.id, clean);
+    setIsEditingEmail(false);
+    setSendError(null);
+  };
+
   const handleDirectSend = async () => {
-    if (!broker.privacyEmail) return;
+    if (!contact.effectivePrimaryEmail) return;
     setIsSending(true);
     setSendError(null);
     try {
       const res = await sendEmailViaConnectedAccount({
-        recipientEmail: broker.privacyEmail,
+        recipientEmail: contact.effectivePrimaryEmail,
+        fallbackRecipientEmails: contact.fallbackEmails,
+        ccEmails: ccBackupDpo ? contact.recommendedCcEmails : [],
         subject: statutoryDraft.subject,
         body: statutoryDraft.body,
         senderName: fullName || 'Authorized Consumer',
@@ -98,6 +130,9 @@ Printed Name: ${fullName}`;
         brokerDomain: broker.domain,
         bccSelf,
       });
+      if (res.usedFallback) {
+        markBrokerEmailBounced(broker.id, contact.effectivePrimaryEmail);
+      }
       setSentReceipt(res.messageId);
       setConfirmEmailSend(false);
       onMarkEmailDispatched(broker.id, res.messageId);
@@ -122,6 +157,8 @@ Printed Name: ${fullName}`;
                 <span className="text-emerald-400 font-semibold">{broker.removalMethod}</span>
                 <span aria-hidden="true">·</span>
                 <span>{broker.domain}</span>
+                <span aria-hidden="true">·</span>
+                <span>{contact.deliverabilityLabel}</span>
               </div>
               <h3 className="text-lg font-bold text-white">Opt-Out Assistant: {broker.name}</h3>
             </div>
@@ -150,29 +187,98 @@ Printed Name: ${fullName}`;
           </div>
 
           {/* Direct Connected Email Dispatch for Any Broker With a Privacy Email */}
-          {broker.privacyEmail && (
+          {contact.effectivePrimaryEmail && (
             <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 font-semibold text-emerald-400">
-                  <Mail className="w-4 h-4" />
-                  <span>Direct Compliance Email ({broker.privacyEmail})</span>
+                <div className="flex items-center gap-2 font-semibold text-emerald-400 font-mono">
+                  <Mail className="w-4 h-4 shrink-0" />
+                  <span>To: {contact.effectivePrimaryEmail}</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(broker.privacyEmail, 'pEmail')}
-                  className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg text-xs font-medium inline-flex items-center gap-1 cursor-pointer"
-                >
-                  {copiedField === 'pEmail' ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5" />
-                  )}
-                  <span>Copy DPO Email</span>
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftEmail(contact.effectivePrimaryEmail);
+                      setIsEditingEmail((v) => !v);
+                    }}
+                    className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg text-xs font-medium inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>{isEditingEmail ? 'Close' : 'Edit DPO'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(contact.effectivePrimaryEmail, 'pEmail')}
+                    className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg text-xs font-medium inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    {copiedField === 'pEmail' ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                    <span>Copy DPO Email</span>
+                  </button>
+                </div>
               </div>
 
+              {isEditingEmail && (
+                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 text-xs">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <input
+                      type="email"
+                      value={draftEmail}
+                      onChange={(e) => setDraftEmail(e.target.value)}
+                      placeholder="privacy@broker.com"
+                      className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleSaveCustomEmail}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                      >
+                        Save
+                      </button>
+                      {(contact.hasCustomOverride || contact.bouncedEmails.length > 0) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resetBrokerContactOverride(broker.id);
+                            setIsEditingEmail(false);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Reset</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {contact.allValidCandidates.length > 1 && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <span className="text-slate-400">Known DPO aliases:</span>
+                      {contact.allValidCandidates.map((cand) => (
+                        <button
+                          key={cand}
+                          type="button"
+                          onClick={() => {
+                            setBrokerCustomEmail(broker.id, cand);
+                            setIsEditingEmail(false);
+                          }}
+                          className="px-2 py-0.5 rounded bg-slate-950 hover:bg-slate-800 border border-slate-800 font-mono text-emerald-300 cursor-pointer"
+                        >
+                          {cand}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <p className="text-xs text-slate-400 leading-relaxed">
-                Send a formal statutory CCPA/CPRA deletion demand directly from your connected email address, or open your default mail client.
+                {contact.requiresPortalWarning
+                  ? `${broker.name} primarily processes removals via its official web form below, while sending this statutory CCPA/CPRA notice establishes a timestamped legal audit trail.`
+                  : 'Send a formal statutory CCPA/CPRA deletion demand directly from your connected email address with automatic backup DPO failover.'}
               </p>
 
               {sentReceipt && (
@@ -198,7 +304,7 @@ Printed Name: ${fullName}`;
                     <span className="text-slate-200">
                       Confirm sending statutory demand from{' '}
                       <strong className="text-emerald-400 font-mono">{activeConnectedEmail}</strong> to{' '}
-                      <strong className="font-mono">{broker.privacyEmail}</strong>?
+                      <strong className="font-mono">{contact.effectivePrimaryEmail}</strong>?
                     </span>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
@@ -224,15 +330,28 @@ Printed Name: ${fullName}`;
                       </button>
                     </div>
                   </div>
-                  <label className="flex items-center gap-2 text-slate-300 cursor-pointer pt-2 border-t border-slate-800">
-                    <input
-                      type="checkbox"
-                      checked={bccSelf}
-                      onChange={(e) => setBccSelf(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-0 cursor-pointer"
-                    />
-                    <span>Send a BCC copy to {activeConnectedEmail}</span>
-                  </label>
+                  <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                    {contact.recommendedCcEmails.length > 0 && (
+                      <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={ccBackupDpo}
+                          onChange={(e) => setCcBackupDpo(e.target.checked)}
+                          className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-0 cursor-pointer"
+                        />
+                        <span>Also CC backup DPO ({contact.recommendedCcEmails[0]})</span>
+                      </label>
+                    )}
+                    <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={bccSelf}
+                        onChange={(e) => setBccSelf(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-0 cursor-pointer"
+                      />
+                      <span>Send a BCC copy to {activeConnectedEmail}</span>
+                    </label>
+                  </div>
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -300,7 +419,7 @@ Printed Name: ${fullName}`;
 
           {/* Quick-Copy Pre-fill Fields */}
           <div>
-            <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider mb-3">
+            <div className="text-xs font-semibold text-slate-300 mb-3">
               1-Click Copy Fields (Paste into {broker.name} Web Form):
             </div>
 
@@ -393,7 +512,7 @@ Printed Name: ${fullName}`;
 
           {/* Broker Instructions */}
           <div className="space-y-2">
-            <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+            <div className="text-xs font-semibold text-slate-300">
               Official Web-Form Steps for {broker.domain}:
             </div>
             <ol className="list-decimal list-inside space-y-2 text-xs text-slate-300 bg-slate-950 p-4 rounded-xl border border-slate-800">

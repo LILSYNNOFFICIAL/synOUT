@@ -1,4 +1,5 @@
 import { BrokerReplyCategory, DataBroker, UserProfile } from '../types';
+import { resolveBrokerContactProfile } from './brokerContactResolver';
 
 const TRACKING_QUERY_PARAMS = new Set([
   'utm_source',
@@ -106,6 +107,8 @@ export interface BrokerReplyAnalysis {
   extractedLinks: SanitizedUrlResult[];
   excessiveIdTriggers: string[];
   exemptionTriggers: string[];
+  bouncedAddresses: string[];
+  recommendedFallbackEmail?: string;
   recommendedAction: string;
   hasDomainMismatchWarning: boolean;
 }
@@ -181,6 +184,57 @@ export function analyzeBrokerReplyEmail(
     Boolean(expectedBroker) &&
     extractedLinks.some((l) => l.matchesBrokerDomain === false);
 
+  // Detect Mailer-Daemon / DSN 550 / NXDOMAIN / Undeliverable bounce-backs
+  const isDeliveryBounce =
+    /mailer-daemon|postmaster@|delivery\s+status\s+notification\s*\(failure\)|address\s+not\s+found|message\s+not\s+delivered|wasn['’]?t\s+delivered\s+to|undeliverable:|550[- ]5\.1\.1|550[- ]5\.1\.10|554[- ]5\.7\.1|550\s+(?:no\s+such\s+user|user\s+unknown|mailbox\s+unavailable|requested\s+action\s+not\s+taken)|domain\s+not\s+found|host\s+or\s+domain\s+name\s+not\s+found|\bnxdomain\b/i.test(
+      text
+    );
+
+  const bouncedSet = new Set<string>();
+  if (isDeliveryBounce) {
+    const bounceEmailPatterns = [
+      /(?:final-recipient|original-recipient)\s*:\s*rfc822\s*;\s*([^\s<>;"',]+@[^\s<>;"',]+)/gi,
+      /(?:wasn['’]?t\s+delivered\s+to|delivery\s+to\s+the\s+following\s+recipient\s+failed[:\s]*|could\s+not\s+be\s+delivered\s+to)\s*<?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>?/gi,
+      /<([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})>\s*:\s*(?:host|550|554|user|recipient|address)/gi,
+    ];
+    for (const rx of bounceEmailPatterns) {
+      let m: RegExpExecArray | null;
+      while ((m = rx.exec(text)) !== null) {
+        const addr = m[1].trim().toLowerCase();
+        if (!addr.startsWith('mailer-daemon@') && !addr.startsWith('postmaster@')) {
+          bouncedSet.add(addr);
+        }
+      }
+    }
+
+    // Fallback: extract any address matching expected broker domain or common compliance prefixes
+    if (bouncedSet.size === 0) {
+      const genericEmails = text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [];
+      for (const rawAddr of genericEmails) {
+        const lowerAddr = rawAddr.toLowerCase();
+        if (lowerAddr.startsWith('mailer-daemon@') || lowerAddr.startsWith('postmaster@')) continue;
+        if (
+          (expectedBroker && lowerAddr.endsWith(expectedBroker.domain.toLowerCase())) ||
+          /^(?:privacy|optout|support|removal|legal|compliance|help|consumer)/i.test(lowerAddr)
+        ) {
+          bouncedSet.add(lowerAddr);
+        }
+      }
+    }
+  }
+  const bouncedAddresses = Array.from(bouncedSet);
+
+  let recommendedFallbackEmail: string | undefined;
+  if (expectedBroker) {
+    const contactProfile = resolveBrokerContactProfile(expectedBroker);
+    const nonBouncedCandidate = contactProfile.allValidCandidates.find(
+      (c) => !bouncedSet.has(c.toLowerCase())
+    );
+    if (nonBouncedCandidate) {
+      recommendedFallbackEmail = nonBouncedCandidate;
+    }
+  }
+
   let category: BrokerReplyCategory = 'GENERAL_ACKNOWLEDGMENT';
   let categoryLabel = 'General Intake Acknowledgment';
   let summary =
@@ -188,7 +242,16 @@ export function analyzeBrokerReplyEmail(
   let recommendedAction =
     'Save any extracted ticket ID to your SLA Tracker and verify removal within 45 calendar days.';
 
-  if (excessiveIdTriggers.length > 0) {
+  if (isDeliveryBounce) {
+    category = 'DELIVERY_BOUNCE_NDR';
+    categoryLabel = 'Outbound Email Bounced (Undeliverable Compliance Address)';
+    const bouncedDisplay =
+      bouncedAddresses.length > 0 ? bouncedAddresses.join(', ') : 'the broker recipient mailbox';
+    summary = `Your statutory opt-out email to ${bouncedDisplay} bounced back undelivered. Many data brokers retire generic mailboxes, route privacy compliance through a parent holding company DPO, or enforce CAPTCHA web-portal submissions.`;
+    recommendedAction = recommendedFallbackEmail
+      ? `Click "Blacklist Bounced Address & Route to ${recommendedFallbackEmail}" below to immediately re-dispatch your statutory deletion demand to the verified backup compliance desk, or complete the broker's direct opt-out web portal.`
+      : `Blacklist the bounced address, enter an updated DPO contact, or launch the broker's official web opt-out portal directly below.`;
+  } else if (excessiveIdTriggers.length > 0) {
     category = 'EXCESSIVE_ID_DEMAND';
     categoryLabel = 'Excessive Identity Verification Demand Flagged';
     summary = `Broker is demanding sensitive documentation (${excessiveIdTriggers.join(', ')}). Under Cal. Code Regs. tit. 11 § 7060(c)-(d), data brokers may not demand government photo ID or SSN when directory anchors (name, address, phone, email) already identify the record.`;
@@ -224,6 +287,8 @@ export function analyzeBrokerReplyEmail(
     extractedLinks,
     excessiveIdTriggers,
     exemptionTriggers,
+    bouncedAddresses,
+    recommendedFallbackEmail,
     recommendedAction,
     hasDomainMismatchWarning,
   };
@@ -244,8 +309,12 @@ export function buildIdMinimizationCounterNotice(
     day: 'numeric',
   });
 
+  const targetEmail =
+    resolveBrokerContactProfile(broker).effectivePrimaryEmail ||
+    broker.privacyEmail ||
+    `privacy@${broker.domain}`;
   const body = `DATE: ${dateStr}
-TO: Privacy Officer & Legal Compliance, ${broker.name} (${broker.privacyEmail || `privacy@${broker.domain}`})
+TO: Privacy Officer & Legal Compliance, ${broker.name} (${targetEmail})
 FROM: ${profile.firstName} ${profile.lastName} <${email}>
 RE: FORMAL OBJECTION TO EXCESSIVE IDENTITY VERIFICATION DEMAND${refSuffix}
 
@@ -289,8 +358,12 @@ export function buildExemptionRebuttalNotice(
     day: 'numeric',
   });
 
+  const targetEmail =
+    resolveBrokerContactProfile(broker).effectivePrimaryEmail ||
+    broker.privacyEmail ||
+    `privacy@${broker.domain}`;
   const body = `DATE: ${dateStr}
-TO: Legal & Privacy Compliance Office, ${broker.name} (${broker.privacyEmail || `privacy@${broker.domain}`})
+TO: Legal & Privacy Compliance Office, ${broker.name} (${targetEmail})
 FROM: ${profile.firstName} ${profile.lastName} <${email}>
 RE: STATUTORY REBUTTAL TO EXEMPTION CLAIM & FINAL DEMAND FOR SUPPRESSION${refSuffix}
 

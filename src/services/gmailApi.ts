@@ -29,10 +29,13 @@ export async function sendGmailMessage(
   to: string,
   subject: string,
   body: string,
-  bcc?: string
+  bcc?: string,
+  cc?: string[]
 ): Promise<{ id: string; threadId: string }> {
+  const validCc = (cc || []).map((c) => c.trim()).filter(Boolean);
   const headers = [
     `To: ${to}`,
+    ...(validCc.length > 0 ? [`Cc: ${validCc.join(', ')}`] : []),
     ...(bcc ? [`Bcc: ${bcc}`] : []),
     `Subject: =?UTF-8?B?${utf8ToBase64(subject)}?=`,
     'Content-Type: text/plain; charset="UTF-8"',
@@ -65,8 +68,8 @@ export async function searchBrokerVerificationEmails(
   brokerDomain?: string
 ): Promise<GmailMessageSummary[]> {
   const query = brokerDomain
-    ? `from:${brokerDomain} OR "${brokerDomain}" (confirm OR verify OR opt-out OR removal)`
-    : '(optout OR "opt out" OR removal OR "data deletion" OR verify) (confirm OR verified OR expunged)';
+    ? `(from:${brokerDomain} OR "${brokerDomain}") (confirm OR verify OR opt-out OR removal OR "Address not found" OR "Delivery Status Notification")`
+    : '(optout OR "opt out" OR removal OR "data deletion" OR verify) (confirm OR verified OR expunged OR "Delivery Status Notification")';
 
   const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=${encodeURIComponent(query)}`;
 

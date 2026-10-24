@@ -1,12 +1,17 @@
 import React from 'react';
-import { ArrowRight, Lock, CheckCircle2, Skull } from 'lucide-react';
+import { ArrowRight, Lock, CheckCircle2, Skull, Flame } from 'lucide-react';
 
 interface HeroSectionProps {
   onStartScan: () => void;
   onExploreBrokers: () => void;
+  onNukeAll?: () => void;
 }
 
-export const HeroSection: React.FC<HeroSectionProps> = ({ onStartScan, onExploreBrokers }) => {
+export const HeroSection: React.FC<HeroSectionProps> = ({
+  onStartScan,
+  onExploreBrokers,
+  onNukeAll,
+}) => {
   return (
     <div className="relative py-16 sm:py-24 overflow-hidden">
       {/* Subtle Ambient Surface Glow */}
@@ -52,7 +57,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onStartScan, onExplore
         </div>
 
         {/* CTA Buttons */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-3">
+        <div className="flex flex-col sm:flex-row flex-wrap items-center justify-center gap-4 pt-3">
           <button
             onClick={onStartScan}
             className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm transition-colors shadow-xl shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
@@ -60,6 +65,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({ onStartScan, onExplore
             <span>Start Free Exposure Audit</span>
             <ArrowRight className="w-4 h-4" />
           </button>
+
+          {onNukeAll && (
+            <button
+              type="button"
+              onClick={onNukeAll}
+              className="w-full sm:w-auto px-7 py-4 rounded-2xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 font-extrabold text-sm transition-colors shadow-xl shadow-red-600/25 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+            >
+              <Flame className="w-4 h-4" />
+              <span>NUKE ALL Brokers &amp; Websites</span>
+            </button>
+          )}
 
           <button
             onClick={onExploreBrokers}

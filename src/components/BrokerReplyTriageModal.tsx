@@ -5,8 +5,16 @@ import {
   buildExemptionRebuttalNotice,
   buildIdMinimizationCounterNotice,
 } from '../utils/replyTriageEngine';
+import {
+  isValidEmailSyntax,
+  markBrokerEmailBounced,
+  resolveBrokerContactProfile,
+  setBrokerCustomEmail,
+  useBrokerContactOverrides,
+} from '../utils/brokerContactResolver';
 import { buildWebmailComposeUrls } from '../utils/emailProviderConfig';
 import {
+  buildStatutoryNoticeForBroker,
   findBrokerById,
   sendEmailViaConnectedAccount,
   useEmailConnection,
@@ -53,6 +61,12 @@ const SAMPLE_BROKER_REPLIES: {
   sampleText: (brokerDomain: string, brokerName: string) => string;
 }[] = [
   {
+    id: 'bounce_ndr',
+    label: 'Sample: 550 Mailer-Daemon Bounce',
+    sampleText: (domain) =>
+      `From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>\nSubject: Delivery Status Notification (Failure)\n\nAddress not found\nYour message wasn't delivered to support@${domain} because the address couldn't be found, or is unable to receive mail.\n\nFinal-Recipient: rfc822; support@${domain}\nStatus: 5.1.1\nDiagnostic-Code: smtp; 550 5.1.1 The email account that you tried to reach does not exist.`,
+  },
+  {
     id: 'excessive_id',
     label: 'Sample: Unlawful Gov ID Demand',
     sampleText: (domain, name) =>
@@ -89,6 +103,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
   onClose,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const overrides = useBrokerContactOverrides();
 
   const availableBrokers = useMemo(() => {
     const list: DataBroker[] = [];
@@ -123,11 +138,17 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
     [availableBrokers, selectedBrokerId]
   );
 
+  const contact = useMemo(
+    () => (activeBroker ? resolveBrokerContactProfile(activeBroker, overrides) : null),
+    [activeBroker, overrides]
+  );
+
   const [rawReplyText, setRawReplyText] = useState<string>('');
   const [manualTicketOverride, setManualTicketOverride] = useState<string>('');
-  const [counterMode, setCounterMode] = useState<'id_minimization' | 'exemption_rebuttal'>(
-    'id_minimization'
-  );
+  const [counterMode, setCounterMode] = useState<
+    'id_minimization' | 'exemption_rebuttal' | 'resend_initial_demand'
+  >('id_minimization');
+  const [customRecipientInput, setCustomRecipientInput] = useState<string>('');
   const [subject, setSubject] = useState<string>('');
   const [body, setBody] = useState<string>('');
   const [copiedItem, setCopiedItem] = useState<string | null>(null);
@@ -146,7 +167,9 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
 
   useEffect(() => {
     if (!analysis) return;
-    if (analysis.category === 'EXEMPTION_CLAIM_OR_REFUSAL') {
+    if (analysis.category === 'DELIVERY_BOUNCE_NDR') {
+      setCounterMode('resend_initial_demand');
+    } else if (analysis.category === 'EXEMPTION_CLAIM_OR_REFUSAL') {
       setCounterMode('exemption_rebuttal');
     } else if (analysis.category === 'EXCESSIVE_ID_DEMAND') {
       setCounterMode('id_minimization');
@@ -157,7 +180,9 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
     if (!activeBroker) return;
     const sender = activeConnectedEmail || profile.emails[0] || '';
     const built =
-      counterMode === 'exemption_rebuttal'
+      counterMode === 'resend_initial_demand'
+        ? buildStatutoryNoticeForBroker(activeBroker, profile, sender || undefined)
+        : counterMode === 'exemption_rebuttal'
         ? buildExemptionRebuttalNotice(activeBroker, profile, sender, activeTicketId || undefined)
         : buildIdMinimizationCounterNotice(
             activeBroker,
@@ -169,7 +194,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
     setBody(built.body);
     setSendError(null);
     setSendSuccess(null);
-  }, [activeBroker, profile, activeConnectedEmail, counterMode, activeTicketId]);
+  }, [activeBroker, profile, activeConnectedEmail, counterMode, activeTicketId, contact?.effectivePrimaryEmail]);
 
   const handleCopy = async (key: string, text: string) => {
     await copyTextToClipboard(text);
@@ -177,15 +202,39 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
     setTimeout(() => setCopiedItem(null), 2000);
   };
 
+  const handleBlacklistBouncedAndSwitch = (nextEmail?: string) => {
+    if (!activeBroker || !analysis) return;
+    for (const bounced of analysis.bouncedAddresses) {
+      markBrokerEmailBounced(activeBroker.id, bounced);
+    }
+    const target = (nextEmail || customRecipientInput || analysis.recommendedFallbackEmail || '')
+      .trim()
+      .toLowerCase();
+    if (target && isValidEmailSyntax(target)) {
+      setBrokerCustomEmail(activeBroker.id, target, undefined, 'Remediated after NDR bounce');
+      setCustomRecipientInput('');
+      setTicketSavedBanner(
+        `Blacklisted bounced address and routed ${activeBroker.name} to ${target}.`
+      );
+    } else {
+      setTicketSavedBanner(`Blacklisted bounced address for ${activeBroker.name}.`);
+    }
+  };
+
   const handleSendCounterNotice = async () => {
     if (!activeBroker) return;
-    const recipient = activeBroker.privacyEmail || `privacy@${activeBroker.domain}`;
+    const recipient =
+      contact?.effectivePrimaryEmail ||
+      activeBroker.privacyEmail ||
+      `privacy@${activeBroker.domain}`;
     setIsSending(true);
     setSendError(null);
     setSendSuccess(null);
     try {
       const res = await sendEmailViaConnectedAccount({
         recipientEmail: recipient,
+        fallbackRecipientEmails: contact?.fallbackEmails || [],
+        ccEmails: contact?.recommendedCcEmails || [],
         subject,
         body,
         senderName: `${profile.firstName} ${profile.lastName}`,
@@ -195,9 +244,11 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
         bccSelf: true,
       });
       onRecordCounterNoticeSent(activeBroker.id, res.messageId);
-      setSendSuccess(`Counter-notice transmitted from ${res.sentFrom} · Receipt: ${res.messageId}`);
+      setSendSuccess(
+        `Transmitted from ${res.sentFrom} to ${res.deliveredTo || recipient} · Receipt: ${res.messageId}`
+      );
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Failed to send counter-notice.');
+      setSendError(err instanceof Error ? err.message : 'Failed to send notice.');
     } finally {
       setIsSending(false);
     }
@@ -221,7 +272,10 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
     );
   };
 
-  const recipientEmail = activeBroker?.privacyEmail || `privacy@${activeBroker?.domain || 'broker.com'}`;
+  const recipientEmail =
+    contact?.effectivePrimaryEmail ||
+    activeBroker?.privacyEmail ||
+    `privacy@${activeBroker?.domain || 'broker.com'}`;
   const webmailUrls = buildWebmailComposeUrls(recipientEmail, subject, body);
 
   return (
@@ -236,13 +290,13 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
           <div className="space-y-1">
             <div className="flex items-center gap-2 font-mono text-emerald-400">
               <Inbox className="w-4 h-4" />
-              <span>Inbound Broker Reply Triage · 11 CCR § 7060 Verification Shield</span>
+              <span>Inbound Broker Reply &amp; Bounce Triage · 11 CCR § 7060 Verification Shield</span>
             </div>
             <h2 className="text-xl font-bold text-white">
-              Broker Response Parser, Link Sanitizer &amp; Statutory Rebuttal
+              Broker Response Parser, Bounce Remediator &amp; Statutory Rebuttal
             </h2>
             <p className="text-slate-400">
-              Paste any email reply from a data broker to strip tracking links, extract case tickets, and counter unlawful government-ID or exemption claims.
+              Paste any broker email reply or Mailer-Daemon bounce message to blacklist dead addresses, switch to verified backup DPO contacts, sanitize links, or counter unlawful ID demands.
             </p>
           </div>
           <button
@@ -274,11 +328,19 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 </option>
               ))}
             </select>
+            {contact && (
+              <div className="text-[11px] font-mono text-slate-400 flex flex-wrap items-center gap-1.5 pt-0.5">
+                <span>Active DPO:</span>
+                <span className="text-emerald-400">{contact.effectivePrimaryEmail}</span>
+                <span aria-hidden="true">·</span>
+                <span>{contact.deliverabilityLabel}</span>
+              </div>
+            )}
           </div>
 
           <div className="space-y-1.5">
             <label className="block font-semibold text-slate-300">
-              Load Representative Broker Reply Pattern
+              Load Representative Broker Reply or Bounce Pattern
             </label>
             <div className="flex flex-wrap gap-1.5">
               {SAMPLE_BROKER_REPLIES.map((s) => (
@@ -303,13 +365,13 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
         {/* Raw Email Input */}
         <div className="space-y-1.5">
           <label className="block font-semibold text-slate-300">
-            Paste Inbound Broker Email (Headers + Message Body)
+            Paste Inbound Broker Email or Mailer-Daemon Bounce Notice (Headers + Body)
           </label>
           <textarea
             rows={5}
             value={rawReplyText}
             onChange={(e) => setRawReplyText(e.target.value)}
-            placeholder="Paste the email text received from the data broker's privacy office or automated opt-out system..."
+            placeholder="Paste the email text or 550 bounce notification received from your mail server or the data broker..."
             className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 resize-y"
           />
         </div>
@@ -321,7 +383,8 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
               <div className="flex items-center gap-2">
                 {analysis.category === 'DELETION_CONFIRMED' ? (
                   <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
-                ) : analysis.category === 'EXCESSIVE_ID_DEMAND' ||
+                ) : analysis.category === 'DELIVERY_BOUNCE_NDR' ||
+                  analysis.category === 'EXCESSIVE_ID_DEMAND' ||
                   analysis.category === 'EXEMPTION_CLAIM_OR_REFUSAL' ? (
                   <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0" />
                 ) : (
@@ -330,13 +393,14 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 <span className="text-sm font-bold text-white">{analysis.categoryLabel}</span>
               </div>
               <span
-                className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-bold shrink-0 whitespace-nowrap ${
+                className={`font-mono text-[11px] font-semibold shrink-0 whitespace-nowrap ${
                   analysis.category === 'DELETION_CONFIRMED'
-                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                    : analysis.category === 'EXCESSIVE_ID_DEMAND' ||
+                    ? 'text-emerald-400'
+                    : analysis.category === 'DELIVERY_BOUNCE_NDR' ||
+                      analysis.category === 'EXCESSIVE_ID_DEMAND' ||
                       analysis.category === 'EXEMPTION_CLAIM_OR_REFUSAL'
-                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                    : 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                    ? 'text-rose-400'
+                    : 'text-amber-300'
                 }`}
               >
                 {analysis.category}
@@ -349,6 +413,63 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
               <strong className="text-emerald-400">Recommended Next Step: </strong>
               {analysis.recommendedAction}
             </div>
+
+            {/* Dedicated Bounce / NDR Remediation Workflow */}
+            {analysis.category === 'DELIVERY_BOUNCE_NDR' && activeBroker && (
+              <div className="p-4 bg-slate-900 border border-amber-500/30 rounded-xl space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-bold text-white">
+                    Undeliverable Address Mitigation ({activeBroker.name})
+                  </div>
+                  <a
+                    href={activeBroker.optOutUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <span>Open Official Opt-Out Portal</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+
+                {analysis.bouncedAddresses.length > 0 && (
+                  <div className="text-[11px] font-mono text-rose-300">
+                    Detected bounced mailbox: {analysis.bouncedAddresses.join(', ')}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {analysis.recommendedFallbackEmail && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleBlacklistBouncedAndSwitch(analysis.recommendedFallbackEmail)
+                      }
+                      className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                    >
+                      Blacklist Bounced &amp; Switch to {analysis.recommendedFallbackEmail}
+                    </button>
+                  )}
+
+                  <div className="flex items-center gap-1.5 flex-1 min-w-[230px]">
+                    <input
+                      type="email"
+                      value={customRecipientInput}
+                      onChange={(e) => setCustomRecipientInput(e.target.value)}
+                      placeholder="Or enter custom verified DPO email..."
+                      className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleBlacklistBouncedAndSwitch(customRecipientInput)}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-semibold cursor-pointer whitespace-nowrap"
+                    >
+                      Apply DPO
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Extracted Sanitized Confirmation Links */}
             {analysis.extractedLinks.length > 0 && (
@@ -479,23 +600,34 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
           </div>
         )}
 
-        {/* Statutory Counter-Notice & Exemption Rebuttal Composer */}
+        {/* Statutory Counter-Notice, Bounce Re-Dispatch & Exemption Rebuttal Composer */}
         <div className="p-5 bg-slate-950 border border-slate-800 rounded-2xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold text-white">
-                Statutory Counter-Notice &amp; Legal Rebuttal Generator
+                Statutory Counter-Notice &amp; Verified Backup DPO Re-Dispatch
               </h3>
               <p className="text-[11px] text-slate-400">
-                Push back against unlawful unredacted-ID demands or false public-record exemption claims.
+                Re-send bounced deletion notices to a verified backup DPO, or counter unlawful ID and exemption claims.
               </p>
             </div>
 
-            <div className="inline-flex p-1 bg-slate-900 border border-slate-800 rounded-xl shrink-0">
+            <div className="inline-flex flex-wrap p-1 bg-slate-900 border border-slate-800 rounded-xl shrink-0 gap-1">
+              <button
+                type="button"
+                onClick={() => setCounterMode('resend_initial_demand')}
+                className={`px-2.5 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  counterMode === 'resend_initial_demand'
+                    ? 'bg-emerald-500 text-slate-950 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Re-Send Deletion Demand
+              </button>
               <button
                 type="button"
                 onClick={() => setCounterMode('id_minimization')}
-                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                className={`px-2.5 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   counterMode === 'id_minimization'
                     ? 'bg-emerald-500 text-slate-950 font-bold'
                     : 'text-slate-400 hover:text-white'
@@ -506,7 +638,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
               <button
                 type="button"
                 onClick={() => setCounterMode('exemption_rebuttal')}
-                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                className={`px-2.5 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   counterMode === 'exemption_rebuttal'
                     ? 'bg-emerald-500 text-slate-950 font-bold'
                     : 'text-slate-400 hover:text-white'
@@ -601,7 +733,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 )}
                 <span>
                   {isSending
-                    ? 'Sending Counter-Notice...'
+                    ? 'Sending Notice...'
                     : `Send to ${recipientEmail} (${activeConnectedEmail})`}
                 </span>
               </button>

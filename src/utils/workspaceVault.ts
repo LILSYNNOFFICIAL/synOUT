@@ -7,6 +7,7 @@ import {
   UserProfile,
 } from '../types';
 import { StoredSearchProfile } from './searchProfiles';
+import { BrokerContactOverride } from './brokerContactResolver';
 
 const SNAPSHOTS_STORAGE_KEY = 'synout_scan_snapshots_v1';
 const BUREAU_PROGRESS_STORAGE_KEY = 'synout_bureau_freeze_progress_v1';
@@ -182,6 +183,7 @@ export interface SynoutWorkspaceBundle {
   scanSnapshots: ScanHistorySnapshot[];
   canaryAliases?: CanaryAliasRecord[];
   publicRecordProgress?: Record<string, PublicRecordChecklistState>;
+  brokerContactOverrides?: Record<string, BrokerContactOverride>;
 }
 
 export interface EncryptedWorkspaceEnvelope {
@@ -340,6 +342,10 @@ export function parsePlainWorkspaceBundle(rawJson: string): SynoutWorkspaceBundl
     publicRecordProgress:
       parsed.publicRecordProgress && typeof parsed.publicRecordProgress === 'object'
         ? parsed.publicRecordProgress
+        : {},
+    brokerContactOverrides:
+      parsed.brokerContactOverrides && typeof parsed.brokerContactOverrides === 'object'
+        ? parsed.brokerContactOverrides
         : {},
   };
 }

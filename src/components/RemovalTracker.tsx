@@ -22,6 +22,7 @@ import {
   Scale,
   AlertTriangle,
   Inbox,
+  Flame,
 } from 'lucide-react';
 
 interface RemovalTrackerProps {
@@ -35,6 +36,7 @@ interface RemovalTrackerProps {
   onBatchOptOut: () => void;
   onAutomatedOptOut?: (brokerId: string) => void;
   onOpenDiyAssistantModal: (broker: DataBroker, result: ScanResult) => void;
+  onOpenNukeAll?: () => void;
 }
 
 export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
@@ -47,6 +49,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
   onBatchOptOut,
   onAutomatedOptOut,
   onOpenDiyAssistantModal,
+  onOpenNukeAll,
 }) => {
   const [filter, setFilter] = useState<'all' | 'in_progress' | 'needs_escalation' | 'removed'>('all');
   const [search, setSearch] = useState('');
@@ -171,6 +174,17 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   : 'Re-Send All Opt-Out Emails'}
               </span>
             </button>
+
+            {onOpenNukeAll && (
+              <button
+                type="button"
+                onClick={onOpenNukeAll}
+                className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-extrabold transition-colors shadow-lg shadow-red-600/25 cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
+              >
+                <Flame className="w-4 h-4" />
+                <span>NUKE ALL</span>
+              </button>
+            )}
           </div>
         </div>
 

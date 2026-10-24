@@ -12,6 +12,8 @@ export type RiskLevel = 'Critical' | 'High' | 'Medium';
 
 export type RemovalMethod = 'Online Form' | 'Email CCPA Demand' | 'Mail-In' | 'Phone' | 'Automated Opt-Out API';
 
+export type EmailDeliverabilityTier = 'verified_dpo' | 'parent_dpo' | 'portal_primary';
+
 export interface DataBroker {
   id: string;
   name: string;
@@ -21,6 +23,9 @@ export interface DataBroker {
   optOutUrl: string;
   recordsUrl: string;
   privacyEmail: string;
+  fallbackEmails?: string[];
+  parentEntity?: string;
+  emailDeliverability?: EmailDeliverabilityTier;
   removalMethod: RemovalMethod;
   removalTime: string;
   dataExposedList: string[];
@@ -167,6 +172,7 @@ export interface PublicRecordChecklistState {
 }
 
 export type BrokerReplyCategory =
+  | 'DELIVERY_BOUNCE_NDR'
   | 'CONFIRMATION_LINK_REQUIRED'
   | 'DELETION_CONFIRMED'
   | 'EXCESSIVE_ID_DEMAND'

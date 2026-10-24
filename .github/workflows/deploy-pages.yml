@@ -28,17 +28,17 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm install
+      - name: Clean previous published bundle before Vite build
+        run: |
+          rm -rf public/index.html public/assets
       - name: Build app for branch-based GitHub Pages
         run: npm run build
         env:
           GITHUB_PAGES: 'true'
       - name: Prepare static site files
         run: |
-          test -f dist/app.html
-          mv dist/app.html dist/index.html
+          test -f dist/index.html
           touch dist/.nojekyll
-          rm -rf public
-          mkdir -p public
           cp -R dist/. public/
           touch .nojekyll
       - name: Publish built app into public directory
