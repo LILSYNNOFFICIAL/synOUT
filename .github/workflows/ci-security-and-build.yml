@@ -1,4 +1,4 @@
-name: Security Audit & Build (GitHub Environments)
+name: synOUT — Security Audit & Build
 
 on:
   push:

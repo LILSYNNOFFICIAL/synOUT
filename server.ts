@@ -120,7 +120,7 @@ app.post('/api/user/purge-session', (req, res) => {
   res.json({ success: true, message: 'All in-memory session events and audit traces expunged.' });
 });
 
-// Endpoint: Generate customized legal notice via Gemini AI
+// Endpoint: Generate customized statutory legal notice (synOUT Legal Engine)
 const apiKey = process.env.GEMINI_API_KEY || '';
 let ai: GoogleGenAI | null = null;
 if (apiKey) {

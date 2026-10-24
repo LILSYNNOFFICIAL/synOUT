@@ -1,6 +1,6 @@
 {
-  "name": "synOUT - Autonomous Data Broker & Dark Web Exposure Removal",
-  "description": "Autonomous personal data removal and real-time dark web exposure purge engine. Scan 700+ data brokers, eliminate false positives, and submit verified statutory removals.",
+  "name": "synOUT",
+  "description": "Scan 700+ data brokers, purge dark web exposures, and send verified statutory deletion notices from your own email with synOUT.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

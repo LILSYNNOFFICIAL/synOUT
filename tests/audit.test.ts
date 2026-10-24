@@ -333,4 +333,61 @@ test('11. Universal User-Connected Email Dispatch (Zero Firebase Required) & SSR
   );
 });
 
+test('12. Global Project Naming & Brand Consistency (synOUT Everywhere — Zero Legacy Project Names)', () => {
+  const rootDir = process.cwd();
+
+  // 1. Canonical project manifests must identify as synOUT
+  const metadata = JSON.parse(fs.readFileSync(path.join(rootDir, 'metadata.json'), 'utf8'));
+  assert.strictEqual(metadata.name, 'synOUT', 'metadata.json name must be synOUT');
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  assert.strictEqual(pkg.name, 'synout', 'package.json name must be synout');
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(rootDir, 'public', 'site.webmanifest'), 'utf8'));
+  assert.strictEqual(manifest.name, 'synOUT', 'site.webmanifest name must be synOUT');
+  assert.strictEqual(manifest.short_name, 'synOUT', 'site.webmanifest short_name must be synOUT');
+
+  const html = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');
+  assert(html.includes('<title>synOUT'), 'index.html <title> must start with synOUT');
+  assert(html.includes('content="synOUT"'), 'index.html meta tags must declare synOUT');
+  assert(html.includes('"name": "synOUT"'), 'index.html Schema.org JSON-LD must declare synOUT');
+
+  const readme = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
+  assert(readme.startsWith('# synOUT'), 'README.md must be titled # synOUT');
+
+  // 2. Zero occurrences of legacy/placeholder project names across repository source & config files
+  const forbiddenPatterns = [
+    /gemini[\s_-]+project/i,
+    /sun-remove/i,
+    /"name":\s*"react-example"/i,
+  ];
+
+  function scanForLegacyNames(dirPath: string) {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        scanForLegacyNames(fullPath);
+      } else {
+        const relPath = path.relative(rootDir, fullPath).replace(/\\/g, '/');
+        if (relPath === 'tests/audit.test.ts') continue;
+        if (/\.(ts|tsx|js|json|py|yml|yaml|html|md|webmanifest|lock|example|css)$/i.test(entry.name)) {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          for (const pattern of forbiddenPatterns) {
+            assert.strictEqual(
+              pattern.test(content),
+              false,
+              `Legacy project name matching ${pattern} found in ${relPath}`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  scanForLegacyNames(rootDir);
+});
+
+
 

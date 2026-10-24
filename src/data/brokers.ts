@@ -1,5 +1,8 @@
 import { DataBroker } from '../types';
 
+/**
+ * synOUT Master Data Broker Registry
+ */
 export const DATA_BROKERS: DataBroker[] = [
   {
     id: 'whitepages',

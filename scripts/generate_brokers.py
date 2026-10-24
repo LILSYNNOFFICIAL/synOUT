@@ -451,7 +451,7 @@ print(f"Total compiled data brokers: {len(brokers)}")
 ts_output = """import { DataBroker } from '../types';
 
 /**
- * SUN-REMOVE Master Data Broker Registry
+ * synOUT Master Data Broker Registry
  * 600+ Comprehensive public records brokers, telemetry aggregators,
  * background services, court archives, B2B intelligence, and financial marketing lists.
  */
