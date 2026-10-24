@@ -31,12 +31,17 @@ function silentHmrClientPlugin(): Plugin {
 export default defineConfig({
   // GitHub Pages hosts project sites beneath /<repository>/, not /.
   // Local development and non-Pages deployments continue to use the root path.
-  base: process.env.GITHUB_PAGES === 'true' ? '/synOUT/' : '/',
+  base: process.env.GITHUB_PAGES === 'true' ? '/synOUT/public/' : '/',
   plugins: [
     react(),
     tailwindcss(),
     silentHmrClientPlugin(),
   ],
+  build: {
+    rollupOptions: {
+      input: 'app.html',
+    },
+  },
   server: {
     port: 3000,
     host: '0.0.0.0',
