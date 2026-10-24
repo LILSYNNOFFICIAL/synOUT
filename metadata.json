@@ -1,6 +1,6 @@
 {
-  "name": "Optery - Free Data Broker Removal & Exposure Scanner",
-  "description": "Scan data broker sites for your exposed phone number, home address, and personal records, and submit automated opt-out removals.",
+  "name": "synOUT - Autonomous Data Broker & Dark Web Exposure Removal",
+  "description": "Autonomous personal data removal and real-time dark web exposure purge engine. Scan 700+ data brokers, eliminate false positives, and submit verified statutory removals.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

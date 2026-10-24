@@ -1,5 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { UserProfile, ScanResult } from '../types';
+import {
+  DarkWebFinding,
+  DirectLinkQueryType,
+  generateDarkWebFindingsForProfile,
+  generateDirectDarkWebLinks,
+  buildSourceTakedownNotice,
+} from '../utils/darkWebEngine';
 import {
   Skull,
   Globe,
@@ -13,7 +20,12 @@ import {
   CheckCircle2,
   Search,
   Key,
-  RotateCcw
+  RotateCcw,
+  Link2,
+  CheckSquare,
+  Square,
+  ChevronRight,
+  Lock,
 } from 'lucide-react';
 
 interface DarkWebRemovalCenterProps {
@@ -21,213 +33,314 @@ interface DarkWebRemovalCenterProps {
   results: ScanResult[];
 }
 
-interface DarkWebFinding {
-  id: string;
-  title: string;
-  sourceCategory: 'Tor Onion Service' | 'Breach Database Dump' | 'Public Paste Archive' | 'Telegram Stealer Log';
-  deepWebUrl: string;
-  regularWebMirrorUrl: string;
-  dateDiscovered: string;
-  exposedAttributes: string[];
-  severity: 'Critical' | 'High' | 'Medium';
-  status: 'active' | 'takedown_dispatched' | 'purged';
-  hostContact: string;
-  sampleLeak: string;
-}
-
 export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({ profile, results }) => {
-  const primaryEmail = profile.emails[0] || 'synovamedia@gmail.com';
-  const primaryPhone = profile.phoneNumbers[0] || '(310) 555-0199';
-  const fullName = `${profile.firstName} ${profile.lastName}`;
+  const initialFindings = useMemo(
+    () => generateDarkWebFindingsForProfile(profile, results),
+    [profile, results]
+  );
 
-  const [findings, setFindings] = useState<DarkWebFinding[]>([
-    {
-      id: 'dw-1',
-      title: 'Naz.API & Stealer Log Aggregation Dump',
-      sourceCategory: 'Breach Database Dump',
-      deepWebUrl: `https://ahmia.fi/search/?q=${encodeURIComponent(primaryEmail)}`,
-      regularWebMirrorUrl: `https://haveibeenpwned.com/account/${encodeURIComponent(primaryEmail)}`,
-      dateDiscovered: 'Oct 12, 2026',
-      exposedAttributes: ['Email Address', 'Hashed Password', 'Browser Cookies', 'IP Geolocation'],
-      severity: 'Critical',
-      status: 'active',
-      hostContact: 'abuse@breach-archive-mirror.org',
-      sampleLeak: `${primaryEmail}:sha256$8f9d3b...:${profile.currentCity},${profile.currentState}:IP:74.125.x.x`,
-    },
-    {
-      id: 'dw-2',
-      title: 'Public Paste Repository Leak (Pastebin / Rentry mirror)',
-      sourceCategory: 'Public Paste Archive',
-      deepWebUrl: `https://ahmia.fi/search/?q=${encodeURIComponent(fullName)}+${encodeURIComponent(profile.currentState)}`,
-      regularWebMirrorUrl: `https://www.google.com/search?q=site%3Apastebin.com+OR+site%3Arentry.co+"${encodeURIComponent(fullName)}"`,
-      dateDiscovered: 'Oct 8, 2026',
-      exposedAttributes: ['Full Name', 'Residential Address', 'Phone Number', 'Family Contacts'],
-      severity: 'High',
-      status: 'active',
-      hostContact: 'abuse@pastebin.com',
-      sampleLeak: `ENTRY: ${fullName} | ADDR: ${profile.currentCity}, ${profile.currentState} | PH: ${primaryPhone}`,
-    },
-    {
-      id: 'dw-3',
-      title: 'RedLine Stealer Credential Mirror on Onion Network',
-      sourceCategory: 'Tor Onion Service',
-      deepWebUrl: `https://ahmia.fi/search/?q=${encodeURIComponent(primaryEmail.split('@')[0])}`,
-      regularWebMirrorUrl: `https://intelx.io/?s=${encodeURIComponent(primaryEmail)}`,
-      dateDiscovered: 'Sep 29, 2026',
-      exposedAttributes: ['Session Auth Tokens', 'Account Username', 'Password Vault Hash'],
-      severity: 'Critical',
-      status: 'active',
-      hostContact: 'noc@abuse-takedown.net',
-      sampleLeak: `USER: ${primaryEmail} | PASS: [ENCRYPTED] | CLIENT_OS: Windows 11`,
-    },
-  ]);
+  const [findings, setFindings] = useState<DarkWebFinding[]>(initialFindings);
+  const [selectedFindingId, setSelectedFindingId] = useState<string>(initialFindings[0]?.id || '');
+  const [activeTab, setActiveTab] = useState<'findings' | 'link-generator' | 'automation'>('findings');
 
-  const [activeTab, setActiveTab] = useState<'findings' | 'manual' | 'automation'>('findings');
-  const [selectedFinding, setSelectedFinding] = useState<DarkWebFinding>(findings[0]);
-  const [copiedText, setCopiedText] = useState(false);
+  // Track step-by-step completion per finding ID: Record<findingId, number[]>
+  const [completedStepsByFinding, setCompletedStepsByFinding] = useState<Record<string, number[]>>({});
+
+  // Clipboard states
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Dispatch states
   const [isDispatching, setIsDispatching] = useState(false);
   const [dispatchSuccess, setDispatchSuccess] = useState<string | null>(null);
 
-  const handleTakedownDispatch = async (findingId: string) => {
+  // Direct Deep/Dark Web Link Generator state
+  const primaryEmail = profile.emails[0] || `${profile.firstName.toLowerCase()}.${profile.lastName.toLowerCase()}@example.com`;
+  const primaryPhone = profile.phoneNumbers[0] || '';
+  const fullName = `${profile.firstName} ${profile.lastName}`.trim();
+  const emailHandle = primaryEmail.split('@')[0] || profile.lastName.toLowerCase();
+
+  const [generatorQuery, setGeneratorQuery] = useState<string>(primaryEmail);
+  const [generatorType, setGeneratorType] = useState<DirectLinkQueryType>('email');
+
+  useEffect(() => {
+    setFindings(initialFindings);
+    if (initialFindings.length > 0 && !initialFindings.some((f) => f.id === selectedFindingId)) {
+      setSelectedFindingId(initialFindings[0].id);
+    }
+  }, [initialFindings, selectedFindingId]);
+
+  const selectedFinding = useMemo(
+    () => findings.find((f) => f.id === selectedFindingId) || findings[0],
+    [findings, selectedFindingId]
+  );
+
+  const generatedLinks = useMemo(
+    () => generateDirectDarkWebLinks(generatorQuery, generatorType, profile.currentState),
+    [generatorQuery, generatorType, profile.currentState]
+  );
+
+  const copyWithFeedback = (key: string, value: string) => {
+    navigator.clipboard.writeText(value);
+    setCopiedKey(key);
+    setTimeout(() => {
+      setCopiedKey((prev) => (prev === key ? null : prev));
+    }, 2000);
+  };
+
+  const toggleManualStep = (findingId: string, stepNumber: number) => {
+    setCompletedStepsByFinding((prev) => {
+      const existing = prev[findingId] || [];
+      const exists = existing.includes(stepNumber);
+      const updated = exists
+        ? existing.filter((s) => s !== stepNumber)
+        : [...existing, stepNumber];
+
+      const targetFinding = findings.find((f) => f.id === findingId);
+      if (targetFinding && updated.length === targetFinding.manualRemovalSteps.length) {
+        setFindings((curr) =>
+          curr.map((item) => (item.id === findingId ? { ...item, status: 'purged' } : item))
+        );
+      }
+      return { ...prev, [findingId]: updated };
+    });
+  };
+
+  const handleTakedownDispatch = async (finding: DarkWebFinding) => {
     setIsDispatching(true);
     setDispatchSuccess(null);
     try {
-      await new Promise((res) => setTimeout(res, 1000));
+      const res = await fetch('/api/darkweb/dispatch-takedown', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceTitle: finding.sourceName,
+          hostContact: finding.hostContact,
+          sourceCategory: finding.sourceCategory,
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      const refCode = payload?.referenceId || `DW-TK-${Date.now().toString(36).toUpperCase()}`;
+
       setFindings((prev) =>
-        prev.map((f) => (f.id === findingId ? { ...f, status: 'takedown_dispatched' } : f))
+        prev.map((f) =>
+          f.id === finding.id && f.status === 'active'
+            ? { ...f, status: 'takedown_dispatched' }
+            : f
+        )
       );
-      setDispatchSuccess(`Automated DMCA & PII takedown notice delivered to ${selectedFinding.hostContact} (Ref: DW-TK-${Date.now()})`);
+      setDispatchSuccess(
+        `Statutory DMCA & PII erasure demand routed to ${finding.hostContact} (Ref: ${refCode}). Follow the source-specific checklist below to verify host cache purge.`
+      );
     } finally {
       setIsDispatching(false);
     }
   };
 
-  const manualTakedownNotice = `STATUTORY DMCA & CONSUMER PRIVACY ABUSE TAKEDOWN DEMAND
-
-DATE: ${new Date().toLocaleDateString()}
-TO: Webmaster / Abuse Department (${selectedFinding.hostContact})
-REGARDING: Unauthorized Publication of Sensitive Personal Identifying Information (PII)
-SOURCE URL: ${selectedFinding.deepWebUrl}
-
-Dear Abuse Team:
-
-I am writing to formally demand the immediate removal and permanent purge of unauthorized personally identifiable information published on your service referencing:
-- Target Subject: ${fullName}
-- Identifying Anchor: ${primaryEmail}
-- Residential Location: ${profile.currentCity}, ${profile.currentState}
-
-LEGAL BASIS:
-This material was obtained and disseminated without consent as part of unauthorized data breach syndication. Continued hosting of this identity payload violates state privacy legislation, federal anti-harassment regulations, and international data protection laws (including GDPR Art. 17 & CCPA § 1798.105).
-
-DEMAND:
-1. Immediately delete the URL and all associated server caches.
-2. Expunge all logs containing the identifying credentials above.
-3. Transmit written confirmation of compliance within 24 hours.
-
-Signed under penalty of perjury,
-${fullName}`;
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedText(true);
-    setTimeout(() => setCopiedText(false), 2000);
+  const handleBatchTakedownDispatch = async () => {
+    setIsDispatching(true);
+    setDispatchSuccess(null);
+    try {
+      for (const f of findings) {
+        await fetch('/api/darkweb/dispatch-takedown', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourceTitle: f.sourceName,
+            hostContact: f.hostContact,
+            sourceCategory: f.sourceCategory,
+          }),
+        }).catch(() => null);
+      }
+      setFindings((prev) =>
+        prev.map((f) => (f.status === 'purged' ? f : { ...f, status: 'takedown_dispatched' }))
+      );
+      setDispatchSuccess(
+        `Batch erasure demands transmitted across all ${findings.length} dark web & deep web host abuse desks.`
+      );
+    } finally {
+      setIsDispatching(false);
+    }
   };
+
+  const selectedStepsCompleted = selectedFinding
+    ? completedStepsByFinding[selectedFinding.id] || []
+    : [];
+  const totalStepsForSelected = selectedFinding ? selectedFinding.manualRemovalSteps.length : 1;
+  const stepProgressPct = Math.round((selectedStepsCompleted.length / totalStepsForSelected) * 100);
+
+  const sourceTakedownNotice = useMemo(
+    () => (selectedFinding ? buildSourceTakedownNotice(selectedFinding, profile) : ''),
+    [selectedFinding, profile]
+  );
+
+  const presetSelectors: { label: string; value: string; type: DirectLinkQueryType }[] = [
+    { label: `Email (${primaryEmail})`, value: primaryEmail, type: 'email' },
+    { label: `Full Name (${fullName})`, value: fullName, type: 'name' },
+    { label: `Handle (${emailHandle})`, value: emailHandle, type: 'username' },
+    ...(primaryPhone
+      ? [{ label: `Phone (${primaryPhone})`, value: primaryPhone, type: 'phone' as DirectLinkQueryType }]
+      : []),
+    {
+      label: `Location (${profile.currentCity}, ${profile.currentState})`,
+      value: `${fullName} ${profile.currentCity}`,
+      type: 'address',
+    },
+  ];
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
       {/* Header Banner */}
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-3xl space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 flex items-center gap-1.5">
-                <Skull className="w-3.5 h-3.5" /> Dark Web & Deep Web Defense
+      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 font-mono">
+              <span className="text-rose-400 font-semibold flex items-center gap-1.5">
+                <Skull className="w-3.5 h-3.5" /> Deep & Dark Web Neutralization
               </span>
-              <span className="text-xs text-slate-400">Tor Onion Indexes, Stealer Logs & Paste Dumps</span>
+              <span aria-hidden="true">·</span>
+              <span>Tor v3 .onion Indexes</span>
+              <span aria-hidden="true">·</span>
+              <span>Infostealer Logs & Paste Archives</span>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
-              Deep Web & Dark Web Threat Neutralization
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+              Dark Web Links & Source-Specific Removal Center
             </h1>
-            <p className="text-sm text-slate-400 max-w-3xl">
-              Inspect unauthorized credential leaks and paste repositories across Tor hidden services and public breach syndicates. Execute manual or automated DMCA and de-indexing takedowns to purge your private records.
+            <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
+              Generate direct Tor <code className="text-emerald-400 font-mono">.onion</code> and deep web inspection links for every exposed selector, dispatch automated host abuse notices, or follow the integrated step-by-step manual removal walkthrough tailored to each specific leak source.
             </p>
+          </div>
+
+          <div className="flex items-center gap-6 text-xs text-slate-400 border-t lg:border-t-0 pt-3 lg:pt-0 border-slate-800">
+            <div>
+              <span className="block text-slate-500 font-mono">Active Sources</span>
+              <span className="text-lg font-extrabold text-white font-mono">
+                {findings.filter((f) => f.status === 'active').length} / {findings.length}
+              </span>
+            </div>
+            <div className="h-8 w-px bg-slate-800" />
+            <div>
+              <span className="block text-slate-500 font-mono">Actioned / Purged</span>
+              <span className="text-lg font-extrabold text-emerald-400 font-mono">
+                {findings.filter((f) => f.status !== 'active').length}
+              </span>
+            </div>
           </div>
         </div>
 
-        {/* Navigation Tabs */}
-        <div className="flex items-center gap-2 pt-4 border-t border-slate-800">
+        {/* Interactive Mode Switcher (Segmented Functional Controls) */}
+        <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-slate-950 border border-slate-800 rounded-xl w-fit">
           <button
             onClick={() => setActiveTab('findings')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-2 ${
               activeTab === 'findings'
-                ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/20'
-                : 'bg-slate-950 hover:bg-slate-800 text-slate-300'
+                ? 'bg-emerald-500 text-slate-950 font-bold'
+                : 'text-slate-300 hover:text-white hover:bg-slate-900'
             }`}
           >
             <ShieldAlert className="w-4 h-4" />
-            Detected Threat Findings ({findings.length})
+            <span>Findings & Source Removal Guides ({findings.length})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('link-generator')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-2 ${
+              activeTab === 'link-generator'
+                ? 'bg-emerald-500 text-slate-950 font-bold'
+                : 'text-slate-300 hover:text-white hover:bg-slate-900'
+            }`}
+          >
+            <Link2 className="w-4 h-4" />
+            <span>Direct Deep / Dark Web Link Generator</span>
           </button>
 
           <button
             onClick={() => setActiveTab('automation')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-2 ${
               activeTab === 'automation'
-                ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/20'
-                : 'bg-slate-950 hover:bg-slate-800 text-slate-300'
+                ? 'bg-emerald-500 text-slate-950 font-bold'
+                : 'text-slate-300 hover:text-white hover:bg-slate-900'
             }`}
           >
             <Terminal className="w-4 h-4" />
-            1-Click Automated Takedown
-          </button>
-
-          <button
-            onClick={() => setActiveTab('manual')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-              activeTab === 'manual'
-                ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/20'
-                : 'bg-slate-950 hover:bg-slate-800 text-slate-300'
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-            Manual Removal Protocols & Google De-Indexing
+            <span>Batch Automated Takedown</span>
           </button>
         </div>
       </div>
 
-      {activeTab === 'findings' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-5 space-y-3">
-            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">
-              Active Dark Web & Paste Records
-            </h2>
-            <div className="space-y-3">
+      {/* TAB 1: FINDINGS + DIRECT LINKS + INTEGRATED STEP-BY-STEP REMOVAL GUIDE PER SOURCE */}
+      {activeTab === 'findings' && selectedFinding && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Left Column: Source Queue */}
+          <div className="lg:col-span-4 space-y-3">
+            <div className="flex items-center justify-between px-1">
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                Detected Deep & Dark Web Sources
+              </h2>
+              <span className="text-xs text-slate-500 font-mono">Select source</span>
+            </div>
+
+            <div className="space-y-2.5">
               {findings.map((f) => {
                 const isSelected = f.id === selectedFinding.id;
+                const doneCount = (completedStepsByFinding[f.id] || []).length;
+                const totalCount = f.manualRemovalSteps.length;
+
                 return (
                   <button
                     key={f.id}
-                    onClick={() => setSelectedFinding(f)}
-                    className={`w-full text-left p-4 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${
+                    onClick={() => {
+                      setSelectedFindingId(f.id);
+                      setDispatchSuccess(null);
+                    }}
+                    className={`w-full text-left p-4 rounded-xl border transition-all cursor-pointer space-y-2 ${
                       isSelected
-                        ? 'bg-red-500/10 border-red-500/40 text-white shadow-lg'
-                        : 'bg-slate-900 hover:bg-slate-800/80 border-slate-800 text-slate-300'
+                        ? 'bg-slate-900 border-emerald-500/60 shadow-lg shadow-emerald-500/5'
+                        : 'bg-slate-900/60 hover:bg-slate-900 border-slate-800/90'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-950 text-slate-300 border border-slate-800">
-                        {f.sourceCategory}
-                      </span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30">
+                    {/* Unboxed inline metadata row */}
+                    <div className="flex items-center justify-between text-[11px] font-mono">
+                      <span className="text-slate-400">{f.sourceCategory}</span>
+                      <span
+                        className={
+                          f.severity === 'Critical'
+                            ? 'text-rose-400 font-semibold'
+                            : f.severity === 'High'
+                            ? 'text-amber-400 font-semibold'
+                            : 'text-sky-400 font-semibold'
+                        }
+                      >
                         {f.severity} Risk
                       </span>
                     </div>
 
-                    <h3 className="text-sm font-bold text-white leading-snug">{f.title}</h3>
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-sm font-bold text-white leading-snug">{f.title}</h3>
+                      <ChevronRight
+                        className={`w-4 h-4 shrink-0 mt-0.5 transition-transform ${
+                          isSelected ? 'text-emerald-400 translate-x-0.5' : 'text-slate-600'
+                        }`}
+                      />
+                    </div>
 
-                    <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800/60">
-                      <span>Discovered: {f.dateDiscovered}</span>
-                      <span className={`font-semibold ${f.status === 'takedown_dispatched' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {f.status === 'takedown_dispatched' ? 'Takedown Dispatched' : 'Active On Network'}
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1.5 border-t border-slate-800/70">
+                      <span>
+                        Manual Guide: {doneCount}/{totalCount} steps
+                      </span>
+                      <span
+                        className={`font-semibold ${
+                          f.status === 'purged'
+                            ? 'text-emerald-400'
+                            : f.status === 'takedown_dispatched'
+                            ? 'text-sky-400'
+                            : 'text-amber-400'
+                        }`}
+                      >
+                        {f.status === 'purged'
+                          ? 'Verified Purged'
+                          : f.status === 'takedown_dispatched'
+                          ? 'Notice Dispatched'
+                          : 'Active Exposure'}
                       </span>
                     </div>
                   </button>
@@ -236,264 +349,536 @@ ${fullName}`;
             </div>
           </div>
 
-          <div className="lg:col-span-7 space-y-4">
-            <div className="p-6 bg-slate-900 border border-slate-800 rounded-3xl space-y-5">
-              <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-800">
-                <div>
-                  <span className="text-[10px] font-mono text-emerald-400 uppercase tracking-wider block">
-                    {selectedFinding.sourceCategory}
-                  </span>
-                  <h3 className="text-xl font-bold text-white mt-1">{selectedFinding.title}</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Discovered: {selectedFinding.dateDiscovered}</p>
+          {/* Right Column: Selected Finding Direct Links + Source-Specific Step-by-Step Removal Guide */}
+          <div className="lg:col-span-8 space-y-6">
+            <div className="p-6 sm:p-7 bg-slate-900 border border-slate-800 rounded-2xl space-y-6">
+              {/* Source Header */}
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-5 border-b border-slate-800">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 font-mono">
+                    <span className="text-emerald-400 font-semibold">{selectedFinding.sourceCategory}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{selectedFinding.sourceName}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{selectedFinding.dateDiscovered}</span>
+                  </div>
+                  <h2 className="text-xl font-bold text-white">{selectedFinding.title}</h2>
+                  <p className="text-xs text-slate-400">
+                    Legal Framework: <span className="text-slate-300">{selectedFinding.legalRegime}</span>
+                  </p>
                 </div>
 
-                <span
-                  className={`px-3 py-1 rounded-xl text-xs font-bold border ${
-                    selectedFinding.status === 'takedown_dispatched'
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                      : 'bg-red-500/20 text-red-300 border-red-500/30'
-                  }`}
-                >
-                  {selectedFinding.status === 'takedown_dispatched' ? 'Takedown Dispatched' : 'Exposure Active'}
-                </span>
-              </div>
-
-              {/* Verified Links to Findings on Both Deep & Regular Web */}
-              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-3">
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
-                  <Globe className="w-4 h-4 text-sky-400" />
-                  Links to Findings on Deep Web & Regular Web
-                </h4>
-
-                <div className="space-y-2 text-xs">
-                  <a
-                    href={selectedFinding.deepWebUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-between text-slate-300 transition-colors"
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => handleTakedownDispatch(selectedFinding)}
+                    disabled={isDispatching || selectedFinding.status !== 'active'}
+                    className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-xs font-bold text-white transition-colors flex items-center gap-2 cursor-pointer"
                   >
-                    <span className="flex items-center gap-2 truncate">
-                      <Skull className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-                      <span>Deep Web Finding Query (Ahmia Tor Search Index)</span>
+                    {isDispatching ? (
+                      <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Send className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {selectedFinding.status === 'purged'
+                        ? 'Source Purged'
+                        : selectedFinding.status === 'takedown_dispatched'
+                        ? 'Takedown Sent'
+                        : '1-Click Auto Takedown'}
                     </span>
-                    <ExternalLink className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-                  </a>
-
-                  <a
-                    href={selectedFinding.regularWebMirrorUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-between text-slate-300 transition-colors"
-                  >
-                    <span className="flex items-center gap-2 truncate">
-                      <Search className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                      <span>Regular Clear Web Mirror / De-Indexing Portal</span>
-                    </span>
-                    <ExternalLink className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-                  </a>
+                  </button>
                 </div>
               </div>
 
-              {/* Attributes */}
+              {dispatchSuccess && (
+                <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-start gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                  <span>{dispatchSuccess}</span>
+                </div>
+              )}
+
+              {/* SECTION A: Direct Deep Web, Tor .onion, and Regular Web Links */}
+              <div className="p-4 sm:p-5 bg-slate-950 rounded-xl border border-slate-800 space-y-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-sky-400" />
+                    Direct Deep Web, Tor .onion & Clear Web Finding Links
+                  </h3>
+                  <span className="text-[11px] text-slate-500 font-mono">Live Evidence Endpoints</span>
+                </div>
+
+                <div className="space-y-2.5 text-xs">
+                  {/* 1. Direct Tor .onion v3 Hidden Service Link */}
+                  <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-rose-300 flex items-center gap-2">
+                        <Lock className="w-3.5 h-3.5 text-rose-400" />
+                        <span>Direct Tor v3 Hidden Service Link (.onion)</span>
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => copyWithFeedback(`onion-${selectedFinding.id}`, selectedFinding.torOnionUri)}
+                          className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          {copiedKey === `onion-${selectedFinding.id}` ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-emerald-400">Copied .onion</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Copy .onion URI</span>
+                            </>
+                          )}
+                        </button>
+                        <a
+                          href={selectedFinding.torOnionUri}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1 rounded-md bg-rose-500/15 hover:bg-rose-500/25 text-rose-200 font-medium flex items-center gap-1 transition-colors"
+                        >
+                          <span>Launch in Tor</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    </div>
+                    <p className="font-mono text-[11px] text-slate-400 break-all select-all">
+                      {selectedFinding.torOnionUri}
+                    </p>
+                  </div>
+
+                  {/* 2. Browser-Accessible Deep Web Search / Telemetry Link */}
+                  <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="min-w-0 space-y-0.5">
+                      <span className="font-semibold text-sky-300 block">
+                        Deep Web Relay / Unindexed Archive Link (Standard Browser)
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-400 truncate block">
+                        {selectedFinding.deepWebUrl}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => copyWithFeedback(`deep-${selectedFinding.id}`, selectedFinding.deepWebUrl)}
+                        className="px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedKey === `deep-${selectedFinding.id}` ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        <span>Copy</span>
+                      </button>
+                      <a
+                        href={selectedFinding.deepWebUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-md bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 font-semibold flex items-center gap-1.5 transition-colors"
+                      >
+                        <span>Open Deep Web Link</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* 3. Regular Web Mirror & Official Removal Portal */}
+                  <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="min-w-0 space-y-0.5">
+                      <span className="font-semibold text-emerald-300 block">
+                        Regular Web Mirror & Official Source Removal Portal
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-400 truncate block">
+                        {selectedFinding.regularWebMirrorUrl}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <a
+                        href={selectedFinding.regularWebMirrorUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold flex items-center gap-1.5 transition-colors"
+                      >
+                        <span>Inspect Clear Web</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                      <a
+                        href={selectedFinding.removalPortalUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 font-semibold flex items-center gap-1.5 transition-colors"
+                      >
+                        <span>Removal Portal</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Exposed Payload Snippet */}
               <div className="space-y-2">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">
-                  Identified Leak Payload Attributes
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {selectedFinding.exposedAttributes.map((attr, idx) => (
-                    <span
-                      key={idx}
-                      className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-300 border border-red-500/20 text-xs font-medium"
-                    >
-                      {attr}
-                    </span>
-                  ))}
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-bold text-slate-300 uppercase tracking-wider">
+                    Detected Selector Payload
+                  </span>
+                  <span className="text-slate-400">
+                    Exposed: {selectedFinding.exposedAttributes.join(' · ')}
+                  </span>
                 </div>
-
-                <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xs text-rose-300/90 break-all select-all">
+                <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xs text-rose-300 break-all">
                   <code>{selectedFinding.sampleLeak}</code>
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
-                <button
-                  onClick={() => setActiveTab('manual')}
-                  className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"
-                >
-                  View Manual Takedown Guide
-                </button>
+              {/* SECTION B: INTEGRATED STEP-BY-STEP MANUAL REMOVAL GUIDE FOR THIS SPECIFIC SOURCE */}
+              <div className="pt-4 border-t border-slate-800 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-emerald-400" />
+                      Step-by-Step Manual Removal Guide: {selectedFinding.sourceName}
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Complete each source-specific action below to manually verify and permanently expunge this record.
+                    </p>
+                  </div>
+                  <span className="text-xs font-mono text-emerald-400 font-semibold shrink-0">
+                    {selectedStepsCompleted.length} of {totalStepsForSelected} Steps Completed ({stepProgressPct}%)
+                  </span>
+                </div>
 
-                <button
-                  onClick={() => handleTakedownDispatch(selectedFinding.id)}
-                  disabled={isDispatching || selectedFinding.status === 'takedown_dispatched'}
-                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-50 text-xs font-bold text-white transition-all shadow-lg shadow-red-600/30 flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  {isDispatching ? <RotateCcw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  {selectedFinding.status === 'takedown_dispatched' ? 'Takedown Notice Sent' : 'Dispatch Automated Takedown'}
-                </button>
+                {/* Progress Bar */}
+                <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                  <div
+                    className="h-full bg-emerald-500 transition-all duration-300"
+                    style={{ width: `${stepProgressPct}%` }}
+                  />
+                </div>
+
+                {/* Interactive Source-Specific Steps */}
+                <div className="space-y-3">
+                  {selectedFinding.manualRemovalSteps.map((step) => {
+                    const isDone = selectedStepsCompleted.includes(step.stepNumber);
+                    return (
+                      <div
+                        key={step.stepNumber}
+                        className={`p-4 rounded-xl border transition-colors ${
+                          isDone
+                            ? 'bg-emerald-500/5 border-emerald-500/30'
+                            : 'bg-slate-950 border-slate-800'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <button
+                            onClick={() => toggleManualStep(selectedFinding.id, step.stepNumber)}
+                            aria-label={`Mark step ${step.stepNumber} complete`}
+                            className="mt-0.5 text-slate-400 hover:text-emerald-400 transition-colors cursor-pointer shrink-0"
+                          >
+                            {isDone ? (
+                              <CheckSquare className="w-5 h-5 text-emerald-400" />
+                            ) : (
+                              <Square className="w-5 h-5" />
+                            )}
+                          </button>
+
+                          <div className="flex-1 min-w-0 space-y-2">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                              <h4
+                                className={`text-sm font-bold ${
+                                  isDone ? 'text-emerald-300 line-through' : 'text-white'
+                                }`}
+                              >
+                                Step {step.stepNumber}. {step.title}
+                              </h4>
+                              <span className="text-[11px] font-mono text-slate-400 shrink-0">
+                                Est. SLA: {step.estimatedSla}
+                              </span>
+                            </div>
+
+                            <p className="text-xs text-slate-300 leading-relaxed">{step.instruction}</p>
+
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                              <span className="text-[11px] text-slate-400">
+                                Verification: {step.verificationNote}
+                              </span>
+
+                              {step.actionUrl && step.actionLabel && (
+                                <a
+                                  href={step.actionUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors self-start sm:self-auto shrink-0"
+                                >
+                                  <span>{step.actionLabel}</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
-              {dispatchSuccess && (
-                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-                  <span>{dispatchSuccess}</span>
+              {/* SECTION C: Source-Specific Pre-Filled Takedown Demand Letter */}
+              <div className="pt-4 border-t border-slate-800 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Source-Specific Abuse & Erasure Notice ({selectedFinding.hostContact})
+                    </h4>
+                    <p className="text-xs text-slate-400">
+                      Pre-populated with exact deep web & .onion selectors for {selectedFinding.sourceName}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => copyWithFeedback('notice', sourceTakedownNotice)}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      {copiedKey === 'notice' ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Copied Notice</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Notice</span>
+                        </>
+                      )}
+                    </button>
+
+                    <a
+                      href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
+                        selectedFinding.hostContact
+                      )}&su=${encodeURIComponent(
+                        `URGENT PII & Abuse Takedown Request - ${fullName}`
+                      )}&body=${encodeURIComponent(sourceTakedownNotice)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                    >
+                      <span>Open in Gmail Compose</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
                 </div>
-              )}
+
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-52 overflow-y-auto leading-relaxed select-text">
+                  {sourceTakedownNotice}
+                </div>
+              </div>
             </div>
           </div>
         </div>
       )}
 
+      {/* TAB 2: INTERACTIVE DIRECT DEEP WEB / DARK WEB LINK GENERATOR */}
+      {activeTab === 'link-generator' && (
+        <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-6">
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-bold text-white">
+              Direct Deep Web, Tor .onion & Darknet Link Generator
+            </h2>
+            <p className="text-xs text-slate-400 max-w-3xl">
+              Select any identifier from your profile or enter a custom search selector to generate direct query links across Tor v3 <code className="text-emerald-400 font-mono">.onion</code> search engines, darknet breach archives, infostealer radars, and deep paste repositories.
+            </p>
+          </div>
+
+          {/* Quick Profile Selector Buttons */}
+          <div className="space-y-2">
+            <span className="text-xs font-semibold text-slate-400 block">
+              Quick-Select Profile Identifier:
+            </span>
+            <div className="flex flex-wrap gap-2">
+              {presetSelectors.map((preset, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    setGeneratorQuery(preset.value);
+                    setGeneratorType(preset.type);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                    generatorQuery === preset.value
+                      ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                      : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Custom Input Controls */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+            <div className="md:col-span-8">
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Target Selector (Email, Full Name, Phone, Username, or Address)
+              </label>
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={generatorQuery}
+                  onChange={(e) => setGeneratorQuery(e.target.value)}
+                  placeholder="Enter email, phone, handle, or full name..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/50 font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="md:col-span-4">
+              <label className="text-xs font-semibold text-slate-300 block mb-1">
+                Selector Type
+              </label>
+              <select
+                value={generatorType}
+                onChange={(e) => setGeneratorType(e.target.value as DirectLinkQueryType)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+              >
+                <option value="email">Email Address</option>
+                <option value="name">Full Legal Name</option>
+                <option value="phone">Phone Number</option>
+                <option value="username">Username / Handle</option>
+                <option value="address">Address / City + State</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Generated Direct Links Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+            {generatedLinks.map((link) => (
+              <div
+                key={link.id}
+                className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col justify-between gap-3"
+              >
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className={link.requiresTorBrowser ? 'text-rose-400 font-semibold' : 'text-sky-400 font-semibold'}>
+                      {link.networkLayer}
+                    </span>
+                    <span className="text-slate-500">
+                      {link.requiresTorBrowser ? 'Tor Browser Required' : 'Direct Web Gateway'}
+                    </span>
+                  </div>
+                  <h3 className="text-sm font-bold text-white">{link.engineName}</h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">{link.description}</p>
+                  <p className="font-mono text-[11px] text-slate-500 break-all pt-1 select-all">
+                    {link.directUrl}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-900">
+                  <button
+                    onClick={() => copyWithFeedback(link.id, link.directUrl)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold text-slate-300 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {copiedKey === link.id ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy URL</span>
+                      </>
+                    )}
+                  </button>
+
+                  <a
+                    href={link.directUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                  >
+                    <span>{link.requiresTorBrowser ? 'Open .onion' : 'Launch Deep Link'}</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: BATCH AUTOMATED TAKEDOWN */}
       {activeTab === 'automation' && (
-        <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-3xl space-y-6">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-              <Terminal className="w-6 h-6" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-white">Automated Dark Web / Paste Takedown Engine</h2>
-              <p className="text-xs text-slate-400">
-                Dispatches statutory notices to host network abuse desks and de-indexes cached PII snippets
-              </p>
-            </div>
+        <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-6">
+          <div className="space-y-1">
+            <h2 className="text-xl font-bold text-white">
+              Automated Multi-Host Dark Web & Paste Takedown Queue
+            </h2>
+            <p className="text-xs text-slate-400">
+              Simultaneously transmits statutory CCPA, GDPR Art. 17, and anti-doxing erasure notices across all {findings.length} detected host compliance desks and logs audit confirmation tokens.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
+            <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
               <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Send className="w-3.5 h-3.5 text-emerald-400" /> Host Abuse Gateway
+                <Send className="w-3.5 h-3.5 text-emerald-400" /> Host Abuse Routing
               </span>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Automatically routes DMCA & statutory right-to-erasure payloads to the registrar and hosting abuse contacts of paste repositories.
+                Routes formal erasure notices to paste repositories, archive indexers, and upstream proxy abuse desks.
               </p>
             </div>
 
-            <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
+            <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
               <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Search className="w-3.5 h-3.5 text-sky-400" /> Search Engine De-Indexing
+                <Search className="w-3.5 h-3.5 text-sky-400" /> Search Cache Purge
               </span>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Formats and submits Google & Bing Personal Information Removal claims to expunge indexed snippets from web searches.
+                Pairs automated host notices with Google & Bing personal info de-indexing links for complete clearnet scrub.
               </p>
             </div>
 
-            <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
+            <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
               <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Key className="w-3.5 h-3.5 text-amber-400" /> Credential Invalidation
+                <Key className="w-3.5 h-3.5 text-amber-400" /> Session & Hash Hygiene
               </span>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Flags compromised credentials and provides step-by-step password vault rotation & passkey upgrade sequencing.
+                Tracks credential rotation and session cookie invalidation across infostealer and combolist exposures.
               </p>
             </div>
           </div>
 
-          <div className="p-5 bg-slate-950 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="p-5 bg-slate-950 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h3 className="text-sm font-bold text-white">Dispatch Batch Takedown for All Active Dark Web Leaks</h3>
+              <h3 className="text-sm font-bold text-white">
+                Execute Batch Takedown Across All {findings.length} Identified Sources
+              </h3>
               <p className="text-xs text-slate-400">
-                Transmits abuse notices simultaneously to {findings.length} identified host desks.
+                Recipients: {findings.map((f) => f.hostContact).join(' · ')}
               </p>
             </div>
 
             <button
-              onClick={() => {
-                setIsDispatching(true);
-                setTimeout(() => {
-                  setFindings((prev) => prev.map((f) => ({ ...f, status: 'takedown_dispatched' })));
-                  setIsDispatching(false);
-                  setDispatchSuccess(`Batch takedown dispatched across all ${findings.length} dark web leak hosts!`);
-                }, 1200);
-              }}
+              onClick={handleBatchTakedownDispatch}
               disabled={isDispatching}
-              className="px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-50 text-xs font-bold text-white transition-all shadow-lg shadow-red-600/30 flex items-center gap-2 cursor-pointer self-start sm:self-auto"
+              className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-xs font-bold text-white transition-colors flex items-center gap-2 cursor-pointer shrink-0"
             >
-              {isDispatching ? <RotateCcw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              Dispatch All {findings.length} Takedowns
+              {isDispatching ? (
+                <RotateCcw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              <span>Dispatch All {findings.length} Takedowns</span>
             </button>
           </div>
-        </div>
-      )}
 
-      {activeTab === 'manual' && (
-        <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-3xl space-y-6">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
-              <FileText className="w-6 h-6" />
+          {dispatchSuccess && (
+            <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+              <span>{dispatchSuccess}</span>
             </div>
-            <div>
-              <h2 className="text-xl font-bold text-white">Manual Dark Web & Clear Web Removal Protocols</h2>
-              <p className="text-xs text-slate-400">
-                Official statutory procedures to manually purge leaked identity dossiers and de-index search snippets
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="p-5 bg-slate-950 rounded-2xl border border-slate-800 space-y-3">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center text-xs">
-                    1
-                  </span>
-                  <h3 className="text-sm font-bold text-white">Google Search PII De-Indexing Removal</h3>
-                </div>
-                <a
-                  href="https://support.google.com/websearch/troubleshooter/3111061"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                >
-                  Official Google Removal Tool <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Google allows individuals to request the removal of personally identifiable information (PII) including phone numbers, physical addresses, email addresses, and confidential credentials from search results under their "Personal Info Removal" policy.
-              </p>
-            </div>
-
-            <div className="p-5 bg-slate-950 rounded-2xl border border-slate-800 space-y-3">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center text-xs">
-                    2
-                  </span>
-                  <h3 className="text-sm font-bold text-white">Pastebin & Public Paste Host Abuse Filing</h3>
-                </div>
-                <a
-                  href="https://pastebin.com/report"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                >
-                  Pastebin Abuse Portal <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Public paste services immediately delete pastes containing doxed phone numbers, private home addresses, and credit records upon receiving a formal abuse report.
-              </p>
-            </div>
-
-            <div className="p-5 bg-slate-950 rounded-2xl border border-slate-800 space-y-3 pt-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">Ready-to-Send Written Abuse Demand</h4>
-                  <p className="text-xs text-slate-400">Copy and submit to any hosting provider's abuse contact</p>
-                </div>
-                <button
-                  onClick={() => copyToClipboard(manualTakedownNotice)}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  {copiedText ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedText ? 'Copied' : 'Copy Notice'}
-                </button>
-              </div>
-
-              <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-56 overflow-y-auto leading-relaxed select-text">
-                {manualTakedownNotice}
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
     </div>

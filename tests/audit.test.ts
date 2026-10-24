@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 import { DATA_BROKERS } from '../src/data/brokers';
 import { runBrokerScan, isSyntheticDomain, getBrokerRecordSearchUrl } from '../src/utils/scanEngine';
 import { UserProfile, ScanResult } from '../src/types';
@@ -9,8 +11,13 @@ import {
   generateAsciiDocReport,
   generateMeReport
 } from '../src/utils/exportEngines';
-import { SEARCH_TYPES, MAX_STORED_SEARCHES, saveSearchProfile, getSavedSearches } from '../src/utils/searchProfiles';
+import { SEARCH_TYPES, MAX_STORED_SEARCHES } from '../src/utils/searchProfiles';
 import { getExhaustiveBrokerRegistry, triggerAutonomousRegistryExpansion } from '../src/utils/dynamicBrokerRegistry';
+import {
+  generateDirectDarkWebLinks,
+  generateDarkWebFindingsForProfile,
+  buildSourceTakedownNotice,
+} from '../src/utils/darkWebEngine';
 
 test('1. False-Positive Problem: Out-of-State Jurisdiction Disqualification (TX vs CA)', () => {
   const caUser: UserProfile = {
@@ -189,3 +196,141 @@ test('8. Record Search URL Query Construction', () => {
   assert(wpUrl.toLowerCase().includes('sarah'), 'Whitepages search URL contains first name');
   assert(wpUrl.toLowerCase().includes('connor'), 'Whitepages search URL contains last name');
 });
+
+test('9. Dark Web Direct Link Generator & Source-Specific Step-by-Step Removal Guides', () => {
+  const sampleUser: UserProfile = {
+    firstName: 'Elena',
+    lastName: 'Vance',
+    currentCity: 'Austin',
+    currentState: 'TX',
+    birthYear: '1990',
+    phoneNumbers: ['(512) 555-0192'],
+    emails: ['elena.vance@privacy.example'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  const emailLinks = generateDirectDarkWebLinks('elena.vance@privacy.example', 'email', 'TX');
+  assert(emailLinks.length >= 7, 'Must generate comprehensive deep/dark web links for email selector');
+  assert(
+    emailLinks.some((l) => l.directUrl.includes('.onion/search/?q=') && l.requiresTorBrowser),
+    'Must include a direct Tor v3 .onion hidden service query URI'
+  );
+  assert(
+    emailLinks.some((l) => l.directUrl.includes('ahmia.fi/search')),
+    'Must include Ahmia Tor relay search link'
+  );
+  assert(
+    emailLinks.some((l) => l.directUrl.includes('intelx.io')),
+    'Must include Intelligence X darknet archive link'
+  );
+
+  const scanResults = runBrokerScan(sampleUser);
+  const findings = generateDarkWebFindingsForProfile(sampleUser, scanResults);
+  assert(findings.length >= 6, 'Must generate findings across distinct dark web & deep web source categories');
+
+  for (const finding of findings) {
+    assert(finding.torOnionUri.includes('.onion'), `Finding ${finding.id} must expose a direct .onion URI`);
+    assert(finding.deepWebUrl.startsWith('https://'), `Finding ${finding.id} must expose a direct deep web URL`);
+    assert(finding.manualRemovalSteps.length >= 4, `Finding ${finding.id} must provide multi-step manual removal instructions`);
+    const notice = buildSourceTakedownNotice(finding, sampleUser);
+    assert(notice.includes('Elena Vance'), 'Source notice must populate subject full name');
+    assert(notice.includes(finding.hostContact), 'Source notice must target specific host contact');
+  }
+});
+
+test('10. Repository Secret Hygiene: Zero Plaintext Google API Keys or Tracked Firebase Config', () => {
+  const rootDir = process.cwd();
+  const forbiddenConfigPath = path.join(rootDir, 'firebase-applet-config.json');
+  assert.strictEqual(
+    fs.existsSync(forbiddenConfigPath),
+    false,
+    'firebase-applet-config.json must not exist with plaintext credentials in repository'
+  );
+
+  const googleKeyRegex = /AIza[0-9A-Za-z_-]{35}/;
+
+  function scanDirForSecrets(dirPath: string) {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        scanDirForSecrets(fullPath);
+      } else if (/\.(ts|tsx|js|json|yml|yaml|html|env|example|md)$/i.test(entry.name)) {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        assert.strictEqual(
+          googleKeyRegex.test(content),
+          false,
+          `Plaintext Google API key detected in ${fullPath}`
+        );
+      }
+    }
+  }
+
+  scanDirForSecrets(rootDir);
+});
+
+test('11. Universal User-Connected Email Dispatch (Zero Firebase Required) & SSRF Guard', async () => {
+  const {
+    detectProviderFromEmail,
+    resolveSmtpTransportSettings,
+    isSafePublicSmtpHost,
+    buildWebmailComposeUrls,
+  } = await import('../src/utils/emailProviderConfig');
+
+  assert.strictEqual(detectProviderFromEmail('alice@gmail.com'), 'gmail');
+  assert.strictEqual(detectProviderFromEmail('bob@outlook.com'), 'outlook');
+  assert.strictEqual(detectProviderFromEmail('carol@yahoo.com'), 'yahoo');
+  assert.strictEqual(detectProviderFromEmail('dave@icloud.com'), 'icloud');
+  assert.strictEqual(detectProviderFromEmail('erin@proton.me'), 'proton');
+  assert.strictEqual(detectProviderFromEmail('frank@customdomain.org'), 'custom');
+
+  const gmailSmtp = resolveSmtpTransportSettings({ provider: 'gmail' });
+  assert.strictEqual(gmailSmtp.host, 'smtp.gmail.com');
+  assert.strictEqual(gmailSmtp.port, 465);
+  assert.strictEqual(gmailSmtp.secure, true);
+
+  const outlookSmtp = resolveSmtpTransportSettings({ provider: 'outlook' });
+  assert.strictEqual(outlookSmtp.host, 'smtp.office365.com');
+  assert.strictEqual(outlookSmtp.port, 587);
+
+  // SSRF protection must block localhost, cloud metadata, and RFC1918 private IPs
+  assert.strictEqual(isSafePublicSmtpHost('localhost').valid, false);
+  assert.strictEqual(isSafePublicSmtpHost('127.0.0.1').valid, false);
+  assert.strictEqual(isSafePublicSmtpHost('169.254.169.254').valid, false);
+  assert.strictEqual(isSafePublicSmtpHost('10.0.0.5').valid, false);
+  assert.strictEqual(isSafePublicSmtpHost('192.168.1.10').valid, false);
+  assert.strictEqual(isSafePublicSmtpHost('172.20.0.1').valid, false);
+  assert.strictEqual(isSafePublicSmtpHost('smtp.fastmail.com').valid, true);
+
+  assert.throws(
+    () =>
+      resolveSmtpTransportSettings({
+        provider: 'custom',
+        customHost: '127.0.0.1',
+        customPort: 587,
+      }),
+    /blocked/i
+  );
+
+  const webmail = buildWebmailComposeUrls(
+    'privacy@spokeo.com',
+    'CCPA Deletion Notice',
+    'Delete my records.'
+  );
+  assert(webmail.gmailUrl.includes('mail.google.com'));
+  assert(webmail.outlookUrl.includes('outlook.live.com'));
+  assert(webmail.yahooUrl.includes('compose.mail.yahoo.com'));
+  assert(webmail.mailtoUrl.startsWith('mailto:privacy%40spokeo.com'));
+
+  // Verify package.json no longer depends on firebase
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+  assert.strictEqual(
+    Boolean(pkgJson.dependencies?.firebase),
+    false,
+    'Application should not require firebase dependency for user email dispatch'
+  );
+});
+
+

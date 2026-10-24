@@ -138,8 +138,8 @@ Printed Name: ${fullName}`;
             </div>
           )}
 
-          {/* Special Action for Mail-in Notarized Demand */}
-          {broker.removalMethod === 'Mail-in Notarized Demand' && (
+          {/* Special Action for Mail-In Demand */}
+          {broker.removalMethod === 'Mail-In' && (
             <div className="p-4 bg-amber-950/30 border border-amber-800/40 rounded-xl space-y-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
                 <FileText className="w-4 h-4 text-amber-400" />

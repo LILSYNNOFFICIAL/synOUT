@@ -67,7 +67,7 @@ export function exportExposureReportCsv(
   link.setAttribute('href', url);
   link.setAttribute(
     'download',
-    `sun-remove-audit-${profile.lastName.toLowerCase()}-${profile.firstName.toLowerCase()}.csv`
+    `synout-audit-${profile.lastName.toLowerCase()}-${profile.firstName.toLowerCase()}.csv`
   );
   document.body.appendChild(link);
   link.click();

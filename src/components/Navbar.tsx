@@ -128,11 +128,11 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={() => handleNavClick('monitoring')}
-            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer ${
+            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'monitoring' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <Activity className="w-3.5 h-3.5 text-emerald-400" />
             <span>Auto-Removal</span>
           </button>
 
@@ -156,17 +156,15 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>Specialty Bureaus</span>
           </button>
 
-          {hasScanResults && (
-            <button
-              onClick={() => handleNavClick('gmail')}
-              className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer ${
-                activeTab === 'gmail' ? 'text-white border-b-2 border-red-400 font-semibold' : 'hover:text-slate-200'
-              }`}
-            >
-              <Mail className="w-3.5 h-3.5 text-red-400" />
-              <span>Gmail API</span>
-            </button>
-          )}
+          <button
+            onClick={() => handleNavClick('gmail')}
+            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+              activeTab === 'gmail' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
+            }`}
+          >
+            <Mail className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Email Dispatch</span>
+          </button>
 
           {hasScanResults && (
             <button
@@ -253,11 +251,9 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button onClick={() => handleNavClick('bureaus')} className="w-full text-left p-2.5 rounded-lg text-amber-400 hover:bg-slate-900">
             Specialty Clearinghouses & Bureaus (LexisNexis)
           </button>
-          {hasScanResults && (
-            <button onClick={() => handleNavClick('gmail')} className="w-full text-left p-2.5 rounded-lg text-red-400 hover:bg-slate-900">
-              Gmail 1-by-1 Dispatch Center
-            </button>
-          )}
+          <button onClick={() => handleNavClick('gmail')} className="w-full text-left p-2.5 rounded-lg text-emerald-400 hover:bg-slate-900">
+            Email Dispatch (Connect Gmail / Outlook / Any Email)
+          </button>
           <button onClick={() => handleNavClick('directory')} className="w-full text-left p-2.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-900">
             700+ Data Broker Directory
           </button>

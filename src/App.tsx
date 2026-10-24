@@ -21,6 +21,10 @@ import { ListingDetailModal } from './components/ListingDetailModal';
 import { LegalNoticeModal } from './components/LegalNoticeModal';
 import { PowerOfAttorneyModal } from './components/PowerOfAttorneyModal';
 import { RemovalQueueModal } from './components/RemovalQueueModal';
+import { DiyOptOutAssistantModal } from './components/DiyOptOutAssistantModal';
+import { AuditLogModal } from './components/AuditLogModal';
+import { ResurfaceMonitorModal } from './components/ResurfaceMonitorModal';
+import { ExposureVectorModal } from './components/ExposureVectorModal';
 import { Footer } from './components/Footer';
 
 export default function App() {
@@ -46,6 +50,10 @@ export default function App() {
   // Modals
   const [activeListingModal, setActiveListingModal] = useState<{ broker: DataBroker; result: ScanResult } | null>(null);
   const [activeLegalModal, setActiveLegalModal] = useState<{ broker: DataBroker; result: ScanResult } | null>(null);
+  const [activeDiyModal, setActiveDiyModal] = useState<{ broker: DataBroker; result: ScanResult } | null>(null);
+  const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
+  const [isResurfaceModalOpen, setIsResurfaceModalOpen] = useState(false);
+  const [isVectorModalOpen, setIsVectorModalOpen] = useState(false);
   const [isPowerOfAttorneyOpen, setIsPowerOfAttorneyOpen] = useState(false);
   const [isBatchRemovalOpen, setIsBatchRemovalOpen] = useState(false);
 
@@ -82,7 +90,7 @@ export default function App() {
     // Save into search quota slots (up to 10)
     const saveRes = saveSearchProfile(profile, searchType, simulated);
     if (!saveRes.success && saveRes.quotaReached) {
-      alert(saveRes.message);
+      showToast(saveRes.message);
       setActiveTab('profiles');
       return;
     }
@@ -100,9 +108,11 @@ export default function App() {
     showToast(`Audit complete: ${exposed} exposed records identified across clearinghouses.`);
   };
 
-  const handleAutomatedOptOut = (brokerId: string) => {
+  const handleAutomatedOptOut = (brokerId: string, customConfirmationCode?: string, silent?: boolean) => {
     const broker = DATA_BROKERS.find((b) => b.id === brokerId);
-    const ref = `SYN-${Math.floor(1000 + Math.random() * 9000)}-${broker ? broker.id.slice(0, 3).toUpperCase() : 'BRK'}`;
+    const ref =
+      customConfirmationCode ||
+      `SYN-${Math.floor(1000 + Math.random() * 9000)}-${broker ? broker.id.slice(0, 3).toUpperCase() : 'BRK'}`;
 
     setScanResults((prev) =>
       prev.map((item) =>
@@ -117,7 +127,9 @@ export default function App() {
       )
     );
 
-    showToast(`Opt-out demand dispatched to ${broker?.name || 'broker'} (Ref: ${ref}). 15-45 day statutory review.`);
+    if (!silent) {
+      showToast(`Opt-out demand dispatched to ${broker?.name || 'broker'} (Ref: ${ref}). 15-45 day statutory review.`);
+    }
   };
 
   const handleToggleStatus = (brokerId: string) => {
@@ -216,10 +228,10 @@ export default function App() {
               onBatchOptOut={() => setIsBatchRemovalOpen(true)}
               onReScan={() => handleStartScan(userProfile, 'STANDARD_IDENTITY')}
               onToggleStatus={handleToggleStatus}
-              onOpenResurfaceModal={() => {}}
-              onOpenVectorModal={() => {}}
-              onOpenAuditLogModal={() => {}}
-              onOpenDiyAssistantModal={() => {}}
+              onOpenResurfaceModal={() => setIsResurfaceModalOpen(true)}
+              onOpenVectorModal={() => setIsVectorModalOpen(true)}
+              onOpenAuditLogModal={() => setIsAuditLogOpen(true)}
+              onOpenDiyAssistantModal={(b, r) => setActiveDiyModal({ broker: b, result: r })}
               onOpenGmailDispatch={() => setActiveTab('gmail')}
             />
           ) : (
@@ -298,30 +310,27 @@ export default function App() {
         )}
 
         {activeTab === 'gmail' && (
-          userProfile ? (
-            <GmailDispatchCenter
-              results={scanResults}
-              profile={userProfile}
-              onMarkDispatched={(brokerId, msgId) => {
-                handleAutomatedOptOut(brokerId);
-                showToast(`Notice dispatched to broker! Ref: ${msgId}`);
-              }}
-              onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
-            />
-          ) : (
-            <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
-              <h2 className="text-2xl font-bold text-white">No Exposed Brokers in Queue</h2>
-              <p className="text-slate-400 text-sm">
-                Run an exposure scan first to generate customized legal deletion letters for each broker.
-              </p>
-              <button
-                onClick={() => setActiveTab('scanner')}
-                className="px-6 py-3 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer"
-              >
-                Start Free Scan
-              </button>
-            </div>
-          )
+          <GmailDispatchCenter
+            results={scanResults}
+            profile={
+              userProfile || {
+                firstName: 'Jane',
+                lastName: 'Doe',
+                currentCity: 'Sacramento',
+                currentState: 'CA',
+                birthYear: '1988',
+                phoneNumbers: ['(916) 555-0144'],
+                emails: [''],
+                relatives: [],
+                previousLocations: [],
+              }
+            }
+            onMarkDispatched={(brokerId, msgId, silent) => {
+              handleAutomatedOptOut(brokerId, msgId, silent);
+            }}
+            onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
+            onStartScan={() => setActiveTab('scanner')}
+          />
         )}
 
         {activeTab === 'tracker' && (
@@ -333,7 +342,7 @@ export default function App() {
               onOpenLegalNotice={(b, r) => setActiveLegalModal({ broker: b, result: r })}
               onToggleStatus={handleToggleStatus}
               onBatchOptOut={() => setIsBatchRemovalOpen(true)}
-              onOpenDiyAssistantModal={() => {}}
+              onOpenDiyAssistantModal={(b, r) => setActiveDiyModal({ broker: b, result: r })}
             />
           ) : (
             <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
@@ -392,6 +401,60 @@ export default function App() {
           queue={exposedItems}
           onClose={() => setIsBatchRemovalOpen(false)}
           onComplete={handleBatchOptOutComplete}
+        />
+      )}
+
+      {activeDiyModal && userProfile && (
+        <DiyOptOutAssistantModal
+          broker={activeDiyModal.broker}
+          result={activeDiyModal.result}
+          profile={userProfile}
+          onClose={() => setActiveDiyModal(null)}
+          onMarkSubmitted={(brokerId) => {
+            handleAutomatedOptOut(brokerId);
+            setActiveDiyModal(null);
+          }}
+        />
+      )}
+
+      {isAuditLogOpen && userProfile && (
+        <AuditLogModal
+          results={scanResults}
+          profile={userProfile}
+          onClose={() => setIsAuditLogOpen(false)}
+        />
+      )}
+
+      {isResurfaceModalOpen && (
+        <ResurfaceMonitorModal
+          results={scanResults}
+          onTriggerResurfaceCheck={(resurfacedIds) => {
+            if (resurfacedIds.length > 0) {
+              setScanResults((prev) =>
+                prev.map((item) =>
+                  resurfacedIds.includes(item.brokerId)
+                    ? { ...item, status: 'exposed', removalStatus: 'found' }
+                    : item
+                )
+              );
+              showToast(`${resurfacedIds.length} resurfaced broker record(s) flagged for re-suppression.`);
+            } else {
+              showToast('Resurface sweep clean: zero suppressed records re-appeared.');
+            }
+          }}
+          onClose={() => setIsResurfaceModalOpen(false)}
+        />
+      )}
+
+      {isVectorModalOpen && userProfile && (
+        <ExposureVectorModal
+          results={scanResults}
+          profile={userProfile}
+          onClose={() => setIsVectorModalOpen(false)}
+          onNavigateToTracker={() => {
+            setIsVectorModalOpen(false);
+            setActiveTab('tracker');
+          }}
         />
       )}
 

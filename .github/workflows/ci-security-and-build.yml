@@ -1,0 +1,55 @@
+name: Security Audit & Build (GitHub Environments)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  secret-hygiene-and-build:
+    name: Verify Zero Plaintext Secrets & Build
+    runs-on: ubuntu-latest
+    # Pulls encrypted secrets and configuration variables from GitHub Environments
+    # Configure at: Repository Settings -> Environments -> production
+    environment: production
+
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ vars.VITE_GOOGLE_OAUTH_CLIENT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enforce Zero Plaintext Google API Keys in Source
+        run: |
+          if grep -rnE "AIza[0-9A-Za-z_-]{35}" . --exclude-dir=node_modules --exclude-dir=.git; then
+            echo "::error::Plaintext Google API key detected in repository files! Store keys in GitHub Environments instead."
+            exit 1
+          fi
+          if [ -f "firebase-applet-config.json" ]; then
+            echo "::error::firebase-applet-config.json must not be committed to version control."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Run Automated Audit & Security Test Suite
+        run: npm test
+
+      - name: Production Build
+        run: npm run build

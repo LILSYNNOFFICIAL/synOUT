@@ -373,25 +373,40 @@ export function triggerPrintablePdf(results: ScanResult[], stats: ScanStats, pro
   <div class="footer">
     Generated autonomously by synOUT Personal Data Scrubbing Platform. Zero PII is retained on servers.
   </div>
-
-  <script>
-    window.onload = function() {
-      setTimeout(function() {
-        window.print();
-      }, 250);
-    };
-  </script>
 </body>
 </html>`;
 
-  const printWindow = window.open('', '_blank', 'width=900,height=700');
-  if (printWindow) {
-    printWindow.document.open();
-    printWindow.document.write(printHtml);
-    printWindow.document.close();
+  if (typeof document === 'undefined') return;
+  const iframe = document.createElement('iframe');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(iframe);
+
+  const frameDoc = iframe.contentWindow?.document;
+  if (frameDoc && iframe.contentWindow) {
+    frameDoc.open();
+    frameDoc.write(printHtml);
+    frameDoc.close();
+    setTimeout(() => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch {
+        downloadFile(printHtml, `synOUT-Exposure-Report-${profile.lastName}.html`, 'text/html');
+      } finally {
+        setTimeout(() => {
+          if (iframe.parentNode) {
+            iframe.parentNode.removeChild(iframe);
+          }
+        }, 2000);
+      }
+    }, 250);
   } else {
-    // If popups are blocked in an iframe, provide markdown download as fallback
-    const md = generateMarkdownReport(results, stats, profile);
-    downloadFile(md, `synOUT-Exposure-Report-${profile.lastName}.md`, 'text/markdown');
+    downloadFile(printHtml, `synOUT-Exposure-Report-${profile.lastName}.html`, 'text/html');
   }
 }
