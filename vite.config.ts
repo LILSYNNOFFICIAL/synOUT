@@ -18,8 +18,8 @@ function silentHmrClientPlugin(): Plugin {
 
       const updated = code
         .replace(
-          /const createWebSocketModuleRunnerTransport\s*=\s*\(options\)\s*=>\s*\{[\s\S]*?\n\};\n\/\/#endregion/,
-          'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\n//#endregion'
+          /const createWebSocketModuleRunnerTransport\\s*=\\s*\\(options\\)\\s*=>\\s*\\{[\\s\\S]*?\\n\\};\\n\\/\\/#endregion/,
+          'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\\n//#endregion'
         )
         .replace('console.debug("[vite] connecting...");', '');
 
@@ -29,6 +29,9 @@ function silentHmrClientPlugin(): Plugin {
 }
 
 export default defineConfig({
+  // GitHub Pages hosts project sites beneath /<repository>/, not /.
+  // Local development and non-Pages deployments continue to use the root path.
+  base: process.env.GITHUB_PAGES === 'true' ? '/synOUT/' : '/',
   plugins: [
     react(),
     tailwindcss(),
@@ -41,4 +44,3 @@ export default defineConfig({
     ws: false,
   },
 });
-
