@@ -18,8 +18,8 @@ function silentHmrClientPlugin(): Plugin {
 
       const updated = code
         .replace(
-          /const createWebSocketModuleRunnerTransport\\s*=\\s*\\(options\\)\\s*=>\\s*\\{[\\s\\S]*?\\n\\};\\n\\/\\/#endregion/,
-          'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\\n//#endregion'
+          /const createWebSocketModuleRunnerTransport\s*=\s*\(options\)\s*=>\s*\{[\s\S]*?\n\};\n\/\/#endregion/,
+          'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\n//#endregion'
         )
         .replace('console.debug("[vite] connecting...");', '');
 
