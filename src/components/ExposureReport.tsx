@@ -1,15 +1,20 @@
 import React, { useState } from 'react';
-import { DATA_BROKERS } from '../data/brokers';
 import { DataBroker, ScanResult, ScanStats, UserProfile } from '../types';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
-import { 
-  generateMarkdownReport, 
-  generatePlainTextReport, 
-  generateAsciiDocReport, 
+import {
+  findBrokerById,
+  hasVerifiedEmailReceipt,
+  useEmailConnection,
+} from '../services/emailConnectionStore';
+import {
+  generateMarkdownReport,
+  generatePlainTextReport,
+  generateAsciiDocReport,
   generateMeReport,
-  downloadFile, 
-  triggerPrintablePdf 
+  downloadFile,
+  triggerPrintablePdf,
 } from '../utils/exportEngines';
+import { exportExposureReportCsv } from '../utils/csvExport';
 import {
   ShieldAlert,
   ShieldCheck,
@@ -20,22 +25,21 @@ import {
   Eye,
   LayoutGrid,
   List,
-  Filter,
-  CheckCircle2,
   Clock,
   Printer,
-  Sparkles,
   RotateCcw,
   Globe,
   Mail,
-  Lock,
-  FileSpreadsheet
+  FileSpreadsheet,
+  AlertTriangle,
+  Archive,
 } from 'lucide-react';
 
 interface ExposureReportProps {
   results: ScanResult[];
   stats: ScanStats;
   profile: UserProfile;
+  relistedBrokerIds?: string[];
   onOpenListingModal: (broker: DataBroker, result: ScanResult) => void;
   onOpenLegalNotice: (broker: DataBroker, result: ScanResult) => void;
   onAutomatedOptOut: (brokerId: string) => void;
@@ -48,21 +52,31 @@ interface ExposureReportProps {
   onOpenAuditLogModal: () => void;
   onOpenDiyAssistantModal: (broker: DataBroker, result: ScanResult) => void;
   onOpenGmailDispatch?: (brokerId?: string) => void;
+  onOpenDeindexCenter?: () => void;
+  onOpenVaultModal?: () => void;
+  onOpenFirewallHub?: () => void;
+  onOpenReplyTriage?: () => void;
 }
 
 export const ExposureReport: React.FC<ExposureReportProps> = ({
   results,
   stats,
   profile,
+  relistedBrokerIds = [],
   onOpenListingModal,
   onOpenLegalNotice,
   onAutomatedOptOut,
   onBatchOptOut,
   onBatchOptOutSelected,
   onReScan,
-  onToggleStatus,
+  onOpenResurfaceModal,
+  onOpenVectorModal,
+  onOpenAuditLogModal,
   onOpenDiyAssistantModal,
-  onOpenGmailDispatch,
+  onOpenDeindexCenter,
+  onOpenVaultModal,
+  onOpenFirewallHub,
+  onOpenReplyTriage,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -72,11 +86,13 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
   const [selectedBrokerIds, setSelectedBrokerIds] = useState<string[]>([]);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
 
+  const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
   const exposedItems = results.filter((r) => r.status === 'exposed');
+  const pendingEmailCount = exposedItems.filter((r) => !hasVerifiedEmailReceipt(r)).length;
 
   const filteredItems = exposedItems
     .filter((item) => {
-      const broker = DATA_BROKERS.find((b) => b.id === item.brokerId);
+      const broker = findBrokerById(item.brokerId);
       if (!broker) return false;
 
       const matchesQuery =
@@ -90,8 +106,8 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
       return matchesQuery && matchesCat && matchesRisk;
     })
     .sort((a, b) => {
-      const brokerA = DATA_BROKERS.find((br) => br.id === a.brokerId);
-      const brokerB = DATA_BROKERS.find((br) => br.id === b.brokerId);
+      const brokerA = findBrokerById(a.brokerId);
+      const brokerB = findBrokerById(b.brokerId);
       if (!brokerA || !brokerB) return 0;
 
       if (sortBy === 'risk') {
@@ -108,6 +124,18 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
     setSelectedBrokerIds((prev) =>
       prev.includes(brokerId) ? prev.filter((id) => id !== brokerId) : [...prev, brokerId]
     );
+  };
+
+  const allFilteredIds = filteredItems.map((i) => i.brokerId);
+  const areAllFilteredSelected =
+    allFilteredIds.length > 0 && allFilteredIds.every((id) => selectedBrokerIds.includes(id));
+
+  const handleToggleSelectAllFiltered = () => {
+    if (areAllFilteredSelected) {
+      setSelectedBrokerIds((prev) => prev.filter((id) => !allFilteredIds.includes(id)));
+    } else {
+      setSelectedBrokerIds((prev) => Array.from(new Set([...prev, ...allFilteredIds])));
+    }
   };
 
   const handleExportMarkdown = () => {
@@ -134,6 +162,11 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
     setExportDropdownOpen(false);
   };
 
+  const handleExportCsv = () => {
+    exportExposureReportCsv(profile, results);
+    setExportDropdownOpen(false);
+  };
+
   const handleExportPdf = () => {
     triggerPrintablePdf(results, stats, profile);
     setExportDropdownOpen(false);
@@ -141,46 +174,82 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
+      {/* Regression Banner when previously actioned brokers re-appear */}
+      {relistedBrokerIds.length > 0 && (
+        <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold text-rose-300">
+                Re-Exposure Regression Detected ({relistedBrokerIds.length} Broker{relistedBrokerIds.length === 1 ? '' : 's'}):{' '}
+              </span>
+              <span className="text-slate-300">
+                {relistedBrokerIds
+                  .map((id) => findBrokerById(id)?.name || id)
+                  .join(', ')}{' '}
+                re-indexed your personal details after a prior suppression action. Re-send opt-out notices immediately.
+              </span>
+            </div>
+          </div>
+          {onBatchOptOutSelected && (
+            <button
+              type="button"
+              onClick={() => onBatchOptOutSelected(relistedBrokerIds)}
+              className="px-3.5 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Re-Suppress {relistedBrokerIds.length} Regression{relistedBrokerIds.length === 1 ? '' : 's'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Top Dossier Summary Header */}
       <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-3xl space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-bold uppercase tracking-wider text-rose-400 flex items-center gap-1.5">
                 <ShieldAlert className="w-3.5 h-3.5" /> High Exposure Detected
               </span>
-              <span className="text-xs text-slate-400">
+              <span className="text-slate-600" aria-hidden="true">·</span>
+              <span className="text-slate-400">
                 Audited: {profile.firstName} {profile.lastName} ({profile.currentCity}, {profile.currentState})
               </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
-              Data Broker Exposure & Public Dossier Report
+              Data Broker Exposure &amp; Public Dossier Report
             </h1>
             <p className="text-sm text-slate-400 max-w-2xl">
-              We identified <strong>{stats.exposedBrokers} data brokers</strong> actively advertising your private contact details, address records, and background profiles for public sale.
+              We identified <strong className="text-white tabular-nums">{stats.exposedBrokers} data brokers</strong> actively advertising your private contact details, address records, and background profiles for public sale.
             </p>
           </div>
 
-          {/* Action Center: Export Findings (.PDF, .txt, .md, .me, .adoc) & Batch Removal */}
+          {/* Action Center: Export Findings & Batch Removal */}
           <div className="flex flex-wrap items-center gap-2.5">
-            {/* Multi-Format Export Dropdown */}
             <div className="relative">
               <button
                 onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
-                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-2 shadow-sm transition-colors cursor-pointer"
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-2 shadow-sm transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Download className="w-4 h-4 text-emerald-400" />
-                Export Dossier (.PDF, .txt, .md, .me, .adoc)
+                <span>Export Dossier (7 Formats)</span>
               </button>
 
               {exportDropdownOpen && (
-                <div className="absolute right-0 mt-2 w-60 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-2 z-30 space-y-1">
+                <div className="absolute right-0 mt-2 w-64 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-2 z-30 space-y-1">
                   <button
                     onClick={handleExportPdf}
                     className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 hover:text-white hover:bg-slate-800 flex items-center justify-between cursor-pointer"
                   >
                     <span>Printable PDF (.pdf)</span>
                     <Printer className="w-3.5 h-3.5 text-rose-400" />
+                  </button>
+                  <button
+                    onClick={handleExportCsv}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 hover:text-white hover:bg-slate-800 flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Spreadsheet Ledger (.csv)</span>
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
                   </button>
                   <button
                     onClick={handleExportMarkdown}
@@ -210,22 +279,49 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                     <span>AsciiDoc Document (.adoc)</span>
                     <FileText className="w-3.5 h-3.5 text-amber-400" />
                   </button>
+                  {onOpenVaultModal && (
+                    <button
+                      onClick={() => {
+                        setExportDropdownOpen(false);
+                        onOpenVaultModal();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-emerald-300 hover:text-white hover:bg-slate-800 flex items-center justify-between cursor-pointer border-t border-slate-800 pt-2"
+                    >
+                      <span>Encrypted Vault Backup (.json)</span>
+                      <Archive className="w-3.5 h-3.5 text-emerald-400" />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
 
+            {selectedBrokerIds.length > 0 && onBatchOptOutSelected && (
+              <button
+                type="button"
+                onClick={() => onBatchOptOutSelected(selectedBrokerIds)}
+                className="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-extrabold flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap tabular-nums"
+              >
+                <Mail className="w-4 h-4" />
+                <span>Opt Out Selected ({selectedBrokerIds.length})</span>
+              </button>
+            )}
+
             <button
               onClick={onBatchOptOut}
-              className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
+              className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer whitespace-nowrap tabular-nums"
             >
-              <Sparkles className="w-4 h-4" />
-              Dispatch All {stats.exposedBrokers} Removals
+              <Mail className="w-4 h-4" />
+              <span>
+                {pendingEmailCount > 0
+                  ? `Opt Out of All (${pendingEmailCount} Brokers)${isDirectSendConnected && activeConnectedEmail ? ` via ${activeConnectedEmail}` : ''}`
+                  : `Re-Send Opt-Out Emails (${stats.exposedBrokers})`}
+              </span>
             </button>
           </div>
         </div>
 
         {/* Metric Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2 tabular-nums">
           <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
             <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">Exposed Brokers</span>
             <span className="text-2xl font-extrabold text-rose-400 font-mono">{stats.exposedBrokers}</span>
@@ -246,12 +342,75 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
             <span className="text-2xl font-extrabold text-emerald-400 font-mono">{stats.inProgressRemovals}</span>
           </div>
         </div>
+
+        {/* Secondary Analysis & Verification Bar */}
+        <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenVectorModal}
+              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white font-medium transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Risk Vectors Breakdown
+            </button>
+            <button
+              type="button"
+              onClick={onOpenAuditLogModal}
+              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white font-medium transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Statutory Audit Proof Log
+            </button>
+            <button
+              type="button"
+              onClick={onOpenResurfaceModal}
+              className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white font-medium transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Resurface Defense Monitor
+            </button>
+            {onOpenDeindexCenter && (
+              <button
+                type="button"
+                onClick={onOpenDeindexCenter}
+                className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-sky-400 hover:text-sky-300 font-medium transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Search Engine De-Indexing
+              </button>
+            )}
+            {onOpenFirewallHub && (
+              <button
+                type="button"
+                onClick={onOpenFirewallHub}
+                className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-emerald-300 hover:text-emerald-200 font-medium transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Public Records &amp; Canaries
+              </button>
+            )}
+            {onOpenReplyTriage && (
+              <button
+                type="button"
+                onClick={onOpenReplyTriage}
+                className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-amber-300 hover:text-amber-200 font-medium transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Triage Broker Reply
+              </button>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={onReScan}
+            className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-emerald-400 font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Re-Run Audit Scan</span>
+          </button>
+        </div>
       </div>
 
-      {/* Filter & View Controls */}
-      <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
-        <div className="flex items-center gap-2 flex-1 max-w-md">
-          <div className="relative w-full">
+      {/* Filter, Multi-Select & Sort Controls */}
+      <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col lg:flex-row lg:items-center justify-between gap-4 text-xs">
+        <div className="flex flex-wrap items-center gap-3 flex-1">
+          <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -261,9 +420,21 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
               className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
             />
           </div>
+
+          {filteredItems.length > 0 && (
+            <button
+              type="button"
+              onClick={handleToggleSelectAllFiltered}
+              className="px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-medium cursor-pointer whitespace-nowrap tabular-nums"
+            >
+              {areAllFilteredSelected
+                ? 'Clear Selection'
+                : `Select All (${filteredItems.length})`}
+            </button>
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
@@ -271,9 +442,11 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
           >
             <option value="all">All Categories</option>
             <option value="People Search">People Search</option>
-            <option value="Financial & Credit Marketing">Financial & Credit</option>
-            <option value="Real Estate & Property">Property & Deeds</option>
+            <option value="Financial & Credit Marketing">Financial &amp; Credit</option>
+            <option value="Real Estate & Property">Property &amp; Deeds</option>
             <option value="Arrest & Court Records">Court Records</option>
+            <option value="Vehicle & Asset Registry">Vehicle &amp; Assets</option>
+            <option value="B2B & Professional Intelligence">B2B &amp; Executive</option>
           </select>
 
           <select
@@ -287,12 +460,24 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
             <option value="Medium">Medium</option>
           </select>
 
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as 'risk' | 'name' | 'records')}
+            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-300 focus:outline-none cursor-pointer"
+            aria-label="Sort exposed brokers"
+          >
+            <option value="risk">Sort: Highest Risk</option>
+            <option value="records">Sort: Most Records</option>
+            <option value="name">Sort: Alphabetical</option>
+          </select>
+
           <div className="flex items-center border border-slate-800 rounded-xl overflow-hidden bg-slate-950">
             <button
               onClick={() => setViewMode('grid')}
               className={`p-2 transition-colors cursor-pointer ${
                 viewMode === 'grid' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
               }`}
+              title="Grid View"
             >
               <LayoutGrid className="w-4 h-4" />
             </button>
@@ -301,6 +486,7 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
               className={`p-2 transition-colors cursor-pointer ${
                 viewMode === 'table' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
               }`}
+              title="Table View"
             >
               <List className="w-4 h-4" />
             </button>
@@ -312,36 +498,63 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
       {viewMode === 'grid' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredItems.map((result) => {
-            const broker = DATA_BROKERS.find((b) => b.id === result.brokerId);
+            const broker = findBrokerById(result.brokerId);
             if (!broker) return null;
             const searchUrl = getBrokerRecordSearchUrl(broker, profile);
-            const isDispatched = result.removalStatus === 'submitted';
+            const isDispatched = hasVerifiedEmailReceipt(result);
             const isRemoved = result.removalStatus === 'removed';
+            const isSelected = selectedBrokerIds.includes(broker.id);
+            const isRelisted =
+              relistedBrokerIds.includes(broker.id) || Boolean(result.isRegression);
 
             return (
               <div
                 key={result.id}
-                className="p-6 bg-slate-900 border border-slate-800 rounded-3xl space-y-4 hover:border-slate-700 transition-all flex flex-col justify-between"
+                className={`p-6 bg-slate-900 border rounded-3xl space-y-4 transition-all flex flex-col justify-between ${
+                  isSelected
+                    ? 'border-emerald-500/70'
+                    : isRelisted
+                    ? 'border-rose-500/50'
+                    : 'border-slate-800 hover:border-slate-700'
+                }`}
               >
                 <div className="space-y-3">
                   <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-950 text-slate-400 border border-slate-800">
-                        {broker.category}
-                      </span>
-                      <h3 className="text-base font-bold text-white mt-1.5">{broker.name}</h3>
-                      <p className="text-xs text-slate-500 font-mono">{broker.domain}</p>
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectBroker(broker.id)}
+                        aria-label={`Select ${broker.name} for batch opt-out`}
+                        className="mt-1 rounded border-slate-700 bg-slate-950 text-emerald-500 cursor-pointer shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <span className="text-[10px] font-mono text-slate-400 block">
+                          {broker.category}
+                        </span>
+                        <h3 className="text-base font-bold text-white mt-0.5 truncate">
+                          {broker.name}
+                        </h3>
+                        <p className="text-xs text-slate-500 font-mono truncate">{broker.domain}</p>
+                      </div>
                     </div>
 
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                        broker.risk === 'Critical'
-                          ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                          : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                      }`}
-                    >
-                      {broker.risk} Risk
-                    </span>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                          broker.risk === 'Critical'
+                            ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                            : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                        }`}
+                      >
+                        {broker.risk} Risk
+                      </span>
+                      {isRelisted && (
+                        <span className="text-[10px] font-mono font-semibold text-rose-400">
+                          Re-Listed
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Leaked Attributes */}
@@ -384,7 +597,7 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                         <ExternalLink className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
                         Official Opt-Out Link
                       </span>
-                      <span className="text-[10px] text-slate-500 font-mono">{broker.removalTime}</span>
+                      <span className="text-[10px] text-slate-500 font-mono tabular-nums">{broker.removalTime}</span>
                     </a>
                   </div>
                 </div>
@@ -408,8 +621,16 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                   </button>
 
                   <button
+                    onClick={() => onOpenDiyAssistantModal(broker, result)}
+                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer text-[11px] font-semibold"
+                    title="Step-by-Step DIY Opt-Out Guide"
+                  >
+                    DIY
+                  </button>
+
+                  <button
                     onClick={() => onAutomatedOptOut(broker.id)}
-                    className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap ${
                       isRemoved
                         ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                         : isDispatched
@@ -423,10 +644,12 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                       </>
                     ) : isDispatched ? (
                       <>
-                        <Clock className="w-3.5 h-3.5" /> Dispatched
+                        <Clock className="w-3.5 h-3.5" /> Email Sent
                       </>
                     ) : (
-                      'Opt-Out Request'
+                      <>
+                        <Mail className="w-3.5 h-3.5" /> Send Opt-Out Email
+                      </>
                     )}
                   </button>
                 </div>
@@ -440,6 +663,15 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-800 text-slate-400">
+                <th className="pb-3 pr-2 w-8">
+                  <input
+                    type="checkbox"
+                    checked={areAllFilteredSelected}
+                    onChange={handleToggleSelectAllFiltered}
+                    aria-label="Select all filtered brokers"
+                    className="rounded border-slate-700 bg-slate-950 text-emerald-500 cursor-pointer"
+                  />
+                </th>
                 <th className="pb-3 font-semibold">Entity Name</th>
                 <th className="pb-3 font-semibold">Category</th>
                 <th className="pb-3 font-semibold">Risk Level</th>
@@ -451,12 +683,22 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
             </thead>
             <tbody className="divide-y divide-slate-800/60">
               {filteredItems.map((result) => {
-                const broker = DATA_BROKERS.find((b) => b.id === result.brokerId);
+                const broker = findBrokerById(result.brokerId);
                 if (!broker) return null;
                 const searchUrl = getBrokerRecordSearchUrl(broker, profile);
+                const isSelected = selectedBrokerIds.includes(broker.id);
 
                 return (
                   <tr key={result.id} className="hover:bg-slate-950/40">
+                    <td className="py-3 pr-2">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectBroker(broker.id)}
+                        aria-label={`Select ${broker.name}`}
+                        className="rounded border-slate-700 bg-slate-950 text-emerald-500 cursor-pointer"
+                      />
+                    </td>
                     <td className="py-3">
                       <strong className="text-white block">{broker.name}</strong>
                       <span className="text-slate-500 font-mono text-[11px]">{broker.domain}</span>
@@ -496,21 +738,33 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                         className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
                           result.removalStatus === 'removed'
                             ? 'text-emerald-400 bg-emerald-500/10'
-                            : result.removalStatus === 'submitted'
+                            : hasVerifiedEmailReceipt(result)
                             ? 'text-sky-400 bg-sky-500/10'
                             : 'text-amber-400 bg-amber-500/10'
                         }`}
                       >
-                        {result.removalStatus || 'exposed'}
+                        {result.removalStatus === 'removed'
+                          ? 'removed'
+                          : hasVerifiedEmailReceipt(result)
+                          ? 'email sent'
+                          : 'exposed'}
                       </span>
                     </td>
                     <td className="py-3 text-right">
-                      <button
-                        onClick={() => onAutomatedOptOut(broker.id)}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer"
-                      >
-                        Opt-Out
-                      </button>
+                      <div className="inline-flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => onOpenDiyAssistantModal(broker, result)}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-semibold text-xs cursor-pointer"
+                        >
+                          DIY
+                        </button>
+                        <button
+                          onClick={() => onAutomatedOptOut(broker.id)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer whitespace-nowrap"
+                        >
+                          Send Opt-Out
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

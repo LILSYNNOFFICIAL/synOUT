@@ -19,6 +19,7 @@ export interface StoredSearchProfile {
   typeLabel: string;
   timestamp: string;
   profileData: UserProfile;
+  savedResults?: ScanResult[];
   exposedCount: number;
   totalScanned: number;
 }
@@ -80,12 +81,30 @@ export const MAX_STORED_SEARCHES = 10;
 
 const STORAGE_KEY = 'synout_saved_searches';
 
-export function getSavedSearches(): StoredSearchProfile[] {
-  if (typeof localStorage === 'undefined') return [];
+function readSavedSearchesRaw(): string | null {
+  if (typeof window === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw);
+    return window.localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeSavedSearchesRaw(serialized: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, serialized);
+  } catch {
+    // Ignore iframe storage or quota restrictions
+  }
+}
+
+export function getSavedSearches(): StoredSearchProfile[] {
+  const raw = readSavedSearchesRaw();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -96,7 +115,6 @@ export function saveSearchProfile(
   searchType: SearchTypeCategory,
   results: ScanResult[]
 ): { success: boolean; message?: string; quotaReached?: boolean } {
-  if (typeof localStorage === 'undefined') return { success: true };
   const existing = getSavedSearches();
 
   if (existing.length >= MAX_STORED_SEARCHES) {
@@ -115,19 +133,32 @@ export function saveSearchProfile(
     typeLabel: typeConfig.label,
     timestamp: new Date().toLocaleString(),
     profileData: profile,
+    savedResults: results,
     exposedCount: results.filter((r) => r.status === 'exposed').length,
     totalScanned: results.length,
   };
 
   const updated = [newProfile, ...existing];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  writeSavedSearchesRaw(JSON.stringify(updated));
   return { success: true };
 }
 
 export function deleteSearchProfile(id: string): StoredSearchProfile[] {
-  if (typeof localStorage === 'undefined') return [];
   const existing = getSavedSearches();
   const updated = existing.filter((s) => s.id !== id);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  writeSavedSearchesRaw(JSON.stringify(updated));
   return updated;
+}
+
+export function restoreSavedSearches(profiles: StoredSearchProfile[]): void {
+  writeSavedSearchesRaw(JSON.stringify(profiles.slice(0, MAX_STORED_SEARCHES)));
+}
+
+export function clearAllSavedSearches(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Ignore storage restriction errors
+  }
 }

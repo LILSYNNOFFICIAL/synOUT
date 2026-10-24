@@ -55,7 +55,11 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
   const handleFinish = () => {
     setIsFadingOut(true);
     setTimeout(() => {
-      sessionStorage.setItem('synout_splash_shown', 'true');
+      try {
+        window.sessionStorage.setItem('synout_splash_shown', 'true');
+      } catch {
+        // Ignore storage restrictions in sandboxed preview iframes
+      }
       onComplete();
     }, 450);
   };

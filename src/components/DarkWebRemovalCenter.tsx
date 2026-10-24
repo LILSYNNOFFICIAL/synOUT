@@ -8,6 +8,11 @@ import {
   buildSourceTakedownNotice,
 } from '../utils/darkWebEngine';
 import {
+  useEmailConnection,
+  sendEmailViaConnectedAccount,
+} from '../services/emailConnectionStore';
+import { copyTextToClipboard } from '../utils/exportEngines';
+import {
   Skull,
   Globe,
   ShieldAlert,
@@ -26,14 +31,23 @@ import {
   Square,
   ChevronRight,
   Lock,
+  AlertTriangle,
+  Mail,
+  X,
 } from 'lucide-react';
 
 interface DarkWebRemovalCenterProps {
   profile: UserProfile;
   results: ScanResult[];
+  onOpenConnectEmail?: () => void;
 }
 
-export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({ profile, results }) => {
+export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({
+  profile,
+  results,
+  onOpenConnectEmail,
+}) => {
+  const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
   const initialFindings = useMemo(
     () => generateDarkWebFindingsForProfile(profile, results),
     [profile, results]
@@ -80,7 +94,7 @@ export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({ prof
   );
 
   const copyWithFeedback = (key: string, value: string) => {
-    navigator.clipboard.writeText(value);
+    void copyTextToClipboard(value);
     setCopiedKey(key);
     setTimeout(() => {
       setCopiedKey((prev) => (prev === key ? null : prev));
@@ -105,42 +119,64 @@ export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({ prof
     });
   };
 
-  const handleTakedownDispatch = async (finding: DarkWebFinding) => {
-    setIsDispatching(true);
-    setDispatchSuccess(null);
-    try {
-      const res = await fetch('/api/darkweb/dispatch-takedown', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourceTitle: finding.sourceName,
-          hostContact: finding.hostContact,
-          sourceCategory: finding.sourceCategory,
-        }),
-      });
-      const payload = await res.json().catch(() => null);
-      const refCode = payload?.referenceId || `DW-TK-${Date.now().toString(36).toUpperCase()}`;
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const [pendingConfirmTargets, setPendingConfirmTargets] = useState<DarkWebFinding[] | null>(null);
 
-      setFindings((prev) =>
-        prev.map((f) =>
-          f.id === finding.id && f.status === 'active'
-            ? { ...f, status: 'takedown_dispatched' }
-            : f
-        )
+  const handleTakedownDispatch = (finding: DarkWebFinding) => {
+    setDispatchError(null);
+    setDispatchSuccess(null);
+    if (!isDirectSendConnected) {
+      setDispatchError(
+        'Connect your email account first so synOUT can send this statutory takedown email directly from your address.'
       );
-      setDispatchSuccess(
-        `Statutory DMCA & PII erasure demand routed to ${finding.hostContact} (Ref: ${refCode}). Follow the source-specific checklist below to verify host cache purge.`
-      );
-    } finally {
-      setIsDispatching(false);
+      return;
     }
+    setPendingConfirmTargets([finding]);
   };
 
-  const handleBatchTakedownDispatch = async () => {
-    setIsDispatching(true);
+  const handleBatchTakedownDispatch = () => {
+    setDispatchError(null);
     setDispatchSuccess(null);
-    try {
-      for (const f of findings) {
+    if (!isDirectSendConnected) {
+      setDispatchError(
+        'Connect your email account first so synOUT can send all dark web & deep web takedown emails on your behalf.'
+      );
+      return;
+    }
+    const activeTargets = findings.filter((f) => f.status !== 'purged');
+    setPendingConfirmTargets(activeTargets.length > 0 ? activeTargets : findings);
+  };
+
+  const executeConfirmedDarkWebSend = async () => {
+    if (!pendingConfirmTargets || pendingConfirmTargets.length === 0) return;
+    const targets = pendingConfirmTargets;
+    setPendingConfirmTargets(null);
+    setIsDispatching(true);
+    setDispatchError(null);
+    setDispatchSuccess(null);
+
+    let sentCount = 0;
+    const errors: string[] = [];
+    const senderName = `${profile.firstName} ${profile.lastName}`.trim() || 'Authorized Consumer';
+
+    for (const f of targets) {
+      try {
+        const noticeBody = buildSourceTakedownNotice(f, {
+          ...profile,
+          emails: activeConnectedEmail ? [activeConnectedEmail] : profile.emails,
+        });
+        const subject = `FORMAL PII ERASURE & ABUSE TAKEDOWN DEMAND (${f.sourceName}) - ${senderName}`;
+
+        const mailRes = await sendEmailViaConnectedAccount({
+          recipientEmail: f.hostContact,
+          subject,
+          body: noticeBody,
+          senderName,
+          brokerId: f.id,
+          brokerName: f.sourceName,
+          brokerDomain: f.hostContact,
+        });
+
         await fetch('/api/darkweb/dispatch-takedown', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -150,16 +186,40 @@ export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({ prof
             sourceCategory: f.sourceCategory,
           }),
         }).catch(() => null);
+
+        sentCount++;
+        setFindings((prev) =>
+          prev.map((item) =>
+            item.id === f.id && item.status === 'active'
+              ? { ...item, status: 'takedown_dispatched' }
+              : item
+          )
+        );
+
+        if (targets.length === 1) {
+          setDispatchSuccess(
+            `Sent real takedown email from ${mailRes.sentFrom} to ${f.hostContact} · Receipt: ${mailRes.messageId}`
+          );
+        }
+      } catch (err) {
+        errors.push(`${f.sourceName}: ${err instanceof Error ? err.message : 'Send failed'}`);
       }
-      setFindings((prev) =>
-        prev.map((f) => (f.status === 'purged' ? f : { ...f, status: 'takedown_dispatched' }))
-      );
-      setDispatchSuccess(
-        `Batch erasure demands transmitted across all ${findings.length} dark web & deep web host abuse desks.`
-      );
-    } finally {
-      setIsDispatching(false);
     }
+
+    if (targets.length > 1) {
+      if (sentCount > 0) {
+        setDispatchSuccess(
+          `Sent ${sentCount} of ${targets.length} dark web & host abuse takedown emails from ${activeConnectedEmail}.`
+        );
+      }
+      if (errors.length > 0) {
+        setDispatchError(errors[0]);
+      }
+    } else if (errors.length > 0) {
+      setDispatchError(errors[0]);
+    }
+
+    setIsDispatching(false);
   };
 
   const selectedStepsCompleted = selectedFinding
@@ -879,6 +939,90 @@ export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({ prof
               <span>{dispatchSuccess}</span>
             </div>
           )}
+        </div>
+      )}
+
+      {dispatchError && (
+        <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-rose-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+            <span>{dispatchError}</span>
+          </div>
+          {!isDirectSendConnected && onOpenConnectEmail && (
+            <button
+              type="button"
+              onClick={onOpenConnectEmail}
+              className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              <span>Connect Email Now</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {pendingConfirmTargets && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 pb-3 border-b border-slate-800">
+              <div className="space-y-1">
+                <h3 className="text-lg font-bold text-white">
+                  {pendingConfirmTargets.length === 1
+                    ? 'Confirm Sending Takedown Email'
+                    : `Confirm Sending ${pendingConfirmTargets.length} Host Takedown Emails`}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Sending directly from{' '}
+                  <strong className="text-emerald-400 font-mono">{activeConnectedEmail}</strong>.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingConfirmTargets(null)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="max-h-44 overflow-y-auto bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800/80">
+              {pendingConfirmTargets.map((f) => (
+                <div
+                  key={f.id}
+                  className="px-3.5 py-2 flex items-center justify-between gap-3 text-xs"
+                >
+                  <span className="font-medium text-white truncate">{f.sourceName}</span>
+                  <span className="text-emerald-400 font-mono truncate">{f.hostContact}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setPendingConfirmTargets(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={executeConfirmedDarkWebSend}
+                className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>
+                  {pendingConfirmTargets.length === 1
+                    ? 'Confirm & Send Email'
+                    : `Confirm & Send ${pendingConfirmTargets.length} Emails`}
+                </span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

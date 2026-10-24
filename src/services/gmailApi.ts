@@ -8,13 +8,17 @@ export interface GmailMessageSummary {
   verificationLinks: string[];
 }
 
-function base64UrlEncode(str: string): string {
+function utf8ToBase64(str: string): string {
   const utf8Bytes = new TextEncoder().encode(str);
   let binary = '';
   for (let i = 0; i < utf8Bytes.length; i++) {
     binary += String.fromCharCode(utf8Bytes[i]);
   }
-  return btoa(binary)
+  return btoa(binary);
+}
+
+function base64UrlEncode(str: string): string {
+  return utf8ToBase64(str)
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
@@ -24,17 +28,18 @@ export async function sendGmailMessage(
   accessToken: string,
   to: string,
   subject: string,
-  body: string
+  body: string,
+  bcc?: string
 ): Promise<{ id: string; threadId: string }> {
-  const rfc2822Email = [
+  const headers = [
     `To: ${to}`,
-    `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
+    ...(bcc ? [`Bcc: ${bcc}`] : []),
+    `Subject: =?UTF-8?B?${utf8ToBase64(subject)}?=`,
     'Content-Type: text/plain; charset="UTF-8"',
     'MIME-Version: 1.0',
-    '',
-    body,
-  ].join('\r\n');
+  ];
 
+  const rfc2822Email = [...headers, '', body].join('\r\n');
   const raw = base64UrlEncode(rfc2822Email);
 
   const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
@@ -59,7 +64,7 @@ export async function searchBrokerVerificationEmails(
   accessToken: string,
   brokerDomain?: string
 ): Promise<GmailMessageSummary[]> {
-  const query = brokerDomain 
+  const query = brokerDomain
     ? `from:${brokerDomain} OR "${brokerDomain}" (confirm OR verify OR opt-out OR removal)`
     : '(optout OR "opt out" OR removal OR "data deletion" OR verify) (confirm OR verified OR expunged)';
 
@@ -80,26 +85,37 @@ export async function searchBrokerVerificationEmails(
 
   for (const msg of messages.slice(0, 5)) {
     try {
-      const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
+      const msgRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
 
       if (!msgRes.ok) continue;
 
       const full = await msgRes.json();
-      const headers = full.payload?.headers || [];
-      const subjectHeader = headers.find((h: any) => h.name.toLowerCase() === 'subject')?.value || 'No Subject';
-      const fromHeader = headers.find((h: any) => h.name.toLowerCase() === 'from')?.value || 'Unknown Sender';
-      const dateHeader = headers.find((h: any) => h.name.toLowerCase() === 'date')?.value || '';
+      const headers: { name: string; value: string }[] = full.payload?.headers || [];
+      const subjectHeader =
+        headers.find((h) => h.name.toLowerCase() === 'subject')?.value || 'No Subject';
+      const fromHeader =
+        headers.find((h) => h.name.toLowerCase() === 'from')?.value || 'Unknown Sender';
+      const dateHeader =
+        headers.find((h) => h.name.toLowerCase() === 'date')?.value || '';
 
       const snippet = full.snippet || '';
       const urlRegex = /(https?:\/\/[^\s"'<>]+)/gi;
       const matches: string[] = snippet.match(urlRegex) || [];
-      const links: string[] = Array.from(new Set(matches)).filter((u: string) => 
-        !u.includes('google.com') && 
-        (u.includes('opt') || u.includes('confirm') || u.includes('verify') || u.includes('token') || u.includes('remove'))
+      const links: string[] = Array.from(new Set(matches)).filter(
+        (u: string) =>
+          !u.includes('google.com') &&
+          (u.includes('opt') ||
+            u.includes('confirm') ||
+            u.includes('verify') ||
+            u.includes('token') ||
+            u.includes('remove'))
       );
 
       summaries.push({
@@ -112,7 +128,7 @@ export async function searchBrokerVerificationEmails(
         verificationLinks: links,
       });
     } catch {
-      // Ignore
+      // Ignore individual message parse failures
     }
   }
 

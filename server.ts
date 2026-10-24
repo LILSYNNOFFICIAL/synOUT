@@ -2,10 +2,12 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { GoogleGenAI } from '@google/genai';
 import {
-  EmailProviderId,
+  type EmailProviderId,
+  type ResolvedSmtpConfig,
   resolveSmtpTransportSettings,
 } from './src/utils/emailProviderConfig.ts';
 
@@ -36,7 +38,7 @@ interface RateLimitRecord {
 }
 const rateLimitMap = new Map<string, RateLimitRecord>();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const MAX_REQUESTS_PER_WINDOW = 40;
+const MAX_REQUESTS_PER_WINDOW = 300;
 
 function apiRateLimiter(req: express.Request, res: express.Response, next: express.NextFunction) {
   const rawIp = req.headers['x-forwarded-for'];
@@ -117,6 +119,7 @@ const realtimeProtectionEvents: RealtimeProtectionEvent[] = [
 app.post('/api/user/purge-session', (req, res) => {
   realtimeProtectionEvents.length = 0;
   rateLimitMap.clear();
+  clearAllPooledTransporters();
   res.json({ success: true, message: 'All in-memory session events and audit traces expunged.' });
 });
 
@@ -255,7 +258,93 @@ function formatFriendlySmtpError(err: unknown): string {
   return raw.slice(0, 180);
 }
 
-// Endpoint: Stateless verification of user-connected email account (Zero server-side credential storage)
+// Short-lived in-memory pooled SMTP transport cache (90s idle auto-evict, zero disk storage)
+// Prevents Gmail/Outlook "454 Too many login attempts" during "Opt Out of All" batch sends
+type SmtpTransporter = ReturnType<typeof nodemailer.createTransport>;
+
+interface PooledSmtpEntry {
+  transporter: SmtpTransporter;
+  timer: NodeJS.Timeout;
+}
+
+const smtpTransportPool = new Map<string, PooledSmtpEntry>();
+const SMTP_POOL_IDLE_TTL_MS = 90 * 1000;
+
+function computePoolKey(smtp: ResolvedSmtpConfig, userEmail: string, pass: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${smtp.host}:${smtp.port}:${smtp.secure}:${userEmail.toLowerCase()}:${pass}`)
+    .digest('hex');
+}
+
+function evictPooledTransporter(key: string): void {
+  const existing = smtpTransportPool.get(key);
+  if (existing) {
+    clearTimeout(existing.timer);
+    smtpTransportPool.delete(key);
+    try {
+      existing.transporter.close();
+    } catch {
+      // Ignore close errors
+    }
+  }
+}
+
+function clearAllPooledTransporters(): void {
+  for (const key of Array.from(smtpTransportPool.keys())) {
+    evictPooledTransporter(key);
+  }
+}
+
+function getOrCreatePooledTransporter(
+  smtp: ResolvedSmtpConfig,
+  userEmail: string,
+  normalizedAuthPass: string
+): { key: string; transporter: SmtpTransporter } {
+  const key = computePoolKey(smtp, userEmail, normalizedAuthPass);
+  const existing = smtpTransportPool.get(key);
+
+  const scheduleEviction = (poolKey: string) =>
+    setTimeout(() => {
+      evictPooledTransporter(poolKey);
+    }, SMTP_POOL_IDLE_TTL_MS);
+
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.timer = scheduleEviction(key);
+    return { key, transporter: existing.transporter };
+  }
+
+  const transporter = nodemailer.createTransport({
+    pool: true,
+    maxConnections: 2,
+    maxMessages: 250,
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    auth: {
+      user: userEmail,
+      pass: normalizedAuthPass,
+    },
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 20000,
+  });
+
+  const timer = scheduleEviction(key);
+  timer.unref?.();
+  smtpTransportPool.set(key, { transporter, timer });
+
+  return { key, transporter };
+}
+
+// Endpoint: Disconnect & immediately close any warm pooled SMTP sockets
+app.post('/api/email/disconnect', (_req, res) => {
+  clearAllPooledTransporters();
+  res.json({ disconnected: true });
+});
+
+// Endpoint: Stateless verification of user-connected email account (Zero persistent storage)
 app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
   const provider = sanitizeString(req.body.provider || 'gmail', 20) as EmailProviderId;
   const userEmail = sanitizeString(req.body.userEmail, 160);
@@ -271,7 +360,7 @@ app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Enter a valid App Password or SMTP token.' });
   }
 
-  let smtp;
+  let smtp: ResolvedSmtpConfig;
   try {
     smtp = resolveSmtpTransportSettings({
       provider,
@@ -284,24 +373,13 @@ app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
     return res.status(400).json({ error: msg });
   }
 
-  // Strip spaces in 16-char Google/Apple app passwords if pasted in 4x4 groups
+  // Strip spaces in 16-char Google/Apple/Yahoo app passwords if pasted in 4x4 groups
   const normalizedAuthPass =
-    provider === 'gmail' || provider === 'yahoo'
+    provider === 'gmail' || provider === 'yahoo' || provider === 'icloud'
       ? appPassword.replace(/\s+/g, '')
       : appPassword;
 
-  const transporter = nodemailer.createTransport({
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.secure,
-    auth: {
-      user: userEmail,
-      pass: normalizedAuthPass,
-    },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 12000,
-  });
+  const { key, transporter } = getOrCreatePooledTransporter(smtp, userEmail, normalizedAuthPass);
 
   try {
     await transporter.verify();
@@ -312,16 +390,15 @@ app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
       port: smtp.port,
     });
   } catch (err) {
+    evictPooledTransporter(key);
     return res.status(401).json({
       verified: false,
       error: formatFriendlySmtpError(err),
     });
-  } finally {
-    transporter.close();
   }
 });
 
-// Endpoint: Statelessly send statutory opt-out email directly from user's own email on their behalf
+// Endpoint: Send statutory opt-out email directly from user's own email on their behalf
 app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
   const provider = sanitizeString(req.body.provider || 'gmail', 20) as EmailProviderId;
   const userEmail = sanitizeString(req.body.userEmail, 160);
@@ -330,6 +407,7 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
   const customHost = sanitizeString(req.body.customHost, 160);
   const customPort = Number(req.body.customPort || 587);
   const customSecure = typeof req.body.customSecure === 'boolean' ? req.body.customSecure : undefined;
+  const bccSelf = Boolean(req.body.bccSelf);
 
   const recipientEmail = sanitizeString(req.body.recipientEmail, 160);
   const subject = sanitizeString(req.body.subject, 240);
@@ -351,7 +429,7 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Subject line and legal notice body cannot be empty.' });
   }
 
-  let smtp;
+  let smtp: ResolvedSmtpConfig;
   try {
     smtp = resolveSmtpTransportSettings({
       provider,
@@ -365,31 +443,33 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
   }
 
   const normalizedAuthPass =
-    provider === 'gmail' || provider === 'yahoo'
+    provider === 'gmail' || provider === 'yahoo' || provider === 'icloud'
       ? appPassword.replace(/\s+/g, '')
       : appPassword;
 
-  const transporter = nodemailer.createTransport({
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.secure,
-    auth: {
-      user: userEmail,
-      pass: normalizedAuthPass,
-    },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
-  });
+  const mailOptions: Parameters<SmtpTransporter['sendMail']>[0] = {
+    from: senderName ? `"${senderName}" <${userEmail}>` : userEmail,
+    replyTo: userEmail,
+    to: recipientEmail,
+    bcc: bccSelf ? userEmail : undefined,
+    subject,
+    text: scrubSensitivePII(rawBody),
+  };
+
+  let { key, transporter } = getOrCreatePooledTransporter(smtp, userEmail, normalizedAuthPass);
 
   try {
-    const info = await transporter.sendMail({
-      from: senderName ? `"${senderName}" <${userEmail}>` : userEmail,
-      replyTo: userEmail,
-      to: recipientEmail,
-      subject,
-      text: scrubSensitivePII(rawBody),
-    });
+    let info;
+    try {
+      info = await transporter.sendMail(mailOptions);
+    } catch (firstErr) {
+      // Retry once on fresh TLS connection if a pooled socket closed mid-batch
+      evictPooledTransporter(key);
+      const retryPool = getOrCreatePooledTransporter(smtp, userEmail, normalizedAuthPass);
+      key = retryPool.key;
+      transporter = retryPool.transporter;
+      info = await transporter.sendMail(mailOptions);
+    }
 
     const nowIso = new Date().toISOString();
     const messageId = info.messageId || `<synout-${Date.now()}@${smtp.host}>`;
@@ -402,23 +482,24 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
       brokerDomain: safeBrokerDomain,
       action: 'DISPATCHING_REMOVAL',
       externalConfirmationToken: messageId,
-      statusText: `Statutory deletion demand sent on user's behalf via ${smtp.host} to ${safeBrokerName}.`,
+      statusText: `Statutory deletion demand sent from ${userEmail} via ${smtp.host} to ${safeBrokerName} (${recipientEmail}).`,
       externalStatusCode: 200,
     });
 
     return res.json({
       success: true,
       messageId,
+      sentFrom: userEmail,
+      recipientEmail,
       sentAt: nowIso,
       brokerName: safeBrokerName,
     });
   } catch (err) {
+    evictPooledTransporter(key);
     return res.status(502).json({
       success: false,
       error: formatFriendlySmtpError(err),
     });
-  } finally {
-    transporter.close();
   }
 });
 
@@ -454,11 +535,21 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Structured JSON error handler for API routes
+app.use('/api', (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const message = err instanceof Error ? err.message : 'Unexpected server error.';
+  res.status(400).json({ error: message });
+});
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

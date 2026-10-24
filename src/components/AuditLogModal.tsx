@@ -1,8 +1,28 @@
-import React from 'react';
-import { DATA_BROKERS } from '../data/brokers';
+import React, { useEffect, useState } from 'react';
 import { ScanResult, UserProfile } from '../types';
+import {
+  findBrokerById,
+  hasVerifiedEmailReceipt,
+  useEmailConnection,
+} from '../services/emailConnectionStore';
 import { exportExposureReportCsv } from '../utils/csvExport';
-import { X, FileText, CheckCircle, ShieldCheck, Download, Clock, FileSpreadsheet } from 'lucide-react';
+import { copyTextToClipboard, downloadFile } from '../utils/exportEngines';
+import {
+  ChainOfCustodyManifest,
+  buildSignedChainOfCustodyManifest,
+  formatChainOfCustodyMarkdown,
+} from '../utils/evidenceDossierEngine';
+import {
+  X,
+  FileText,
+  CheckCircle,
+  Download,
+  FileSpreadsheet,
+  ShieldCheck,
+  Scale,
+  Copy,
+  Check,
+} from 'lucide-react';
 
 interface AuditLogModalProps {
   results: ScanResult[];
@@ -15,61 +35,115 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
   profile,
   onClose,
 }) => {
+  const { activeConnectedEmail } = useEmailConnection();
+  const [manifest, setManifest] = useState<ChainOfCustodyManifest | null>(null);
+  const [hashCopied, setHashCopied] = useState(false);
+
   const exposed = results.filter((r) => r.status === 'exposed');
-  const submitted = exposed.filter((r) => r.removalStatus === 'submitted' || r.removalStatus === 'removed');
+  const submitted = exposed.filter(
+    (r) => r.removalStatus === 'submitted' || r.removalStatus === 'removed'
+  );
+  const verifiedEmailCount = submitted.filter((r) => hasVerifiedEmailReceipt(r)).length;
+
+  useEffect(() => {
+    let active = true;
+    buildSignedChainOfCustodyManifest(
+      profile,
+      results,
+      activeConnectedEmail || profile.emails[0] || undefined
+    ).then((built) => {
+      if (active) setManifest(built);
+    });
+    return () => {
+      active = false;
+    };
+  }, [profile, results, activeConnectedEmail]);
+
+  const handleCopyRootHash = async () => {
+    if (!manifest) return;
+    await copyTextToClipboard(manifest.manifestSha256);
+    setHashCopied(true);
+    setTimeout(() => setHashCopied(false), 2000);
+  };
 
   const handleDownloadLog = () => {
     const textLog = [
       `================================================================`,
-      `SYNOUT OFFICIAL PRIVACY SUPPRESSION & AUDIT TRAIL`,
+      `SYNOUT OFFICIAL PRIVACY SUPPRESSION & CHAIN-OF-CUSTODY AUDIT TRAIL`,
       `================================================================`,
       `Consumer: ${profile.firstName} ${profile.lastName}`,
       `Jurisdiction: ${profile.currentCity}, ${profile.currentState} ${profile.currentZip || ''}`,
+      `Connected Sender Email: ${activeConnectedEmail || profile.emails[0] || 'N/A'}`,
       `Audit Date: ${new Date().toLocaleString()}`,
+      `Master Manifest SHA-256: ${manifest?.manifestSha256 || 'COMPUTING'}`,
       `Total Brokers Audited: ${results.length}`,
       `Total Exposures Identified: ${exposed.length}`,
-      `Total Removals Actioned: ${submitted.length}`,
+      `Total Removals Actioned: ${submitted.length} (${verifiedEmailCount} Verified Email Receipts)`,
       `----------------------------------------------------------------`,
       `COMPLIANCE DISPATCH LOG:`,
       `----------------------------------------------------------------`,
       ...submitted.map((item, index) => {
-        const broker = DATA_BROKERS.find((b) => b.id === item.brokerId);
+        const broker = findBrokerById(item.brokerId);
+        const isEmail = hasVerifiedEmailReceipt(item);
+        const hashEntry = manifest?.entries.find((e) => e.brokerId === item.brokerId);
         return [
-          `[#${index + 1}] ENTITY: ${broker?.name} (${broker?.domain})`,
-          `  Status: ${item.removalStatus.toUpperCase()}`,
-          `  Reference Code: ${item.optOutConfirmationCode || 'PENDING'}`,
+          `[#${index + 1}] ENTITY: ${broker?.name || item.brokerId} (${broker?.domain || 'N/A'})`,
+          `  Status: ${(item.removalStatus || 'found').toUpperCase()}`,
+          `  Channel: ${isEmail ? 'VERIFIED CONNECTED EMAIL' : 'MANUAL WEB-FORM / PORTAL'}`,
+          `  Reference / Message-ID: ${item.optOutConfirmationCode || 'PENDING'}`,
+          `  Broker Ticket ID: ${item.brokerConfirmationTicket || 'N/A'}`,
           `  Submission Date: ${item.submissionDate || 'N/A'}`,
-          `  Statutory 45-Day Deadline: 45 calendar days from submission`,
-          `  Privacy Officer Contact: ${broker?.privacyEmail}`,
-          `  Exposed Data Points Suppressed: ${broker?.dataExposedList.join(', ')}`,
+          `  Record SHA-256 Digest: ${hashEntry?.recordSha256 || 'N/A'}`,
+          `  Privacy Officer Contact: ${broker?.privacyEmail || 'Portal Only'}`,
+          `  Exposed Data Points Suppressed: ${broker?.dataExposedList.join(', ') || 'PII Record'}`,
           `----------------------------------------------------------------`,
         ].join('\r\n');
       }),
-      `Generated by synOUT Autonomous Privacy Engine. Compliant with CCPA Cal. Civ. Code § 1798.105.`,
+      `Generated by synOUT Privacy Engine. Compliant with CCPA Cal. Civ. Code § 1798.105.`,
     ].join('\r\n');
 
-    const blob = new Blob([textLog], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `synout-audit-trail-${profile.lastName.toLowerCase()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadFile(
+      textLog,
+      `synout-audit-trail-${profile.lastName.toLowerCase()}.txt`,
+      'text/plain;charset=utf-8'
+    );
   };
+
+  const handleDownloadSignedJsonManifest = () => {
+    if (!manifest) return;
+    downloadFile(
+      JSON.stringify(manifest, null, 2),
+      `synout-chain-of-custody-${profile.lastName.toLowerCase()}.json`,
+      'application/json'
+    );
+  };
+
+  const handleDownloadEnforcementMarkdown = () => {
+    if (!manifest) return;
+    downloadFile(
+      formatChainOfCustodyMarkdown(manifest),
+      `synout-enforcement-manifest-${profile.lastName.toLowerCase()}.md`,
+      'text/markdown;charset=utf-8'
+    );
+  };
+
+  const damages = manifest?.damagesEstimate;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl relative my-8">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl overflow-hidden shadow-2xl relative my-8">
         {/* Header */}
         <div className="p-6 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/60">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
               <FileText className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-white">Statutory Audit Trail & Proof Log</h3>
+              <h3 className="text-lg font-bold text-white">
+                Cryptographic Chain-of-Custody &amp; Statutory Penalty Ledger
+              </h3>
               <p className="text-xs text-slate-400">
-                Timestamped evidence record of privacy suppression demands and reference codes
+                SHA-256 verifiable evidence manifest of sent Message-IDs, broker tickets, and civil penalty exposure
               </p>
             </div>
           </div>
@@ -85,40 +159,117 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
         {/* Content */}
         <div className="p-6 sm:p-8 space-y-6 max-h-[75vh] overflow-y-auto">
           {/* Metadata bar */}
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono">
+          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono tabular-nums">
             <div>
               <span className="text-slate-500 block text-[10px]">SUBJECT</span>
-              <span className="text-white font-medium">{profile.firstName} {profile.lastName}</span>
+              <span className="text-white font-medium">
+                {profile.firstName} {profile.lastName}
+              </span>
             </div>
             <div>
-              <span className="text-slate-500 block text-[10px]">TOTAL DISPATCHED</span>
-              <span className="text-emerald-400 font-bold">{submitted.length} Removals</span>
+              <span className="text-slate-500 block text-[10px]">VERIFIED EMAILS</span>
+              <span className="text-emerald-400 font-bold">{verifiedEmailCount} Sent</span>
             </div>
             <div>
-              <span className="text-slate-500 block text-[10px]">TOTAL EXPOSED</span>
-              <span className="text-rose-400 font-bold">{exposed.length} Sites</span>
+              <span className="text-slate-500 block text-[10px]">TOTAL ACTIONED</span>
+              <span className="text-sky-400 font-bold">
+                {submitted.length} / {exposed.length}
+              </span>
             </div>
             <div>
-              <span className="text-slate-500 block text-[10px]">STATUS</span>
-              <span className="text-indigo-400 font-medium">Verified Active</span>
+              <span className="text-slate-500 block text-[10px]">CONNECTED SENDER</span>
+              <span className="text-slate-200 font-medium truncate block">
+                {activeConnectedEmail || 'Not Connected'}
+              </span>
             </div>
           </div>
+
+          {/* Master SHA-256 Chain-of-Custody Root */}
+          {manifest && (
+            <div className="p-4 bg-slate-950 border border-emerald-500/25 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="space-y-1 min-w-0">
+                <div className="flex items-center gap-1.5 text-emerald-400 font-mono font-bold text-[11px]">
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <span>MASTER MANIFEST SHA-256 INTEGRITY DIGEST</span>
+                </div>
+                <div className="font-mono text-slate-200 text-[11px] break-all">
+                  {manifest.manifestSha256}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopyRootHash}
+                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
+              >
+                {hashCopied ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+                <span>{hashCopied ? 'Copied Digest' : 'Copy SHA-256'}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Statutory Civil Penalty & Delete Act Calculator */}
+          {damages && (
+            <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs tabular-nums">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-bold text-white">
+                  <Scale className="w-4 h-4 text-amber-400" />
+                  <span>Statutory Civil Penalty Exposure (Non-Compliant / Re-Listed Brokers)</span>
+                </div>
+                <span className="font-mono text-amber-300 font-bold">
+                  ${damages.totalConservativeUsd.toLocaleString()} – $
+                  {damages.totalMaximumUsd.toLocaleString()} USD
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">{damages.applicableStatuteLabel}</p>
+              {damages.lineItems.length > 0 ? (
+                <div className="space-y-1.5 pt-1">
+                  {damages.lineItems.map((li) => (
+                    <div
+                      key={li.brokerId}
+                      className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px]"
+                    >
+                      <div>
+                        <span className="font-bold text-white">{li.brokerName}</span>{' '}
+                        <span className="text-slate-400">— {li.violationBasis}</span>
+                      </div>
+                      <span className="font-mono text-rose-300 font-bold shrink-0">
+                        ${li.conservativePenaltyUsd.toLocaleString()} – $
+                        {li.maximumPenaltyUsd.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500">
+                  No brokers have breached their 45-day statutory deadline or unlawfully re-listed records yet. Penalty exposure accrues automatically if a broker exceeds 45 days or re-indexes scrubbed PII.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Actioned Events Table */}
           <div className="space-y-3">
             <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center justify-between">
-              <span>Timestamped Dispatch Records:</span>
-              <span className="text-[11px] font-mono text-slate-500">Legal Audit Trail</span>
+              <span>Timestamped Dispatch Records &amp; Per-Record Hashes</span>
+              <span className="text-[11px] font-mono text-slate-500">45-Day Statutory Clock</span>
             </div>
 
             {submitted.length === 0 ? (
-              <div className="p-8 text-center text-xs text-slate-500 bg-slate-950 rounded-xl border border-slate-800">
-                No opt-outs dispatched yet. Use 1-Click Free Batch Opt-Out to initiate removals.
+              <div className="p-8 text-center text-xs text-slate-400 bg-slate-950 rounded-xl border border-slate-800">
+                No opt-outs dispatched yet. Use Opt Out of All to send statutory deletion demands from your connected email.
               </div>
             ) : (
               <div className="space-y-2">
-                {submitted.map((item, index) => {
-                  const broker = DATA_BROKERS.find((b) => b.id === item.brokerId);
+                {submitted.map((item) => {
+                  const broker = findBrokerById(item.brokerId);
+                  const isVerifiedEmail = hasVerifiedEmailReceipt(item);
+                  const entryHash = manifest?.entries.find(
+                    (e) => e.brokerId === item.brokerId
+                  )?.recordSha256;
                   return (
                     <div
                       key={item.id}
@@ -127,20 +278,43 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                         <div className="flex items-center gap-2">
                           <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-                          <span className="font-bold text-white">{broker?.name}</span>
-                          <span className="font-mono text-slate-500 text-[11px]">({broker?.domain})</span>
+                          <span className="font-bold text-white">
+                            {broker?.name || item.brokerId}
+                          </span>
+                          <span className="font-mono text-slate-500 text-[11px]">
+                            ({broker?.domain || 'broker'})
+                          </span>
                         </div>
-                        <span className="font-mono text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 text-[11px] self-start sm:self-auto">
-                          REF: {item.optOutConfirmationCode || 'AUTOMATED-API'}
+                        <span className="font-mono text-[11px] text-emerald-400 break-all">
+                          {isVerifiedEmail ? 'Message-ID: ' : 'Portal Log: '}
+                          {item.optOutConfirmationCode || 'Recorded'}
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400 pt-1 border-t border-slate-800/60 font-mono">
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 pt-1 border-t border-slate-800/60 font-mono">
                         <span>Date: {item.submissionDate || 'Today'}</span>
-                        <span>·</span>
-                        <span>Statutory Deadline: 45 Days</span>
-                        <span>·</span>
-                        <span className="text-slate-300">To: {broker?.privacyEmail}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>
+                          {isVerifiedEmail
+                            ? 'Verified Email Transmission'
+                            : 'Manual Web-Form'}
+                        </span>
+                        {item.brokerConfirmationTicket && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="text-sky-300">
+                              Ticket: {item.brokerConfirmationTicket}
+                            </span>
+                          </>
+                        )}
+                        {entryHash && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="text-slate-500">
+                              SHA256: {entryHash.slice(0, 14)}…
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                   );
@@ -162,18 +336,36 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => exportExposureReportCsv(profile, results)}
-              className="px-4 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-2 cursor-pointer"
+              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-              <span>Export Spreadsheet (.csv)</span>
+              <span>Export CSV</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadEnforcementMarkdown}
+              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <Download className="w-4 h-4 text-sky-400" />
+              <span>Enforcement Manifest (.md)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadSignedJsonManifest}
+              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span>Signed Chain (.json)</span>
             </button>
 
             <button
               onClick={handleDownloadLog}
-              className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors flex items-center gap-2 cursor-pointer shadow-md shadow-emerald-500/20"
+              className="px-4 py-2.5 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <Download className="w-4 h-4 text-slate-950" />
-              <span>Download Audit Dossier (.txt)</span>
+              <span>Audit Log (.txt)</span>
             </button>
           </div>
         </div>

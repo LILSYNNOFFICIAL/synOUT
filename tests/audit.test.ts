@@ -389,5 +389,878 @@ test('12. Global Project Naming & Brand Consistency (synOUT Everywhere — Zero 
   scanForLegacyNames(rootDir);
 });
 
+test('13. Persistent Email Connection Store & Real Opt-Out-of-All Email Dispatch Wiring', async () => {
+  const {
+    findBrokerById,
+    hasVerifiedEmailReceipt,
+    buildStatutoryNoticeForBroker,
+    getEmailConnectionState,
+    setEmailConnectionMode,
+  } = await import('../src/services/emailConnectionStore');
+
+  // 1. Must resolve brokers from both static catalog and dynamic discovery pool
+  const wp = findBrokerById('whitepages');
+  assert(wp && wp.privacyEmail === 'support@whitepages.com', 'Should resolve Whitepages privacy email');
+  const spf = findBrokerById('searchpeoplefree');
+  assert(spf && spf.privacyEmail === 'privacy@searchpeoplefree.com', 'Should resolve discovery pool broker');
+
+  // 2. Must distinguish real SMTP/Gmail Message-IDs from legacy local simulation codes (BAT-/SYN-)
+  const baseExposed = {
+    id: 'res-1',
+    brokerId: 'whitepages',
+    status: 'exposed' as const,
+    mockListingData: {
+      fullName: 'Jane Doe',
+      age: 36,
+      locations: ['Sacramento, CA'],
+      phones: ['(916) 555-0144'],
+      emails: ['synovamedia@gmail.com'],
+      relatives: [],
+      recordsCount: 1,
+      riskLevel: 'Critical' as const,
+      leakTypes: ['Address'],
+      profiles: [],
+      matchConfidence: 'VERIFIED_PUBLIC_RECORD' as const,
+    },
+  };
+
+  assert.strictEqual(
+    hasVerifiedEmailReceipt({ ...baseExposed, removalStatus: 'found' }),
+    false,
+    'Unsent exposed record should not report verified receipt'
+  );
+  assert.strictEqual(
+    hasVerifiedEmailReceipt({
+      ...baseExposed,
+      removalStatus: 'submitted',
+      optOutConfirmationCode: 'BAT-4921-SYN',
+    }),
+    false,
+    'Legacy simulated BAT- code must remain eligible for real email dispatch'
+  );
+  assert.strictEqual(
+    hasVerifiedEmailReceipt({
+      ...baseExposed,
+      removalStatus: 'submitted',
+      optOutConfirmationCode: '<abc123def@smtp.gmail.com>',
+    }),
+    true,
+    'Real SMTP Message-ID receipt must be recognized as verified email transmission'
+  );
+
+  // 3. Statutory notice builder must populate user-connected sender email
+  const notice = buildStatutoryNoticeForBroker(
+    wp!,
+    {
+      firstName: 'Jane',
+      lastName: 'Doe',
+      currentCity: 'Sacramento',
+      currentState: 'CA',
+      birthYear: '1988',
+      phoneNumbers: ['(916) 555-0144'],
+      emails: ['old@example.com'],
+      relatives: [],
+      previousLocations: [],
+    },
+    'synovamedia@gmail.com'
+  );
+  assert(notice.body.includes('<synovamedia@gmail.com>'), 'FROM line must use connected sender email');
+  assert(
+    notice.body.includes('confirmation of compliance to synovamedia@gmail.com'),
+    'Compliance reply directive must use connected sender email'
+  );
+
+  // 4. Global connection store retains mode state across reads without unmounting loss
+  setEmailConnectionMode('oauth');
+  assert.strictEqual(getEmailConnectionState().mode, 'oauth');
+  setEmailConnectionMode('smtp');
+  assert.strictEqual(getEmailConnectionState().mode, 'smtp');
+
+  // 5. RemovalQueueModal ("Opt Out of All") must invoke real sendEmailViaConnectedAccount, never fake setInterval
+  const modalSource = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'components', 'RemovalQueueModal.tsx'),
+    'utf8'
+  );
+  assert(
+    modalSource.includes('sendEmailViaConnectedAccount'),
+    'RemovalQueueModal must invoke real sendEmailViaConnectedAccount'
+  );
+  assert.strictEqual(
+    modalSource.includes('setInterval('),
+    false,
+    'RemovalQueueModal must not contain fake setInterval batch simulation'
+  );
+});
+
+test('14. Dynamic Broker Export Resolution, Self-Test Email Verification & Crawler Opt-Out Wiring', async () => {
+  const { computeScanStats, runBrokerScan } = await import('../src/utils/scanEngine');
+  const { generateMarkdownReport, generatePlainTextReport } = await import('../src/utils/exportEngines');
+
+  const profile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  const results = runBrokerScan(profile);
+  const stats = computeScanStats(results);
+  const md = generateMarkdownReport(results, stats, profile);
+  const txt = generatePlainTextReport(results, stats, profile);
+
+  // Seed discovery brokers (e.g. SearchPeopleFree, Nuwber) must resolve proper names & privacy emails in exports
+  assert(md.includes('SearchPeopleFree'), 'Markdown export must resolve dynamic discovery broker names');
+  assert(md.includes('privacy@searchpeoplefree.com'), 'Markdown export must resolve dynamic broker privacy emails');
+  assert(txt.includes('NUWBER'), 'Plain-text export must resolve Nuwber discovery broker');
+
+  // Verify self-test email & crawler opt-out wiring in components
+  const gmailCenterSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'components', 'GmailDispatchCenter.tsx'),
+    'utf8'
+  );
+  assert(
+    gmailCenterSrc.includes('Send Test Email to Myself'),
+    'GmailDispatchCenter must provide a confirmed self-test email verification action'
+  );
+
+  const appSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'App.tsx'), 'utf8');
+  assert(
+    appSrc.includes('handleBrokerDiscovered') && appSrc.includes('handlePurgeSession'),
+    'App.tsx must wire live crawler discovery opt-out and session purge handlers'
+  );
+});
+
+test('15. End-to-End Connected Email Surfaces (LegalNoticeModal, BrokerDirectory, Specialty Bureaus, DIY & POA)', async () => {
+  const {
+    findBrokerById,
+    hasVerifiedEmailReceipt,
+    buildStatutoryNoticeForBroker,
+  } = await import('../src/services/emailConnectionStore');
+
+  const wp = findBrokerById('whitepages')!;
+
+  // 1. DIY web-form codes must not be misclassified as verified SMTP/Gmail receipts
+  assert.strictEqual(
+    hasVerifiedEmailReceipt({
+      id: 'diy-1',
+      brokerId: 'whitepages',
+      status: 'exposed',
+      removalStatus: 'submitted',
+      optOutConfirmationCode: 'DIY-FORM-M9ABC',
+      mockListingData: {
+        fullName: 'Jane Doe',
+        age: 36,
+        locations: ['Sacramento, CA'],
+        phones: [],
+        emails: [],
+        relatives: [],
+        recordsCount: 1,
+        riskLevel: 'Critical',
+        leakTypes: ['Address'],
+        profiles: [],
+        matchConfidence: 'VERIFIED_PUBLIC_RECORD',
+      },
+    }),
+    false,
+    'Manual web-form DIY-FORM- log must remain distinct from verified email Message-ID receipts'
+  );
+
+  // 2. Signed Power of Attorney must automatically embed into statutory email notices
+  const noticeWithPoa = buildStatutoryNoticeForBroker(
+    wp,
+    {
+      firstName: 'Jane',
+      lastName: 'Doe',
+      currentCity: 'Sacramento',
+      currentState: 'CA',
+      birthYear: '1988',
+      phoneNumbers: ['(916) 555-0144'],
+      emails: ['synovamedia@gmail.com'],
+      relatives: [],
+      previousLocations: [],
+      powerOfAttorney: {
+        fullName: 'Jane Doe',
+        address: 'Sacramento, CA',
+        state: 'CA',
+        signedDate: 'October 24, 2026',
+        isSigned: true,
+        authCode: 'POA-SYN-778899',
+        agentName: 'synOUT Privacy Automation Representative',
+        scopeOfAuthority: 'Limited statutory opt-out representation.',
+      },
+    },
+    'synovamedia@gmail.com'
+  );
+  assert(
+    noticeWithPoa.body.includes('POA-SYN-778899') &&
+      noticeWithPoa.body.includes('AUTHORIZED AGENT & POWER OF ATTORNEY DESIGNATION'),
+    'Signed Power of Attorney code must be embedded into statutory opt-out emails'
+  );
+
+  // 3. Verify all remaining surfaces wire real connected-email sending and zero AI sparkle clutter
+  const legalModalSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'components', 'LegalNoticeModal.tsx'),
+    'utf8'
+  );
+  assert(
+    legalModalSrc.includes('sendEmailViaConnectedAccount') &&
+      !legalModalSrc.includes('Refine with Legal AI'),
+    'LegalNoticeModal must send via connected email and use deterministic statutory templates'
+  );
+
+  const directorySrc = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'components', 'BrokerDirectory.tsx'),
+    'utf8'
+  );
+  assert(
+    directorySrc.includes('onSendBrokerOptOut') && directorySrc.includes('Send Opt-Out Email'),
+    'BrokerDirectory must allow direct opt-out email dispatch from the 700+ registry'
+  );
+
+  const bureausSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'components', 'ManualVerificationGuides.tsx'),
+    'utf8'
+  );
+  assert(
+    bureausSrc.includes('sendEmailViaConnectedAccount') &&
+      bureausSrc.includes('privacy.information.requests@lexisnexis.com'),
+    'ManualVerificationGuides must support real connected-email dispatch to specialty bureau compliance desks'
+  );
+
+  const diySrc = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'components', 'DiyOptOutAssistantModal.tsx'),
+    'utf8'
+  );
+  assert(
+    diySrc.includes('sendEmailViaConnectedAccount'),
+    'DiyOptOutAssistantModal must support sending statutory demands via connected email'
+  );
+
+  const appSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'App.tsx'), 'utf8');
+  assert(
+    appSrc.includes('clearAllSavedSearches') && appSrc.includes('handleDirectBrokerOptOut'),
+    'App.tsx must wire directory direct opt-out and full saved-search purge'
+  );
+});
+
+test('16. Vite Dev Client HMR WebSocket Suppression (Zero Unhandled @vite/client:225 WebSocket Errors)', async () => {
+  const { createServer } = await import('vite');
+  const viteServer = await createServer({
+    server: {
+      middlewareMode: true,
+      hmr: false,
+      ws: false,
+    },
+    appType: 'spa',
+  });
+
+  try {
+    const transformedClient = await viteServer.transformRequest('/@vite/client');
+    assert(transformedClient && transformedClient.code, 'Vite should serve /@vite/client for CSS injection');
+    assert(
+      transformedClient.code.includes(
+        'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });'
+      ),
+      '/@vite/client must replace createWebSocketModuleRunnerTransport with a silent no-op transport when HMR is disabled'
+    );
+    assert(
+      transformedClient.code.includes('updateStyle') &&
+        transformedClient.code.includes('createHotContext'),
+      '/@vite/client must preserve updateStyle and createHotContext exports'
+    );
+  } finally {
+    await viteServer.close();
+  }
+});
+
+test('17. 45-Day Statutory SLA Countdown, Overdue Cure Escalation, Regulatory Complaints & RFC 5545 .ics Export', async () => {
+  const {
+    computeBrokerSlaStatus,
+    buildStatutoryEscalationNotice,
+    buildRegulatoryComplaintDossier,
+    generateIcsCalendarEvent,
+  } = await import('../src/utils/statutorySlaEngine');
+  const { findBrokerById } = await import('../src/services/emailConnectionStore');
+
+  const wp = findBrokerById('whitepages')!;
+  const nowMs = Date.parse('2026-10-24T12:00:00.000Z');
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  // 1. On-track submission (10 days ago -> 35 days remaining)
+  const tenDaysAgoIso = new Date(nowMs - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const onTrackResult: ScanResult = {
+    id: 'sla-1',
+    brokerId: 'whitepages',
+    status: 'exposed',
+    removalStatus: 'submitted',
+    submittedAtIso: tenDaysAgoIso,
+    optOutConfirmationCode: '<receipt-10d@smtp.gmail.com>',
+    mockListingData: {
+      fullName: 'Jane Doe',
+      age: 36,
+      locations: ['Sacramento, CA'],
+      phones: [],
+      emails: [],
+      relatives: [],
+      recordsCount: 1,
+      riskLevel: 'Critical',
+      leakTypes: ['Address'],
+      profiles: [],
+      matchConfidence: 'VERIFIED_PUBLIC_RECORD',
+    },
+  };
+  const slaOnTrack = computeBrokerSlaStatus(onTrackResult, nowMs, 45);
+  assert.strictEqual(slaOnTrack.state, 'on_track');
+  assert.strictEqual(slaOnTrack.daysElapsed, 10);
+  assert.strictEqual(slaOnTrack.daysRemaining, 35);
+
+  // 2. Approaching deadline (41 days ago -> 4 days remaining)
+  const fortyOneDaysAgoIso = new Date(nowMs - 41 * 24 * 60 * 60 * 1000).toISOString();
+  const slaApproaching = computeBrokerSlaStatus(
+    { ...onTrackResult, submittedAtIso: fortyOneDaysAgoIso },
+    nowMs,
+    45
+  );
+  assert.strictEqual(slaApproaching.state, 'approaching_deadline');
+  assert.strictEqual(slaApproaching.daysRemaining, 4);
+
+  // 3. Overdue (48 days ago -> -3 days remaining)
+  const fortyEightDaysAgoIso = new Date(nowMs - 48 * 24 * 60 * 60 * 1000).toISOString();
+  const overdueResult: ScanResult = {
+    ...onTrackResult,
+    submittedAtIso: fortyEightDaysAgoIso,
+  };
+  const slaOverdue = computeBrokerSlaStatus(overdueResult, nowMs, 45);
+  assert.strictEqual(slaOverdue.state, 'overdue');
+  assert(slaOverdue.daysRemaining <= 0);
+
+  // 4. Escalation notice embeds prior Message-ID receipt & CPPA enforcement warning
+  const escalation = buildStatutoryEscalationNotice(
+    wp,
+    overdueResult,
+    profile,
+    'synovamedia@gmail.com'
+  );
+  assert(escalation.subject.includes('<receipt-10d@smtp.gmail.com>'));
+  assert(escalation.body.includes('California Privacy Protection Agency (CPPA)'));
+
+  // 5. Regulatory complaint dossier builds full evidentiary timeline
+  const complaint = buildRegulatoryComplaintDossier(
+    'CPPA',
+    wp,
+    overdueResult,
+    profile,
+    'synovamedia@gmail.com'
+  );
+  assert(complaint.includes('California Privacy Protection Agency (CPPA)'));
+  assert(complaint.includes('<receipt-10d@smtp.gmail.com>'));
+  assert(complaint.includes('Whitepages'));
+
+  // 6. RFC 5545 .ics calendar event format
+  const ics = generateIcsCalendarEvent({
+    title: 'synOUT 45-Day SLA Audit',
+    description: 'Verify Whitepages deletion.',
+    startDate: new Date(nowMs),
+    durationMinutes: 30,
+    url: 'https://whitepages.com',
+  });
+  assert(ics.startsWith('BEGIN:VCALENDAR\r\nVERSION:2.0'));
+  assert(ics.includes('SUMMARY:synOUT 45-Day SLA Audit'));
+  assert(ics.endsWith('END:VCALENDAR'));
+});
+
+test('18. Search Engine De-Indexing Site-Dorks & HTTP 410 / X-Robots-Tag Cache Purge Notices', async () => {
+  const {
+    SEARCH_ENGINE_PORTALS,
+    buildBrokerSearchEngineDorks,
+    buildWebmasterCachePurgeNotice,
+    updateDeindexItemStatus,
+  } = await import('../src/utils/searchDeindexEngine');
+
+  assert.strictEqual(SEARCH_ENGINE_PORTALS.length, 5, 'Must cover Google, Bing, DuckDuckGo, Yahoo, and Brave');
+
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  const dorks = buildBrokerSearchEngineDorks('spokeo.com', profile);
+  assert.strictEqual(dorks.length, 5);
+  assert(dorks[0].query.includes('site:spokeo.com "Jane Doe" "Sacramento"'));
+  assert(dorks.some((d) => d.searchUrl.startsWith('https://www.google.com/search?q=')));
+  assert(dorks.some((d) => d.searchUrl.startsWith('https://www.bing.com/search?q=')));
+  assert(dorks.some((d) => d.searchUrl.startsWith('https://search.brave.com/search?q=')));
+
+  const purgeNotice = buildWebmasterCachePurgeNotice(
+    'https://spokeo.com/Jane-Doe/California',
+    'Spokeo',
+    'spokeo.com',
+    'privacy@spokeo.com',
+    profile,
+    'synovamedia@gmail.com'
+  );
+  assert(purgeNotice.subject.includes('HTTP 410 / NOINDEX'));
+  assert(purgeNotice.body.includes('X-Robots-Tag: noindex, noarchive, nosnippet'));
+  assert(purgeNotice.body.includes('https://spokeo.com/Jane-Doe/California'));
+
+  const updatedQueue = updateDeindexItemStatus(
+    [
+      {
+        id: 'd-1',
+        url: 'https://spokeo.com/Jane-Doe/California',
+        brokerName: 'Spokeo',
+        engine: 'google',
+        status: 'detected',
+        createdAtIso: new Date().toISOString(),
+        updatedAtIso: new Date().toISOString(),
+      },
+    ],
+    'd-1',
+    'deindexed',
+    '<cache-purge@smtp.gmail.com>'
+  );
+  assert.strictEqual(updatedQueue[0].status, 'deindexed');
+  assert.strictEqual(updatedQueue[0].emailReceipt, '<cache-purge@smtp.gmail.com>');
+});
+
+test('19. AES-256-GCM Encrypted Workspace Vault, Scan Regression Diffing & Expanded 12-Bureau Hub', async () => {
+  const {
+    encryptWorkspaceBundle,
+    decryptWorkspaceBundle,
+    isEncryptedVaultJson,
+    computeScanRegressionDiff,
+    createSnapshotFromScan,
+  } = await import('../src/utils/workspaceVault');
+  const { BUREAU_GUIDES } = await import('../src/components/ManualVerificationGuides');
+
+  assert(
+    BUREAU_GUIDES.length >= 12,
+    'Specialty Bureaus hub must cover 12+ clearinghouses including The Work Number, NCTUE, DMAchoice, Do Not Call/CNAM, and CA Delete Act'
+  );
+  assert(BUREAU_GUIDES.some((b) => b.id === 'theworknumber'));
+  assert(BUREAU_GUIDES.some((b) => b.id === 'nctue'));
+  assert(BUREAU_GUIDES.some((b) => b.id === 'dmachoice'));
+  assert(BUREAU_GUIDES.some((b) => b.id === 'ca_delete_act'));
+
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  // 1. Regression diff detects previously removed broker that resurfaced as exposed/found
+  const priorResults: ScanResult[] = [
+    {
+      id: 'r-wp',
+      brokerId: 'whitepages',
+      status: 'exposed',
+      removalStatus: 'removed',
+      mockListingData: {
+        fullName: 'Jane Doe',
+        age: 36,
+        locations: ['Sacramento, CA'],
+        phones: [],
+        emails: [],
+        relatives: [],
+        recordsCount: 1,
+        riskLevel: 'Critical',
+        leakTypes: ['Address'],
+        profiles: [],
+        matchConfidence: 'VERIFIED_PUBLIC_RECORD',
+      },
+    },
+  ];
+  const priorSnapshot = createSnapshotFromScan(profile, priorResults, 25);
+
+  const currentResultsAfterResurface: ScanResult[] = [
+    {
+      ...priorResults[0],
+      removalStatus: 'found',
+    },
+  ];
+  const diff = computeScanRegressionDiff(currentResultsAfterResurface, [priorSnapshot]);
+  assert.strictEqual(diff.hasBaseline, true);
+  assert(
+    diff.relistedBrokerIds.includes('whitepages'),
+    'Must flag whitepages as a re-listed regression after prior removal'
+  );
+
+  // 2. AES-256-GCM + PBKDF2-SHA256 encryption & decryption roundtrip
+  const sampleBundle = {
+    schema: 'synOUT-workspace-vault-v1' as const,
+    exportedAtIso: new Date().toISOString(),
+    profile,
+    scanResults: priorResults,
+    deindexQueue: [],
+    bureauProgress: {
+      lexisnexis: { freezePlaced: true, pinSaved: true, updatedAtIso: new Date().toISOString() },
+    },
+    scanSnapshots: [priorSnapshot],
+  };
+
+  const encrypted = await encryptWorkspaceBundle(sampleBundle, 'strong-vault-passphrase');
+  const serialized = JSON.stringify(encrypted);
+  assert.strictEqual(isEncryptedVaultJson(serialized), true);
+  assert(
+    !serialized.includes('Sacramento'),
+    'Encrypted vault ciphertext must not leak plaintext PII'
+  );
+
+  const decrypted = await decryptWorkspaceBundle(encrypted, 'strong-vault-passphrase');
+  assert.strictEqual(decrypted.profile?.firstName, 'Jane');
+  assert.strictEqual(decrypted.bureauProgress.lexisnexis.freezePlaced, true);
+
+  await assert.rejects(
+    () => decryptWorkspaceBundle(encrypted, 'wrong-passphrase'),
+    /Invalid vault passphrase/i
+  );
+});
+
+test('20. Sandboxed Iframe Runtime Resilience (AppErrorBoundary, Guarded Storage & Safe Clipboard)', () => {
+  const rootDir = process.cwd();
+  const mainSrc = fs.readFileSync(path.join(rootDir, 'src', 'main.tsx'), 'utf8');
+  assert(
+    mainSrc.includes('AppErrorBoundary') && mainSrc.includes('getDerivedStateFromError'),
+    'src/main.tsx must wrap App in AppErrorBoundary for resilient iframe error recovery'
+  );
+
+  // Components must use copyTextToClipboard rather than unawaited navigator.clipboard.writeText
+  const componentsDir = path.join(rootDir, 'src', 'components');
+  for (const entry of fs.readdirSync(componentsDir)) {
+    if (!entry.endsWith('.tsx')) continue;
+    const content = fs.readFileSync(path.join(componentsDir, entry), 'utf8');
+    assert.strictEqual(
+      content.includes('navigator.clipboard.writeText('),
+      false,
+      `${entry} must use copyTextToClipboard() instead of unguarded navigator.clipboard.writeText()`
+    );
+  }
+});
+
+test('21. Broker Reply Triage, Tracking URL Sanitizer & 11 CCR § 7060 Verification Counter-Notices', async () => {
+  const {
+    sanitizeTrackingUrl,
+    analyzeBrokerReplyEmail,
+    buildIdMinimizationCounterNotice,
+    buildExemptionRebuttalNotice,
+  } = await import('../src/utils/replyTriageEngine');
+  const { findBrokerById } = await import('../src/services/emailConnectionStore');
+
+  const spokeo = findBrokerById('spokeo')!;
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  // 1. Tracking URL sanitizer removes ad/email trackers while preserving verification token
+  const urlReport = sanitizeTrackingUrl(
+    'https://www.spokeo.com/optout/verify?token=9988aabb&ticket=OPT-7712&utm_source=email&fbclid=IwAR555&mc_eid=deadbeef',
+    'spokeo.com'
+  );
+  assert.strictEqual(
+    urlReport.sanitizedUrl,
+    'https://www.spokeo.com/optout/verify?token=9988aabb&ticket=OPT-7712'
+  );
+  assert.strictEqual(urlReport.matchesBrokerDomain, true);
+  assert.strictEqual(urlReport.strippedParams.length, 3);
+
+  // 2. Detects unlawful Driver's License / SSN verification demands
+  const idReply = analyzeBrokerReplyEmail(
+    `Case #REQ-442910: Please reply with an unredacted copy of your Driver's License and Social Security Number to complete your deletion request.`,
+    spokeo
+  );
+  assert.strictEqual(idReply.category, 'EXCESSIVE_ID_DEMAND');
+  assert(idReply.extractedTicketIds.includes('REQ-442910'));
+  assert(idReply.excessiveIdTriggers.some((t) => t.includes("Driver's License")));
+
+  const counter = buildIdMinimizationCounterNotice(
+    spokeo,
+    profile,
+    'synovamedia@gmail.com',
+    'REQ-442910'
+  );
+  assert(counter.subject.includes('11 CCR § 7060'));
+  assert(counter.body.includes('Cal. Code Regs. tit. 11, § 7060'));
+  assert(counter.body.includes('REQ-442910'));
+
+  // 3. Detects boilerplate public-records exemption refusals and builds statutory rebuttal
+  const refusalReply = analyzeBrokerReplyEmail(
+    `Reference ID: LGL-99102: We deny your deletion request because our directory only publishes publicly available government records.`,
+    spokeo
+  );
+  assert.strictEqual(refusalReply.category, 'EXEMPTION_CLAIM_OR_REFUSAL');
+  const rebuttal = buildExemptionRebuttalNotice(
+    spokeo,
+    profile,
+    'synovamedia@gmail.com',
+    'LGL-99102'
+  );
+  assert(rebuttal.body.includes('SB 362'));
+  assert(rebuttal.body.includes('Tex. Bus. & Com. Code § 541.101'));
+
+  // 4. Flags external domain phishing mismatch in confirmation link replies
+  const phishingReply = analyzeBrokerReplyEmail(
+    `Click the link below to confirm your opt-out request:\nhttps://evil-phishing-tracker.net/verify?token=12345`,
+    spokeo
+  );
+  assert.strictEqual(phishingReply.category, 'CONFIRMATION_LINK_REQUIRED');
+  assert.strictEqual(phishingReply.hasDomainMismatchWarning, true);
+
+  // 5. Recognizes confirmed deletions
+  const confirmedReply = analyzeBrokerReplyEmail(
+    `Confirmation #DEL-88201: Your personal record has been removed and added to our permanent suppression list.`,
+    spokeo
+  );
+  assert.strictEqual(confirmedReply.category, 'DELETION_CONFIRMED');
+  assert(confirmedReply.extractedTicketIds.includes('DEL-88201'));
+});
+
+test('22. Pure Binary JPEG & PNG EXIF / GPS / XMP Metadata Inspector & Stripper', async () => {
+  const { inspectAndStripImageMetadataBytes } = await import('../src/utils/replyTriageEngine');
+
+  // Construct valid JPEG stream: SOI (FFD8) + APP0 JFIF (FFE0) + APP1 Exif+GPS (FFE1) + COM (FFFE) + SOS (FFDA) + scan bytes + EOI (FFD9)
+  const jfifPayload = new TextEncoder().encode('JFIF\0\x01\x02');
+  const jfifLen = jfifPayload.length + 2;
+
+  const exifPayload = new TextEncoder().encode('Exif\0\0MM\0*\0\0\0\x08GPS');
+  const exifLen = exifPayload.length + 2;
+
+  const comPayload = new TextEncoder().encode('iPhone 16 Pro Serial 99812');
+  const comLen = comPayload.length + 2;
+
+  const sosHeader = new Uint8Array([0xff, 0xda, 0x00, 0x04, 0x01, 0x00, 0xaa, 0xbb]);
+  const eoi = new Uint8Array([0xff, 0xd9]);
+
+  const rawJpeg = new Uint8Array(
+    2 + (2 + jfifLen) + (2 + exifLen) + (2 + comLen) + sosHeader.length + eoi.length
+  );
+  let pos = 0;
+  rawJpeg.set([0xff, 0xd8], pos);
+  pos += 2;
+  rawJpeg.set([0xff, 0xe0, (jfifLen >> 8) & 0xff, jfifLen & 0xff], pos);
+  rawJpeg.set(jfifPayload, pos + 4);
+  pos += 2 + jfifLen;
+  rawJpeg.set([0xff, 0xe1, (exifLen >> 8) & 0xff, exifLen & 0xff], pos);
+  rawJpeg.set(exifPayload, pos + 4);
+  pos += 2 + exifLen;
+  rawJpeg.set([0xff, 0xfe, (comLen >> 8) & 0xff, comLen & 0xff], pos);
+  rawJpeg.set(comPayload, pos + 4);
+  pos += 2 + comLen;
+  rawJpeg.set(sosHeader, pos);
+  pos += sosHeader.length;
+  rawJpeg.set(eoi, pos);
+
+  const report = inspectAndStripImageMetadataBytes(rawJpeg);
+  assert.strictEqual(report.format, 'JPEG');
+  assert.strictEqual(report.hadExif, true);
+  assert.strictEqual(report.hadGps, true);
+  assert(report.bytesRemoved >= exifLen + comLen, 'Must strip APP1 EXIF/GPS and COM segments');
+  assert.strictEqual(report.cleanedBytes[0], 0xff);
+  assert.strictEqual(report.cleanedBytes[1], 0xd8);
+
+  // Re-inspecting the cleaned JPEG must confirm zero remaining EXIF/GPS segments
+  const secondPass = inspectAndStripImageMetadataBytes(report.cleanedBytes);
+  assert.strictEqual(secondPass.hadExif, false);
+  assert.strictEqual(secondPass.hadGps, false);
+  assert.strictEqual(secondPass.bytesRemoved, 0);
+});
+
+test('23. Upstream Public Records Petitions, Canary Alias Leak Attribution & Vault Persistence', async () => {
+  const {
+    UPSTREAM_PUBLIC_RECORD_GUIDES,
+    buildPublicRecordSuppressionLetter,
+    generateCanaryAliasRecord,
+    attributeLeakFromRawEmail,
+    buildVendorLeakAuditDemand,
+  } = await import('../src/utils/publicRecordsFirewall');
+  const { encryptWorkspaceBundle, decryptWorkspaceBundle } = await import(
+    '../src/utils/workspaceVault'
+  );
+
+  assert.strictEqual(
+    UPSTREAM_PUBLIC_RECORD_GUIDES.length,
+    6,
+    'Must cover Assessor Deeds, Voter Rolls, DMV DPPA, WHOIS, SOS/UCC, and USPS NCOA'
+  );
+
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['jane.doe@gmail.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  const assessorPetition = buildPublicRecordSuppressionLetter('county_assessor_deed', profile, {
+    agencyName: 'Sacramento County Assessor',
+    parcelOrVoterId: 'APN 009-142-19',
+    senderEmail: 'jane.doe@gmail.com',
+  });
+  assert(assessorPetition.body.includes('Sacramento County Assessor'));
+  assert(assessorPetition.body.includes('APN 009-142-19'));
+  assert(assessorPetition.body.includes('Cal. Gov. Code § 7928.205'));
+
+  // Canary alias generation & forensic leak attribution
+  const canary = generateCanaryAliasRecord({
+    baseEmail: 'jane.doe@gmail.com',
+    vendorName: 'CVS ExtraCare',
+    vendorDomain: 'cvs.com',
+    deterministicSeed: 'seed-1234',
+  });
+  assert(canary.aliasEmail.startsWith('jane.doe+cvsextracare-'));
+  assert(canary.aliasEmail.endsWith('@gmail.com'));
+
+  const attribution = attributeLeakFromRawEmail(
+    `Delivered-To: ${canary.aliasEmail}\nFrom: spam@ad-exchange.example\nSubject: Special Offer`,
+    [canary]
+  );
+  assert.strictEqual(attribution.matched, true);
+  assert.strictEqual(attribution.matchedRecord?.vendorName, 'CVS ExtraCare');
+
+  const auditDemand = buildVendorLeakAuditDemand(canary, profile, 'jane.doe@gmail.com');
+  assert(auditDemand.subject.includes('CCPA § 1798.115'));
+  assert(auditDemand.body.includes(canary.aliasEmail));
+  assert(auditDemand.body.includes('CVS ExtraCare'));
+
+  // Verify AES-256-GCM Vault preserves canaryAliases and publicRecordProgress
+  const encrypted = await encryptWorkspaceBundle(
+    {
+      schema: 'synOUT-workspace-vault-v1',
+      exportedAtIso: new Date().toISOString(),
+      profile,
+      scanResults: [],
+      deindexQueue: [],
+      bureauProgress: {},
+      scanSnapshots: [],
+      canaryAliases: [canary],
+      publicRecordProgress: {
+        county_assessor_deed: {
+          completed: true,
+          updatedAtIso: new Date().toISOString(),
+        },
+      },
+    },
+    'vault-passphrase-2026'
+  );
+  const restored = await decryptWorkspaceBundle(encrypted, 'vault-passphrase-2026');
+  assert.strictEqual(restored.canaryAliases?.length, 1);
+  assert.strictEqual(restored.canaryAliases?.[0].aliasEmail, canary.aliasEmail);
+  assert.strictEqual(restored.publicRecordProgress?.county_assessor_deed?.completed, true);
+});
+
+test('24. Cryptographic SHA-256 Chain-of-Custody Manifest & Statutory Civil Penalty Calculator', async () => {
+  const {
+    sha256Hex,
+    computeStatutoryDamagesEstimate,
+    buildSignedChainOfCustodyManifest,
+    formatChainOfCustodyMarkdown,
+  } = await import('../src/utils/evidenceDossierEngine');
+
+  const digest = await sha256Hex('synOUT-integrity-test');
+  assert.strictEqual(digest.length, 64, 'SHA-256 hex digest must be 64 hex characters');
+
+  const nowMs = Date.parse('2026-10-24T12:00:00.000Z');
+  const fiftyFiveDaysAgoIso = new Date(nowMs - 55 * 24 * 60 * 60 * 1000).toISOString();
+
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  const overdueEscalatedResult: ScanResult = {
+    id: 'ev-wp',
+    brokerId: 'whitepages',
+    status: 'exposed',
+    removalStatus: 'submitted',
+    submittedAtIso: fiftyFiveDaysAgoIso,
+    optOutConfirmationCode: '<msg-991@smtp.gmail.com>',
+    escalationCount: 1,
+    brokerConfirmationTicket: 'CASE-77812',
+    mockListingData: {
+      fullName: 'Jane Doe',
+      age: 36,
+      locations: ['Sacramento, CA'],
+      phones: [],
+      emails: [],
+      relatives: [],
+      recordsCount: 1,
+      riskLevel: 'Critical',
+      leakTypes: ['Address'],
+      profiles: [],
+      matchConfidence: 'VERIFIED_PUBLIC_RECORD',
+    },
+  };
+
+  const damages = computeStatutoryDamagesEstimate([overdueEscalatedResult], 'CA', nowMs);
+  assert.strictEqual(damages.overdueCount, 1);
+  assert.strictEqual(damages.intentionalOrRepeatCount, 1);
+  // 10 days overdue * $200 Delete Act + $7,500 intentional CCPA penalty = $9,500
+  assert.strictEqual(damages.totalDeleteActAccruedUsd, 2000);
+  assert.strictEqual(damages.totalConservativeUsd, 9500);
+
+  const manifest = await buildSignedChainOfCustodyManifest(
+    profile,
+    [overdueEscalatedResult],
+    'synovamedia@gmail.com',
+    nowMs
+  );
+  assert.strictEqual(manifest.schema, 'synOUT-chain-of-custody-v1');
+  assert.strictEqual(manifest.manifestSha256.length, 64);
+  assert.strictEqual(manifest.entries.length, 1);
+  assert.strictEqual(manifest.entries[0].recordSha256.length, 64);
+  assert.strictEqual(manifest.entries[0].brokerConfirmationTicket, 'CASE-77812');
+
+  const md = formatChainOfCustodyMarkdown(manifest);
+  assert(md.includes(manifest.manifestSha256));
+  assert(md.includes('$9,500'));
+});
+
+
 
 

@@ -1,9 +1,17 @@
 import { ScanResult, ScanStats, UserProfile } from '../types';
 import { DATA_BROKERS } from '../data/brokers';
+import { getExhaustiveBrokerRegistry } from './dynamicBrokerRegistry';
 import { getBrokerRecordSearchUrl } from './scanEngine';
 
+function lookupBroker(brokerId: string) {
+  return (
+    getExhaustiveBrokerRegistry().find((b) => b.id === brokerId) ||
+    DATA_BROKERS.find((b) => b.id === brokerId)
+  );
+}
+
 function getBrokerDetails(result: ScanResult) {
-  const broker = DATA_BROKERS.find((b) => b.id === result.brokerId);
+  const broker = lookupBroker(result.brokerId);
   return {
     name: broker?.name || result.brokerId,
     domain: broker?.domain || `${result.brokerId}.com`,
@@ -63,7 +71,7 @@ ${exposed
   .map((r, idx) => {
     const b = getBrokerDetails(r);
     const searchUrl = getBrokerRecordSearchUrl(
-      DATA_BROKERS.find((br) => br.id === r.brokerId) || {
+      lookupBroker(r.brokerId) || {
         id: r.brokerId,
         name: b.name,
         domain: b.domain,
@@ -267,6 +275,37 @@ export function downloadFile(content: string, filename: string, mimeType: string
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to execCommand copy in sandboxed iframes
+    }
+  }
+
+  if (typeof document !== 'undefined') {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.pointerEvents = 'none';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return copied;
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 export function triggerPrintablePdf(results: ScanResult[], stats: ScanStats, profile: UserProfile) {

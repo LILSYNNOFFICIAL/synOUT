@@ -97,9 +97,81 @@ export interface ScanResult {
   removalStatus?: 'found' | 'submitted' | 'removed' | 'failed';
   optOutConfirmationCode?: string;
   submissionDate?: string;
+  submittedAtIso?: string;
+  verifiedRemovedAtIso?: string;
+  escalationCount?: number;
+  lastEscalatedAt?: string;
+  lastEscalationReceipt?: string;
+  isRegression?: boolean;
   lastCheckedDate?: string;
   disqualifiedReason?: string;
+  brokerConfirmationTicket?: string;
+  replyTriageSummary?: string;
 }
+
+export type SearchEngineId = 'google' | 'bing' | 'duckduckgo' | 'yahoo' | 'brave';
+
+export type DeindexStatus =
+  | 'detected'
+  | 'submitted_to_engine'
+  | 'cache_purge_emailed'
+  | 'deindexed';
+
+export interface DeindexItem {
+  id: string;
+  url: string;
+  brokerId?: string;
+  brokerName: string;
+  engine: SearchEngineId;
+  status: DeindexStatus;
+  createdAtIso: string;
+  updatedAtIso: string;
+  emailReceipt?: string;
+  notes?: string;
+}
+
+export interface ScanHistorySnapshot {
+  id: string;
+  timestampIso: string;
+  profileName: string;
+  exposedBrokerIds: string[];
+  submittedBrokerIds: string[];
+  removedBrokerIds: string[];
+  exposureScore: number;
+}
+
+export type CanaryStatus = 'active' | 'leak_detected' | 'revoked';
+
+export interface CanaryAliasRecord {
+  id: string;
+  vendorName: string;
+  vendorDomain: string;
+  vendorPrivacyEmail?: string;
+  aliasEmail: string;
+  compartmentPhone?: string;
+  tagToken: string;
+  category: 'Retail & Loyalty' | 'Data Broker Opt-Out' | 'Financial / FinTech' | 'Healthcare / Portal' | 'General Signup';
+  status: CanaryStatus;
+  createdAtIso: string;
+  leakDetectedAtIso?: string;
+  leakEvidenceHeader?: string;
+  demandReceipt?: string;
+}
+
+export interface PublicRecordChecklistState {
+  completed?: boolean;
+  submittedAtIso?: string;
+  referenceNote?: string;
+  emailReceipt?: string;
+  updatedAtIso: string;
+}
+
+export type BrokerReplyCategory =
+  | 'CONFIRMATION_LINK_REQUIRED'
+  | 'DELETION_CONFIRMED'
+  | 'EXCESSIVE_ID_DEMAND'
+  | 'EXEMPTION_CLAIM_OR_REFUSAL'
+  | 'GENERAL_ACKNOWLEDGMENT';
 
 export interface ScanStats {
   totalBrokers: number;
@@ -113,3 +185,4 @@ export interface ScanStats {
   inProgressRemovals: number;
   removedBrokers: number;
 }
+

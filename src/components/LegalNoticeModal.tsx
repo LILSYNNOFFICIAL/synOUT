@@ -1,130 +1,423 @@
 import React, { useState } from 'react';
 import { DataBroker, ScanResult, UserProfile } from '../types';
-import { X, Copy, Check, Sparkles, Send, FileText, RotateCcw } from 'lucide-react';
+import {
+  useEmailConnection,
+  sendEmailViaConnectedAccount,
+} from '../services/emailConnectionStore';
+import { buildWebmailComposeUrls } from '../utils/emailProviderConfig';
+import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
+import { copyTextToClipboard } from '../utils/exportEngines';
+import {
+  X,
+  Copy,
+  Check,
+  Send,
+  RefreshCw,
+  CheckCircle2,
+  AlertTriangle,
+  Mail,
+  FileCheck,
+  ExternalLink,
+} from 'lucide-react';
+
+type StatutePreset = 'CCPA' | 'TDPSA' | 'OMNIBUS' | 'GDPR';
 
 interface LegalNoticeModalProps {
   broker: DataBroker;
   result: ScanResult;
   profile: UserProfile;
   onClose: () => void;
-  onMarkSubmitted: (brokerId: string) => void;
+  onMarkSubmitted: (brokerId: string, confirmationCode?: string, silent?: boolean) => void;
+  onOpenConnectEmail?: () => void;
+  onOpenPowerOfAttorney?: () => void;
+}
+
+const STATUTE_META: Record<
+  StatutePreset,
+  { label: string; citation: string; deadline: string; subjectTag: string }
+> = {
+  CCPA: {
+    label: 'CCPA / CPRA (CA)',
+    citation:
+      'California Consumer Privacy Act & California Privacy Rights Act (Cal. Civ. Code § 1798.105 & § 1798.120)',
+    deadline: '45 calendar days',
+    subjectTag: 'CCPA/CPRA',
+  },
+  TDPSA: {
+    label: 'TDPSA (TX)',
+    citation:
+      'Texas Data Privacy and Security Act (Tex. Bus. & Com. Code § 541.051 et seq.)',
+    deadline: '45 calendar days',
+    subjectTag: 'TDPSA',
+  },
+  OMNIBUS: {
+    label: 'US State Omnibus',
+    citation:
+      'Virginia VCDPA (§ 59.1-577), Colorado CPA (§ 6-1-1306), Connecticut CTDPA, and Applicable State Data Privacy Laws',
+    deadline: '45 calendar days',
+    subjectTag: 'State Statutory',
+  },
+  GDPR: {
+    label: 'GDPR Art. 17',
+    citation:
+      'General Data Protection Regulation (EU) 2016/679 Article 17 (Right to Erasure) & Article 21 (Right to Object)',
+    deadline: '30 calendar days',
+    subjectTag: 'GDPR Art. 17',
+  },
+};
+
+function draftStatutoryNotice(
+  broker: DataBroker,
+  profile: UserProfile,
+  statute: StatutePreset,
+  senderEmail: string,
+  includePoa: boolean
+): { subject: string; body: string } {
+  const meta = STATUTE_META[statute];
+  const fullName = `${profile.firstName} ${profile.lastName}`.trim();
+  const dateStr = new Date().toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  const poa = profile.powerOfAttorney;
+  const poaBlock =
+    includePoa && poa?.isSigned
+      ? `\nAUTHORIZED AGENT & POWER OF ATTORNEY DESIGNATION:
+- Authorization Code: ${poa.authCode}
+- Executed By: ${poa.fullName} (${poa.signedDate})
+- Statutory Basis: CCPA § 1798.130 & Cal. Code Regs. tit. 11 § 7063\n`
+      : '';
+
+  const subject = `LEGAL NOTICE: Statutory ${meta.subjectTag} Data Deletion & Suppression Demand - ${fullName}`;
+  const body = `DATE: ${dateStr}
+TO: Privacy Officer / Compliance Department, ${broker.name} (${broker.privacyEmail || broker.domain})
+FROM: ${fullName} <${senderEmail}>
+RE: FORMAL STATUTORY DATA SUPPRESSION & DELETION DEMAND (${meta.subjectTag})
+
+Pursuant to the ${meta.citation}, I hereby exercise my statutory privacy rights to demand immediate deletion, opt-out of sale/sharing, and permanent suppression of all personal records relating to my identity across ${broker.name} (${broker.domain}) and all affiliated data syndicates:
+
+IDENTIFYING INFORMATION FOR SUPPRESSION:
+- Full Legal Name: ${fullName}
+- Primary Residence: ${profile.currentCity}, ${profile.currentState} ${profile.currentZip || ''}
+- Primary Phone: ${profile.phoneNumbers[0] || 'On record'}
+- Primary Email: ${senderEmail}
+- Indexed Record Reference: ${getBrokerRecordSearchUrl(broker, profile)}
+- Exposed Data Categories: ${broker.dataExposedList.join(', ')}
+${poaBlock}
+MANDATORY COMPLIANCE DIRECTIVES:
+1. Permanently delete all consumer dossiers, telephone/address histories, and marketing profiles tied to the identifiers above.
+2. Direct all downstream data buyers, affiliates, and sub-processors to purge these records.
+3. Add my identifying attributes to your internal suppression list so my profile is not re-acquired from future public record or commercial feeds.
+4. Provide written confirmation of completion to ${senderEmail} within ${meta.deadline}.
+
+Sincerely,
+${fullName}
+Data Subject & Consumer`;
+
+  return { subject, body };
 }
 
 export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
   broker,
-  result,
   profile,
   onClose,
   onMarkSubmitted,
+  onOpenConnectEmail,
+  onOpenPowerOfAttorney,
 }) => {
+  const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const initialStatute: StatutePreset = profile.currentState === 'TX' ? 'TDPSA' : 'CCPA';
+  const effectiveSender = activeConnectedEmail || profile.emails[0] || 'consumer@example.com';
+
+  const [selectedStatute, setSelectedStatute] = useState<StatutePreset>(initialStatute);
+  const [includePoa, setIncludePoa] = useState<boolean>(Boolean(profile.powerOfAttorney?.isSigned));
+  const [bccSelf, setBccSelf] = useState<boolean>(true);
   const [copied, setCopied] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [letterContent, setLetterContent] = useState<string>(() => {
-    return `DATE: ${new Date().toLocaleDateString()}
-TO: Privacy Officer / Compliance Department, ${broker.name} (${broker.domain})
-RE: FORMAL STATUTORY DATA SUPPRESSION & DELETION NOTICE
+  const [confirmStep, setConfirmStep] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sentReceipt, setSentReceipt] = useState<string | null>(null);
 
-Pursuant to the California Consumer Privacy Act (Cal. Civ. Code § 1798.105) and applicable state data privacy laws, I hereby demand immediate deletion and suppression of all personal records relating to:
+  const initialDraft = draftStatutoryNotice(
+    broker,
+    profile,
+    initialStatute,
+    effectiveSender,
+    Boolean(profile.powerOfAttorney?.isSigned)
+  );
 
-Name: ${profile.firstName} ${profile.lastName}
-Location: ${profile.currentCity}, ${profile.currentState}
-Phone: ${profile.phoneNumbers[0] || 'On record'}
-Email: ${profile.emails[0] || 'On record'}
+  const [subjectLine, setSubjectLine] = useState<string>(initialDraft.subject);
+  const [letterContent, setLetterContent] = useState<string>(initialDraft.body);
 
-Please confirm permanent removal within statutory timelines (45 calendar days).
+  const handleSelectStatute = (statute: StatutePreset) => {
+    setSelectedStatute(statute);
+    const updated = draftStatutoryNotice(broker, profile, statute, effectiveSender, includePoa);
+    setSubjectLine(updated.subject);
+    setLetterContent(updated.body);
+  };
 
-Sincerely,
-${profile.firstName} ${profile.lastName}`;
-  });
+  const handleTogglePoa = (checked: boolean) => {
+    setIncludePoa(checked);
+    const updated = draftStatutoryNotice(broker, profile, selectedStatute, effectiveSender, checked);
+    setSubjectLine(updated.subject);
+    setLetterContent(updated.body);
+  };
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(letterContent);
+    void copyTextToClipboard(`${subjectLine}\n\n${letterContent}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleAiRefine = async () => {
-    setIsGenerating(true);
+  const handleConfirmedSend = async () => {
+    if (!broker.privacyEmail) {
+      setSendError('This broker does not list a public privacy email.');
+      return;
+    }
+    setIsSending(true);
+    setSendError(null);
     try {
-      const res = await fetch('/api/generate-letter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userName: `${profile.firstName} ${profile.lastName}`,
-          userEmail: profile.emails[0] || '',
-          userPhone: profile.phoneNumbers[0] || '',
-          userCity: profile.currentCity,
-          userState: profile.currentState,
-          brokerName: broker.name,
-          brokerDomain: broker.domain,
-          statute: profile.currentState === 'TX' ? 'TDPSA' : 'CCPA',
-          exposedData: broker.dataExposedList,
-        }),
+      const res = await sendEmailViaConnectedAccount({
+        recipientEmail: broker.privacyEmail,
+        subject: subjectLine,
+        body: letterContent,
+        senderName: `${profile.firstName} ${profile.lastName}`.trim() || 'Authorized Consumer',
+        brokerId: broker.id,
+        brokerName: broker.name,
+        brokerDomain: broker.domain,
+        bccSelf,
       });
-      const data = await res.json();
-      if (data.letter) {
-        setLetterContent(data.letter);
-      }
-    } catch {
-      // Fallback remains
+      setSentReceipt(res.messageId);
+      setConfirmStep(false);
+      onMarkSubmitted(broker.id, res.messageId, false);
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Failed to send deletion notice.');
     } finally {
-      setIsGenerating(false);
+      setIsSending(false);
     }
   };
 
+  const webmailLinks = broker.privacyEmail
+    ? buildWebmailComposeUrls(broker.privacyEmail, subjectLine, letterContent)
+    : null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-6 shadow-2xl relative my-8">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 sm:p-8 space-y-5 shadow-2xl relative my-8">
         <div className="flex items-start justify-between pb-4 border-b border-slate-800">
-          <div>
-            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400">
-              CCPA / CPRA / TDPSA Legal Demand
-            </span>
-            <h2 className="text-xl font-bold text-white mt-1.5">Custom Deletion Letter: {broker.name}</h2>
-            <p className="text-xs text-slate-500">Official recipient: {broker.privacyEmail}</p>
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
+              <span className="text-emerald-400 font-semibold">Statutory Deletion Notice</span>
+              <span aria-hidden="true">·</span>
+              <span>{broker.domain}</span>
+            </div>
+            <h2 className="text-xl font-bold text-white">Custom Deletion Letter: {broker.name}</h2>
+            <p className="text-xs text-slate-400 font-mono">
+              To: {broker.privacyEmail || 'Portal Only'}
+              {activeConnectedEmail && <span> · From: {activeConnectedEmail}</span>}
+            </p>
           </div>
 
-          <button onClick={onClose} className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer">
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 cursor-pointer"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="flex items-center justify-between">
-          <button
-            onClick={handleAiRefine}
-            disabled={isGenerating}
-            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-emerald-400 flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <Sparkles className={`w-3.5 h-3.5 ${isGenerating ? 'animate-spin' : ''}`} />
-            {isGenerating ? 'Drafting Statutory Clause...' : 'Refine with Legal AI'}
-          </button>
+        {/* Statute Switcher + Copy Controls */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl">
+            {(Object.keys(STATUTE_META) as StatutePreset[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => handleSelectStatute(key)}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                  selectedStatute === key
+                    ? 'bg-emerald-500 text-slate-950 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                {STATUTE_META[key].label}
+              </button>
+            ))}
+          </div>
 
           <button
+            type="button"
             onClick={handleCopy}
-            className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
           >
             {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            {copied ? 'Copied' : 'Copy Notice'}
+            <span>{copied ? 'Copied' : 'Copy Notice'}</span>
           </button>
         </div>
 
-        <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-64 overflow-y-auto leading-relaxed select-text">
-          {letterContent}
+        {/* Power of Attorney Attachment Bar */}
+        <div className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+          {profile.powerOfAttorney?.isSigned ? (
+            <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includePoa}
+                onChange={(e) => handleTogglePoa(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+              />
+              <span>
+                Include signed Power of Attorney clause (
+                <span className="font-mono text-emerald-400">{profile.powerOfAttorney.authCode}</span>)
+              </span>
+            </label>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between w-full gap-2">
+              <span className="text-slate-400">
+                Optional: Attach a signed Limited Power of Attorney designation (CCPA § 1798.130).
+              </span>
+              {onOpenPowerOfAttorney && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenPowerOfAttorney();
+                  }}
+                  className="text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                >
+                  <FileCheck className="w-3.5 h-3.5" />
+                  <span>Sign POA</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-          <button onClick={onClose} className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white cursor-pointer">
-            Close
-          </button>
-          <button
-            onClick={() => {
-              onMarkSubmitted(broker.id);
-              onClose();
-            }}
-            className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 cursor-pointer"
-          >
-            Mark Dispatched to Broker
-          </button>
+        <div className="space-y-3">
+          <input
+            type="text"
+            value={subjectLine}
+            onChange={(e) => setSubjectLine(e.target.value)}
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono focus:outline-none focus:border-emerald-500/50"
+          />
+          <textarea
+            rows={10}
+            value={letterContent}
+            onChange={(e) => setLetterContent(e.target.value)}
+            className="w-full p-4 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-emerald-500/50 resize-y"
+          />
+        </div>
+
+        {sentReceipt && (
+          <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>
+              Sent from <strong>{activeConnectedEmail}</strong> to <strong>{broker.privacyEmail}</strong> · Receipt:{' '}
+              <span className="font-mono">{sentReceipt}</span>
+            </span>
+          </div>
+        )}
+
+        {sendError && (
+          <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{sendError}</span>
+          </div>
+        )}
+
+        {confirmStep && isDirectSendConnected && (
+          <div className="p-4 bg-slate-950 border border-emerald-500/40 rounded-xl space-y-3 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <span className="text-slate-200">
+                Confirm sending this statutory demand from{' '}
+                <strong className="text-emerald-400 font-mono">{activeConnectedEmail}</strong> to{' '}
+                <strong className="font-mono">{broker.privacyEmail}</strong>?
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setConfirmStep(false)}
+                  disabled={isSending}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmedSend}
+                  disabled={isSending}
+                  className="px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  {isSending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                  <span>{isSending ? 'Sending...' : 'Confirm & Send'}</span>
+                </button>
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 text-slate-300 cursor-pointer pt-2 border-t border-slate-800/80">
+              <input
+                type="checkbox"
+                checked={bccSelf}
+                onChange={(e) => setBccSelf(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+              />
+              <span>
+                Send a BCC copy to my own inbox (<span className="font-mono">{activeConnectedEmail}</span>)
+              </span>
+            </label>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-3.5 py-2 text-xs font-semibold text-slate-400 hover:text-white cursor-pointer"
+            >
+              Close
+            </button>
+
+            {webmailLinks && (
+              <a
+                href={webmailLinks.gmailUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <span>Gmail Web Compose</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {isDirectSendConnected ? (
+              !confirmStep && !sentReceipt && broker.privacyEmail && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmStep(true)}
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Send Notice From {activeConnectedEmail}</span>
+                </button>
+              )
+            ) : (
+              onOpenConnectEmail && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenConnectEmail();
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  <span>Connect Email &amp; Send Notice</span>
+                </button>
+              )
+            )}
+          </div>
         </div>
       </div>
     </div>

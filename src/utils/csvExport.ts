@@ -1,4 +1,5 @@
 import { DATA_BROKERS } from '../data/brokers';
+import { getExhaustiveBrokerRegistry } from './dynamicBrokerRegistry';
 import { ScanResult, UserProfile } from '../types';
 
 /**
@@ -41,8 +42,11 @@ export function exportExposureReportCsv(
     'Privacy Officer Contact',
   ];
 
+  const registry = getExhaustiveBrokerRegistry();
   const rows = exposed.map((item) => {
-    const broker = DATA_BROKERS.find((b) => b.id === item.brokerId);
+    const broker =
+      registry.find((b) => b.id === item.brokerId) ||
+      DATA_BROKERS.find((b) => b.id === item.brokerId);
     return [
       sanitizeCsvCell(broker?.name || item.brokerId),
       sanitizeCsvCell(broker?.domain || ''),

@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { DATA_BROKERS } from '../data/brokers';
 import { ScanResult } from '../types';
-import { X, RefreshCw, AlertTriangle, ShieldCheck, Bell, Calendar, Clock, CheckCircle } from 'lucide-react';
+import { findBrokerById } from '../services/emailConnectionStore';
+import { generateIcsCalendarEvent } from '../utils/statutorySlaEngine';
+import { downloadFile } from '../utils/exportEngines';
+import { X, RefreshCw, AlertTriangle, Bell, Calendar, Download } from 'lucide-react';
 
 interface ResurfaceMonitorModalProps {
   results: ScanResult[];
@@ -24,7 +26,6 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
     setIsSimulating(true);
     setSimulationComplete(false);
 
-    // Pick 2-3 brokers from previously removed or exposed list to simulate resurfacing
     setTimeout(() => {
       const candidates = results.filter((r) => r.status === 'exposed');
       const picked = candidates.slice(0, 3).map((c) => c.brokerId);
@@ -32,7 +33,19 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
       setIsSimulating(false);
       setSimulationComplete(true);
       onTriggerResurfaceCheck(picked);
-    }, 1200);
+    }, 900);
+  };
+
+  const handleExportReminderIcs = () => {
+    const daysNum = parseInt(scheduleDays, 10);
+    const targetDate = new Date(Date.now() + daysNum * 24 * 60 * 60 * 1000);
+    const ics = generateIcsCalendarEvent({
+      title: `synOUT ${scheduleDays}-Day Resurface Re-Audit Sweep`,
+      description: `Run your recurring ${scheduleDays}-day synOUT broker resurface audit to verify that previously suppressed records have not re-populated from public county deeds or marketing feeds.`,
+      startDate: targetDate,
+      durationMinutes: 30,
+    });
+    downloadFile(ics, `synout-${scheduleDays}day-resurface-reminder.ics`, 'text/calendar;charset=utf-8');
   };
 
   return (
@@ -45,7 +58,7 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
               <RefreshCw className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-white">Continuous Resurface Defense & Re-Audit</h3>
+              <h3 className="text-lg font-bold text-white">Continuous Resurface Defense &amp; Re-Audit</h3>
               <p className="text-xs text-slate-400">
                 Automated continuous surveillance against data brokers repopulating your records
               </p>
@@ -69,18 +82,28 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
               <span>Why do data brokers resurface deleted records?</span>
             </div>
             <p className="text-slate-400 leading-relaxed">
-              Data brokers constantly purchase updated voter rolls, property deed filings, utility connections, and commercial marketing registries. Even after honorably deleting your profile, their automated crawlers often re-index you every 30 to 90 days.
+              Data brokers constantly purchase updated voter rolls, property deed filings, utility connections, and commercial marketing registries. Even after deleting your profile, their automated crawlers often re-index you every 30 to 90 days.
             </p>
           </div>
 
           {/* Schedule Configuration */}
           <div className="space-y-3">
-            <div className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-emerald-400" />
-              <span>Recurring Re-Audit Schedule</span>
+            <div className="text-xs font-semibold text-white uppercase tracking-wider flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-emerald-400" />
+                <span>Recurring Re-Audit Schedule</span>
+              </span>
+              <button
+                type="button"
+                onClick={handleExportReminderIcs}
+                className="text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer normal-case tracking-normal"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download {scheduleDays}-Day Calendar Reminder (.ics)</span>
+              </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-3 gap-3 tabular-nums">
               {(['30', '60', '90'] as const).map((days) => (
                 <button
                   key={days}
@@ -109,7 +132,7 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
               </div>
               <div>
                 <div className="text-xs font-semibold text-white">Resurface Alert Notifications</div>
-                <div className="text-[11px] text-slate-400">Receive in-app & email alerts when a purged broker re-indexes your name</div>
+                <div className="text-[11px] text-slate-400">Receive in-app &amp; email alerts when a purged broker re-indexes your name</div>
               </div>
             </div>
 
@@ -136,7 +159,7 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
                 type="button"
                 onClick={handleSimulateResurface}
                 disabled={isSimulating}
-                className="px-3 py-1.5 text-xs font-medium text-amber-300 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className="px-3 py-1.5 text-xs font-medium text-amber-300 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSimulating ? 'animate-spin' : ''}`} />
                 <span>{isSimulating ? 'Scanning Registries...' : 'Simulate 60-Day Re-Check'}</span>
@@ -144,7 +167,7 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
             </div>
 
             {simulationComplete && (
-              <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs space-y-2 animate-in fade-in">
+              <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs space-y-2">
                 <div className="flex items-center justify-between text-rose-300 font-semibold">
                   <span className="flex items-center gap-1.5">
                     <AlertTriangle className="w-4 h-4 text-rose-400" />
@@ -156,10 +179,10 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
                 </div>
                 <div className="text-slate-300">
                   {resurfacedList
-                    .map((id) => DATA_BROKERS.find((b) => b.id === id)?.name)
+                    .map((id) => findBrokerById(id)?.name)
                     .filter(Boolean)
                     .join(', ')}{' '}
-                  repopulated unredacted phone & address records from municipal county deeds.
+                  repopulated unredacted phone &amp; address records from municipal county deeds.
                 </div>
               </div>
             )}
@@ -167,15 +190,15 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-slate-800/80 bg-slate-950/60 flex items-center justify-between">
-          <span className="text-xs text-slate-500">
+        <div className="p-6 border-t border-slate-800/80 bg-slate-950/60 flex flex-wrap items-center justify-between gap-3">
+          <span className="text-xs text-slate-500 tabular-nums">
             Next automated sweep scheduled in {scheduleDays} days.
           </span>
           <button
             onClick={onClose}
             className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer"
           >
-            Save & Close
+            Save &amp; Close
           </button>
         </div>
       </div>

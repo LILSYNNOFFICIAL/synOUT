@@ -1,26 +1,31 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { DataBroker, ScanResult, UserProfile } from '../types';
-import { DATA_BROKERS } from '../data/brokers';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
+import { getExhaustiveBrokerRegistry } from '../utils/dynamicBrokerRegistry';
 import {
   EMAIL_PROVIDER_PRESETS,
   EmailProviderId,
   detectProviderFromEmail,
   buildWebmailComposeUrls,
 } from '../utils/emailProviderConfig';
+import { getAccessToken } from '../services/googleAuth';
 import {
-  ConnectedGoogleUser,
-  initAuth,
-  googleSignIn,
-  getAccessToken,
-  signOutGoogleUser,
-  isGoogleOAuthConfigured,
-} from '../services/googleAuth';
-import {
-  sendGmailMessage,
   searchBrokerVerificationEmails,
   GmailMessageSummary,
 } from '../services/gmailApi';
+import {
+  useEmailConnection,
+  setEmailConnectionMode,
+  verifyAndConnectSmtpAccount,
+  disconnectSmtpAccount,
+  connectGoogleOAuthAccount,
+  disconnectGoogleOAuthAccount,
+  findBrokerById,
+  hasVerifiedEmailReceipt,
+  buildStatutoryNoticeForBroker,
+  sendEmailViaConnectedAccount,
+} from '../services/emailConnectionStore';
+import { copyTextToClipboard } from '../utils/exportEngines';
 import {
   Mail,
   Send,
@@ -49,70 +54,9 @@ interface GmailDispatchCenterProps {
   onStartScan?: () => void;
 }
 
-type ConnectionMode = 'smtp' | 'oauth' | 'webmail';
-
-interface SmtpSessionConnection {
-  verified: boolean;
-  provider: EmailProviderId;
-  userEmail: string;
-  appPassword: string;
-  customHost: string;
-  customPort: number;
-  customSecure: boolean;
-  resolvedHost: string;
-  resolvedPort: number;
-}
-
 interface PendingSendConfirmation {
   type: 'single' | 'batch';
   targets: { broker: DataBroker; subject: string; body: string }[];
-}
-
-function buildStatutoryNoticeForBroker(broker: DataBroker, profile: UserProfile, senderEmailOverride?: string) {
-  const subject = `LEGAL NOTICE: Statutory CCPA/CPRA/GDPR Data Expungement & Opt-Out Demand - ${profile.firstName} ${profile.lastName}`;
-  const dateStr = new Date().toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
-
-  const primaryEmail = senderEmailOverride || profile.emails[0] || 'consumer@example.com';
-  const primaryPhone = profile.phoneNumbers[0] || 'On file';
-  const previousLocs =
-    profile.previousLocations.length > 0 ? profile.previousLocations.join('; ') : 'None listed';
-
-  const body = `DATE: ${dateStr}
-TO: Privacy Officer & Legal Compliance, ${broker.name} (${broker.privacyEmail || 'privacy@broker'})
-FROM: ${profile.firstName} ${profile.lastName} <${primaryEmail}>
-RE: MANDATORY PERSONAL IDENTIFIABLE INFORMATION (PII) EXPUNGEMENT DEMAND
-LEGAL CITATION: California Consumer Privacy Act (Cal. Civ. Code § 1798.100 et seq.), CPRA, and Applicable US State Privacy Statutes
-
-To Whom It May Concern,
-
-I am writing to exercise my statutory privacy rights to DELETE all personal information, consumer profiles, tracking dossiers, and public records associated with my identity from ${broker.name} and all affiliated data networks, affiliates, and sub-processors.
-
-IDENTIFYING INFORMATION FOR SEARCH & EXPUNGEMENT:
-- Full Legal Name: ${profile.firstName} ${profile.lastName}
-- Primary Email Address: ${primaryEmail}
-- Primary Phone Number: ${primaryPhone}
-- Current Residence: ${profile.currentCity}, ${profile.currentState}
-- Previous Residences: ${previousLocs}
-- Associated Record URL: ${getBrokerRecordSearchUrl(broker, profile)}
-
-STATUTORY DIRECTIVE:
-1. Permanently delete and purge all records, dossiers, contact lists, and marketing segments containing my personal information.
-2. Direct all data brokers, downstream buyers, and syndicates with whom you shared my data to delete it pursuant to statutory mandates.
-3. Place my identifying attributes onto your permanent suppress / do-not-re-acquire list so my profile is never regenerated.
-4. Provide written confirmation of compliance to ${primaryEmail} within the statutorily allotted timeframe (45 days maximum).
-
-Failure to comply constitutes a willful violation of statutory data protection legislation and may be referred to the State Attorney General or California Privacy Protection Agency (CPPA) for civil enforcement.
-
-Sincerely,
-${profile.firstName} ${profile.lastName}
-Authorized Consumer & Data Subject
-Ref: synOUT-${broker.id.toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
-
-  return { subject, body };
 }
 
 export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
@@ -122,26 +66,34 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   onOpenPowerOfAttorney,
   onStartScan,
 }) => {
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('smtp');
+  const {
+    mode: connectionMode,
+    smtp: smtpConnection,
+    oauthUser,
+    oauthAccessToken: accessToken,
+    oauthConfigured,
+    isDirectSendConnected: isAccountConnectedForDirectSend,
+    activeConnectedEmail,
+  } = useEmailConnection();
 
-  // Option 1: Direct Any-Email SMTP Connection (In-memory only, zero Firebase needed)
-  const initialEmail = profile.emails[0] || '';
+  // Form inputs for Direct Email / App Password connection
+  const initialEmail = smtpConnection?.userEmail || profile.emails[0] || '';
   const [smtpEmail, setSmtpEmail] = useState<string>(initialEmail);
   const [smtpProvider, setSmtpProvider] = useState<EmailProviderId>(() =>
-    detectProviderFromEmail(initialEmail)
+    smtpConnection?.provider || detectProviderFromEmail(initialEmail)
   );
   const [smtpAppPassword, setSmtpAppPassword] = useState<string>('');
-  const [customHost, setCustomHost] = useState<string>('');
-  const [customPort, setCustomPort] = useState<number>(587);
-  const [customSecure, setCustomSecure] = useState<boolean>(false);
+  const [customHost, setCustomHost] = useState<string>(smtpConnection?.customHost || '');
+  const [customPort, setCustomPort] = useState<number>(smtpConnection?.customPort || 587);
+  const [customSecure, setCustomSecure] = useState<boolean>(smtpConnection?.customSecure || false);
+  const [rememberInBrowser, setRememberInBrowser] = useState<boolean>(
+    smtpConnection ? smtpConnection.rememberInBrowser : true
+  );
+  const [bccSelf, setBccSelf] = useState<boolean>(false);
+
   const [isVerifyingSmtp, setIsVerifyingSmtp] = useState<boolean>(false);
-  const [smtpConnection, setSmtpConnection] = useState<SmtpSessionConnection | null>(null);
   const [smtpError, setSmtpError] = useState<string | null>(null);
 
-  // Option 2: Pure Google Identity Services OAuth (Zero Firebase API keys)
-  const [oauthUser, setOauthUser] = useState<ConnectedGoogleUser | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [oauthConfigured, setOauthConfigured] = useState<boolean>(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [isAuthenticatingOAuth, setIsAuthenticatingOAuth] = useState<boolean>(false);
 
@@ -162,55 +114,38 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   const [sendSuccessMsg, setSendSuccessMsg] = useState<string | null>(null);
   const [sendErrorMsg, setSendErrorMsg] = useState<string | null>(null);
 
+  // Self-test verification email state
+  const [confirmSelfTest, setConfirmSelfTest] = useState<boolean>(false);
+  const [isSendingSelfTest, setIsSendingSelfTest] = useState<boolean>(false);
+  const [selfTestReceipt, setSelfTestReceipt] = useState<string | null>(null);
+  const [selfTestError, setSelfTestError] = useState<string | null>(null);
+
   // Gmail API Inbox Verification Scanner
   const [inboxEmails, setInboxEmails] = useState<GmailMessageSummary[]>([]);
   const [isSearchingInbox, setIsSearchingInbox] = useState<boolean>(false);
   const [inboxSearched, setInboxSearched] = useState<boolean>(false);
 
-  useEffect(() => {
-    isGoogleOAuthConfigured().then(setOauthConfigured);
-    const unsubscribe = initAuth(
-      (user, token) => {
-        setOauthUser(user);
-        setAccessToken(token);
-        setOauthError(null);
-      },
-      () => {
-        setOauthUser(null);
-        setAccessToken(null);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  const activeSenderEmail = useMemo(() => {
-    if (connectionMode === 'smtp' && smtpConnection?.verified) {
-      return smtpConnection.userEmail;
-    }
-    if (connectionMode === 'oauth' && oauthUser?.email) {
-      return oauthUser.email;
-    }
-    return smtpEmail || profile.emails[0] || '';
-  }, [connectionMode, smtpConnection, oauthUser, smtpEmail, profile.emails]);
+  const activeSenderEmail = activeConnectedEmail || smtpEmail || profile.emails[0] || '';
 
   const exposedBrokers = useMemo(() => {
     const exposedMap = new Map(
       results.filter((r) => r.status === 'exposed').map((r) => [r.brokerId, r])
     );
-    return DATA_BROKERS.filter((b) => exposedMap.has(b.id) && b.privacyEmail).map((b) => ({
-      broker: b,
-      result: exposedMap.get(b.id)!,
-    }));
+    const registry = getExhaustiveBrokerRegistry();
+    return registry
+      .filter((b) => exposedMap.has(b.id) && b.privacyEmail)
+      .map((b) => ({
+        broker: b,
+        result: exposedMap.get(b.id)!,
+      }));
   }, [results]);
 
   const pendingBrokers = useMemo(() => {
-    return exposedBrokers.filter(
-      ({ result }) => result.removalStatus === 'found' || result.removalStatus === 'failed'
-    );
+    return exposedBrokers.filter(({ result }) => !hasVerifiedEmailReceipt(result));
   }, [exposedBrokers]);
 
   const submittedBrokersCount = useMemo(() => {
-    return exposedBrokers.filter(({ result }) => result.removalStatus === 'submitted' || result.removalStatus === 'removed').length;
+    return exposedBrokers.filter(({ result }) => hasVerifiedEmailReceipt(result)).length;
   }, [exposedBrokers]);
 
   const filteredQueue = useMemo(() => {
@@ -220,11 +155,12 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
         broker.domain.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (broker.privacyEmail || '').toLowerCase().includes(searchQuery.toLowerCase());
       if (!matchesSearch) return false;
+      const verifiedSent = hasVerifiedEmailReceipt(result);
       if (queueFilter === 'pending') {
-        return result.removalStatus === 'found' || result.removalStatus === 'failed';
+        return !verifiedSent;
       }
       if (queueFilter === 'submitted') {
-        return result.removalStatus === 'submitted' || result.removalStatus === 'removed';
+        return verifiedSent;
       }
       return true;
     });
@@ -237,7 +173,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   }, [exposedBrokers, selectedBrokerId]);
 
   const activeBroker = useMemo(
-    () => DATA_BROKERS.find((b) => b.id === selectedBrokerId),
+    () => (selectedBrokerId ? findBrokerById(selectedBrokerId) : undefined),
     [selectedBrokerId]
   );
 
@@ -271,45 +207,26 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     setSmtpError(null);
 
     try {
-      const res = await fetch('/api/email/verify-account', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: smtpProvider,
-          userEmail: smtpEmail.trim(),
-          appPassword: smtpAppPassword,
-          customHost: smtpProvider === 'custom' ? customHost.trim() : undefined,
-          customPort: smtpProvider === 'custom' ? customPort : undefined,
-          customSecure: smtpProvider === 'custom' ? customSecure : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.verified) {
-        throw new Error(data.error || 'Could not verify email account connection.');
-      }
-
-      setSmtpConnection({
-        verified: true,
+      await verifyAndConnectSmtpAccount({
         provider: smtpProvider,
-        userEmail: smtpEmail.trim(),
+        userEmail: smtpEmail,
         appPassword: smtpAppPassword,
-        customHost: customHost.trim(),
+        customHost,
         customPort,
         customSecure,
-        resolvedHost: data.host,
-        resolvedPort: data.port,
+        rememberInBrowser,
       });
+      setSmtpAppPassword('');
       setSmtpError(null);
     } catch (err) {
-      setSmtpConnection(null);
       setSmtpError(err instanceof Error ? err.message : 'Connection verification failed.');
     } finally {
       setIsVerifyingSmtp(false);
     }
   };
 
-  const handleDisconnectSmtp = () => {
-    setSmtpConnection(null);
+  const handleDisconnectSmtp = async () => {
+    await disconnectSmtpAccount();
     setSmtpAppPassword('');
     setSmtpError(null);
   };
@@ -318,9 +235,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     setIsAuthenticatingOAuth(true);
     setOauthError(null);
     try {
-      const res = await googleSignIn();
-      setOauthUser(res.user);
-      setAccessToken(res.accessToken);
+      await connectGoogleOAuthAccount();
     } catch (err) {
       setOauthError(err instanceof Error ? err.message : 'Google OAuth sign-in failed.');
     } finally {
@@ -329,14 +244,33 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   };
 
   const handleGoogleOAuthSignOut = async () => {
-    await signOutGoogleUser();
-    setOauthUser(null);
-    setAccessToken(null);
+    await disconnectGoogleOAuthAccount();
   };
 
-  const isAccountConnectedForDirectSend =
-    (connectionMode === 'smtp' && Boolean(smtpConnection?.verified)) ||
-    (connectionMode === 'oauth' && Boolean(oauthUser && accessToken));
+  const handleConfirmSendSelfTest = async () => {
+    if (!activeConnectedEmail) return;
+    setIsSendingSelfTest(true);
+    setSelfTestError(null);
+    setSelfTestReceipt(null);
+    try {
+      const senderName = `${profile.firstName} ${profile.lastName}`.trim() || 'synOUT User';
+      const res = await sendEmailViaConnectedAccount({
+        recipientEmail: activeConnectedEmail,
+        subject: `synOUT Connected Email Verification Test (${activeConnectedEmail})`,
+        body: `Hello ${senderName},\n\nThis message confirms that your email account (${activeConnectedEmail}) is actively connected to synOUT.\n\nWhen you click "Opt Out of All" or "Send Opt-Out Email", synOUT transmits statutory CCPA/CPRA/GDPR deletion demands directly from this email address to each data broker's privacy compliance desk on your behalf.\n\nTimestamp: ${new Date().toISOString()}`,
+        senderName,
+        brokerId: 'synout-self-test',
+        brokerName: 'synOUT Self-Test Verification',
+        brokerDomain: 'synout.local',
+      });
+      setSelfTestReceipt(`Delivered to ${activeConnectedEmail} · Message-ID: ${res.messageId}`);
+      setConfirmSelfTest(false);
+    } catch (err) {
+      setSelfTestError(err instanceof Error ? err.message : 'Test email delivery failed.');
+    } finally {
+      setIsSendingSelfTest(false);
+    }
+  };
 
   const requestSingleSendConfirmation = () => {
     if (!activeBroker?.privacyEmail) {
@@ -365,12 +299,13 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
       setSendErrorMsg('Connect and verify your email account above first to batch-send on your behalf.');
       return;
     }
-    if (pendingBrokers.length === 0) {
-      setSendErrorMsg('All exposed brokers in your queue have already had notices submitted.');
+    const targetPool = pendingBrokers.length > 0 ? pendingBrokers : exposedBrokers;
+    if (targetPool.length === 0) {
+      setSendErrorMsg('Run an exposure scan first to populate your broker opt-out queue.');
       return;
     }
 
-    const targets = pendingBrokers.map(({ broker }) => {
+    const targets = targetPool.map(({ broker }) => {
       const notice = buildStatutoryNoticeForBroker(broker, profile, activeSenderEmail);
       return {
         broker,
@@ -385,52 +320,6 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     });
   };
 
-  const dispatchSingleTarget = async (target: {
-    broker: DataBroker;
-    subject: string;
-    body: string;
-  }): Promise<string> => {
-    const recipient = target.broker.privacyEmail!;
-
-    if (connectionMode === 'smtp' && smtpConnection?.verified) {
-      const res = await fetch('/api/email/dispatch-on-behalf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: smtpConnection.provider,
-          userEmail: smtpConnection.userEmail,
-          senderName: `${profile.firstName} ${profile.lastName}`.trim(),
-          appPassword: smtpConnection.appPassword,
-          customHost: smtpConnection.provider === 'custom' ? smtpConnection.customHost : undefined,
-          customPort: smtpConnection.provider === 'custom' ? smtpConnection.customPort : undefined,
-          customSecure: smtpConnection.provider === 'custom' ? smtpConnection.customSecure : undefined,
-          recipientEmail: recipient,
-          subject: target.subject,
-          body: target.body,
-          brokerId: target.broker.id,
-          brokerName: target.broker.name,
-          brokerDomain: target.broker.domain,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || `Failed sending to ${target.broker.name}`);
-      }
-      return String(data.messageId);
-    }
-
-    if (connectionMode === 'oauth') {
-      const token = accessToken || (await getAccessToken());
-      if (!token) {
-        throw new Error('Google OAuth session expired. Please reconnect your Gmail account.');
-      }
-      const response = await sendGmailMessage(token, recipient, target.subject, target.body);
-      return response.id;
-    }
-
-    throw new Error('No active email connection selected.');
-  };
-
   const executeConfirmedSend = async () => {
     if (!pendingConfirmation) return;
     const confirmation = pendingConfirmation;
@@ -438,14 +327,24 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     setIsSending(true);
     setSendErrorMsg(null);
     setSendSuccessMsg(null);
+    const senderName = `${profile.firstName} ${profile.lastName}`.trim() || 'Authorized Consumer';
 
     if (confirmation.type === 'single') {
       const target = confirmation.targets[0];
       try {
-        const messageId = await dispatchSingleTarget(target);
-        onMarkDispatched(target.broker.id, messageId, false);
+        const res = await sendEmailViaConnectedAccount({
+          recipientEmail: target.broker.privacyEmail,
+          subject: target.subject,
+          body: target.body,
+          senderName,
+          brokerId: target.broker.id,
+          brokerName: target.broker.name,
+          brokerDomain: target.broker.domain,
+          bccSelf,
+        });
+        onMarkDispatched(target.broker.id, res.messageId, false);
         setSendSuccessMsg(
-          `Sent from ${activeSenderEmail} to ${target.broker.privacyEmail} · Message Receipt: ${messageId}`
+          `Sent from ${res.sentFrom} to ${target.broker.privacyEmail} · Message Receipt: ${res.messageId}`
         );
       } catch (err) {
         setSendErrorMsg(err instanceof Error ? err.message : 'Failed to send email on your behalf.');
@@ -463,15 +362,24 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     for (let i = 0; i < total; i++) {
       const target = confirmation.targets[i];
       setBatchProgress({
-        sent: i,
+        sent: i + 1,
         total,
         currentBroker: target.broker.name,
       });
 
       try {
-        const messageId = await dispatchSingleTarget(target);
+        const res = await sendEmailViaConnectedAccount({
+          recipientEmail: target.broker.privacyEmail,
+          subject: target.subject,
+          body: target.body,
+          senderName,
+          brokerId: target.broker.id,
+          brokerName: target.broker.name,
+          brokerDomain: target.broker.domain,
+          bccSelf,
+        });
         sentCount++;
-        onMarkDispatched(target.broker.id, messageId, true);
+        onMarkDispatched(target.broker.id, res.messageId, true);
       } catch (err) {
         failures.push(
           `${target.broker.name}: ${err instanceof Error ? err.message : 'Dispatch error'}`
@@ -484,7 +392,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
     if (sentCount > 0 && failures.length === 0) {
       setSendSuccessMsg(
-        `Dispatched ${sentCount} statutory opt-out notices directly from ${activeSenderEmail} on your behalf.`
+        `Sent all ${sentCount} statutory opt-out emails directly from ${activeSenderEmail}. Copies are in your Sent folder.`
       );
     } else if (sentCount > 0 && failures.length > 0) {
       setSendSuccessMsg(`Sent ${sentCount} of ${total} notices from ${activeSenderEmail}.`);
@@ -495,7 +403,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   };
 
   const handleCopyNotice = () => {
-    navigator.clipboard.writeText(`${customSubject}\n\n${customBody}`);
+    void copyTextToClipboard(`${customSubject}\n\n${customBody}`);
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
   };
@@ -534,22 +442,20 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6">
           <div className="space-y-2 max-w-3xl">
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
-              <span className="text-emerald-400 font-medium">User-Connected Email Dispatcher</span>
-              <span aria-hidden="true">·</span>
-              <span>Zero Firebase Credentials Required</span>
+              <span className="text-emerald-400 font-medium">Persistent Email Dispatcher</span>
               <span aria-hidden="true">·</span>
               <span>{exposedBrokers.length} Exposed Broker Inboxes</span>
               <span aria-hidden="true">·</span>
-              <span>{submittedBrokersCount} Submitted</span>
+              <span>{submittedBrokersCount} Verified Sent</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight [text-wrap:balance]">
               Send Opt-Out Demands From Your Own Email
             </h1>
             <p className="text-sm text-slate-400 leading-relaxed">
-              Connect your own Gmail, Outlook, Yahoo, iCloud, Proton, or custom email so synOUT
-              sends statutory CCPA, CPRA, and GDPR deletion demands directly from your address on
-              your behalf. Broker compliance confirmations arrive straight in your inbox, and your
-              credentials stay strictly in browser session memory.
+              Connect your Gmail, Outlook, Yahoo, iCloud, Proton, or custom email once. Your
+              connection stays active as you move between tabs so clicking <strong>Opt Out of All</strong>{' '}
+              anywhere in synOUT sends real statutory deletion demands directly from your email on
+              your behalf.
             </p>
           </div>
 
@@ -570,7 +476,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl">
               <button
                 type="button"
-                onClick={() => setConnectionMode('smtp')}
+                onClick={() => setEmailConnectionMode('smtp')}
                 className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   connectionMode === 'smtp'
                     ? 'bg-emerald-500 text-slate-950'
@@ -581,7 +487,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setConnectionMode('oauth')}
+                onClick={() => setEmailConnectionMode('oauth')}
                 className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   connectionMode === 'oauth'
                     ? 'bg-emerald-500 text-slate-950'
@@ -592,7 +498,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setConnectionMode('webmail')}
+                onClick={() => setEmailConnectionMode('webmail')}
                 className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   connectionMode === 'webmail'
                     ? 'bg-emerald-500 text-slate-950'
@@ -603,7 +509,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               </button>
             </div>
 
-            {isAccountConnectedForDirectSend && pendingBrokers.length > 0 && (
+            {isAccountConnectedForDirectSend && exposedBrokers.length > 0 && (
               <button
                 type="button"
                 onClick={requestBatchSendConfirmation}
@@ -611,34 +517,101 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0 tabular-nums"
               >
                 <Layers className="w-4 h-4" />
-                <span>Send to All {pendingBrokers.length} Pending Brokers on My Behalf</span>
+                <span>
+                  {pendingBrokers.length > 0
+                    ? `Send to All ${pendingBrokers.length} Pending Brokers on My Behalf`
+                    : `Re-Send to All ${exposedBrokers.length} Exposed Brokers`}
+                </span>
               </button>
             )}
           </div>
 
-          {/* Mode 1: Universal Direct SMTP (Works immediately with zero cloud/Firebase setup) */}
+          {/* Mode 1: Universal Direct SMTP */}
           {connectionMode === 'smtp' && (
             <div className="space-y-4">
               {smtpConnection?.verified ? (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3 px-4 bg-slate-950 border border-emerald-500/30 rounded-xl">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-white truncate">
-                        Connected as {smtpConnection.userEmail}
-                      </div>
-                      <div className="text-xs text-slate-400 font-mono tabular-nums">
-                        Verified outbound relay via {smtpConnection.resolvedHost}:{smtpConnection.resolvedPort} · In-memory session only
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3.5 px-4 bg-slate-950 border border-emerald-500/30 rounded-xl">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-white truncate">
+                          Connected as {smtpConnection.userEmail}
+                        </div>
+                        <div className="text-xs text-slate-400 font-mono tabular-nums">
+                          Verified outbound relay via {smtpConnection.resolvedHost}:{smtpConnection.resolvedPort} ·{' '}
+                          {smtpConnection.rememberInBrowser
+                            ? 'Persistent across tabs & browser reloads'
+                            : 'Active for current browser tab'}
+                        </div>
                       </div>
                     </div>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelfTestError(null);
+                          setSelfTestReceipt(null);
+                          setConfirmSelfTest(true);
+                        }}
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-semibold text-emerald-300 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Send Test Email to Myself
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDisconnectSmtp}
+                        className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Disconnect Email
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleDisconnectSmtp}
-                    className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                  >
-                    Disconnect Email
-                  </button>
+
+                  {confirmSelfTest && (
+                    <div className="p-3.5 bg-slate-950 border border-emerald-500/40 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                      <span className="text-slate-200">
+                        Send a real verification test email to your own inbox (<strong className="font-mono text-emerald-400">{smtpConnection.userEmail}</strong>) now?
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmSelfTest(false)}
+                          disabled={isSendingSelfTest}
+                          className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleConfirmSendSelfTest}
+                          disabled={isSendingSelfTest}
+                          className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          {isSendingSelfTest ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Send className="w-3.5 h-3.5" />
+                          )}
+                          <span>{isSendingSelfTest ? 'Sending...' : 'Confirm & Send Test'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {selfTestReceipt && (
+                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span className="font-mono">{selfTestReceipt}</span>
+                    </div>
+                  )}
+
+                  {selfTestError && (
+                    <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>{selfTestError}</span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <form onSubmit={handleVerifySmtp} className="space-y-4">
@@ -775,14 +748,25 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     </div>
                   )}
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                    <span>{activePreset.helpText}</span>
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={rememberInBrowser}
+                        onChange={(e) => setRememberInBrowser(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-900 text-emerald-500"
+                      />
+                      <span>Keep my email connected across tabs &amp; page refreshes on this browser</span>
+                    </label>
+
                     {smtpProvider !== 'custom' && (
-                      <span className="font-mono text-slate-500 tabular-nums">
+                      <span className="text-xs font-mono text-slate-500 tabular-nums">
                         Server: {activePreset.host}:{activePreset.port}
                       </span>
                     )}
                   </div>
+
+                  <p className="text-xs text-slate-400">{activePreset.helpText}</p>
                 </form>
               )}
 
@@ -795,18 +779,18 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             </div>
           )}
 
-          {/* Mode 2: Google Identity Services OAuth Popup (Zero Firebase SDK) */}
+          {/* Mode 2: Google Identity Services OAuth Popup */}
           {connectionMode === 'oauth' && (
             <div className="space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3 px-4 bg-slate-950 border border-slate-800 rounded-xl">
                 <div className="space-y-1">
                   <div className="text-xs font-semibold text-white">
-                    Google Identity Services OAuth 2.0 (No Firebase Keys Needed)
+                    Google Identity Services OAuth 2.0
                   </div>
                   <p className="text-xs text-slate-400">
                     {oauthConfigured
                       ? 'Authorize with Google in a popup to send opt-out demands and scan your Gmail inbox for broker verification links.'
-                      : 'Optional Google OAuth Client ID is not configured in this environment. You can connect your Gmail immediately in the "Connect Any Email" tab using a Google App Password with zero developer setup.'}
+                      : 'Optional Google OAuth Client ID is not configured in this environment. Connect your Gmail immediately in the "Connect Any Email" tab using a 16-character Google App Password.'}
                   </p>
                 </div>
 
@@ -947,8 +931,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
           <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
             {filteredQueue.map(({ broker, result }) => {
               const isSelected = broker.id === selectedBrokerId;
-              const isSubmitted =
-                result.removalStatus === 'submitted' || result.removalStatus === 'removed';
+              const isSubmitted = hasVerifiedEmailReceipt(result);
               return (
                 <button
                   key={broker.id}
@@ -977,7 +960,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                             : 'text-slate-400'
                         }
                       >
-                        {isSubmitted ? 'Submitted' : `${broker.risk} Risk`}
+                        {isSubmitted ? 'Email Sent' : `${broker.risk} Risk`}
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-400 font-mono truncate">
@@ -1002,7 +985,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               <div className="p-8 text-center bg-slate-900 border border-slate-800 rounded-xl space-y-3">
                 <p className="text-xs text-slate-400">
                   Run an exposure audit scan first to populate your personalized broker opt-out
-                  queue. You can still connect and test your email account above right now.
+                  queue. Your email connection above stays saved while you scan.
                 </p>
                 {onStartScan && (
                   <button
@@ -1033,7 +1016,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 text-xs text-slate-400">
                     <span>Recipient Compliance Desk</span>
-                    {activeResult?.optOutConfirmationCode && (
+                    {activeResult?.optOutConfirmationCode && hasVerifiedEmailReceipt(activeResult) && (
                       <>
                         <span aria-hidden="true">·</span>
                         <span className="text-emerald-400 font-mono">
@@ -1054,7 +1037,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
-                  <div className="text-xs text-emerald-400 font-mono flex items-center gap-1.5 pt-0.5">
+                  <div className="text-xs text-emerald-400 font-mono flex flex-wrap items-center gap-1.5 pt-0.5">
                     <Mail className="w-3.5 h-3.5" />
                     <span>To: {activeBroker.privacyEmail}</span>
                     {activeSenderEmail && (
@@ -1145,6 +1128,18 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
               {/* Dispatch Controls */}
               <div className="pt-4 border-t border-slate-800 space-y-4">
+                {isAccountConnectedForDirectSend && smtpConnection?.verified && (
+                  <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={bccSelf}
+                      onChange={(e) => setBccSelf(e.target.checked)}
+                      className="rounded border-slate-700 bg-slate-950 text-emerald-500"
+                    />
+                    <span>BCC a copy of sent opt-out emails to {activeSenderEmail}</span>
+                  </label>
+                )}
+
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   {/* Left Secondary Action: Check Gmail Inbox when OAuth connected */}
                   <div className="flex flex-wrap items-center gap-2">
@@ -1165,7 +1160,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     )}
                   </div>
 
-                  {/* Primary Send Button or Webmail Launchers */}
+                  {/* Primary Send Button */}
                   <div className="flex flex-wrap items-center gap-2.5">
                     {connectionMode !== 'webmail' && (
                       <button
@@ -1269,7 +1264,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 <div className="pt-6 border-t border-slate-800 space-y-3">
                   <h4 className="text-xs font-semibold text-white flex items-center gap-1.5 tabular-nums">
                     <Inbox className="w-4 h-4 text-sky-400" />
-                    <span>Detected Broker Replies & Confirmation Links ({inboxEmails.length})</span>
+                    <span>Detected Broker Replies &amp; Confirmation Links ({inboxEmails.length})</span>
                   </h4>
 
                   {inboxEmails.length > 0 ? (
@@ -1381,6 +1376,20 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 ))}
               </div>
             </div>
+
+            {smtpConnection?.verified && (
+              <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={bccSelf}
+                  onChange={(e) => setBccSelf(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-700 bg-slate-950 text-emerald-500"
+                />
+                <span>
+                  BCC a copy of each sent demand to <strong className="font-mono text-white">{activeSenderEmail}</strong>
+                </span>
+              </label>
+            )}
 
             <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
               <button

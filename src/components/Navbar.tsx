@@ -1,22 +1,20 @@
 import React, { useState } from 'react';
 import {
   Shield,
-  Sparkles,
   Menu,
   X,
-  FileText,
-  Database,
-  BookOpen,
   Mail,
-  Fingerprint,
-  Zap,
   Building2,
-  Lock,
   FileCheck,
   Skull,
   Layers,
-  Activity
+  Activity,
+  CheckCircle2,
+  SearchCode,
+  Archive,
+  Landmark,
 } from 'lucide-react';
+import { useEmailConnection } from '../services/emailConnectionStore';
 
 export type AppTab =
   | 'home'
@@ -26,10 +24,12 @@ export type AppTab =
   | 'directory'
   | 'guide'
   | 'darkweb'
+  | 'deindex'
   | 'monitoring'
   | 'profiles'
   | 'gmail'
-  | 'bureaus';
+  | 'bureaus'
+  | 'firewall';
 
 interface NavbarProps {
   activeTab: AppTab;
@@ -39,6 +39,7 @@ interface NavbarProps {
   removedCount: number;
   isPoaSigned?: boolean;
   onOpenPowerOfAttorney?: () => void;
+  onOpenVault?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -49,8 +50,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   removedCount,
   isPoaSigned,
   onOpenPowerOfAttorney,
+  onOpenVault,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
 
   const handleNavClick = (tab: AppTab) => {
     setActiveTab(tab);
@@ -59,14 +62,14 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-slate-950/95 backdrop-blur-md">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
         {/* Brand Wordmark */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 shrink-0">
           <button
             onClick={() => handleNavClick(hasScanResults ? 'report' : 'home')}
-            className="flex items-center gap-2.5 text-left group transition-opacity hover:opacity-90 cursor-pointer"
+            className="flex items-center gap-2 text-left group transition-opacity hover:opacity-90 cursor-pointer"
           >
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
               <Shield className="w-5 h-5" />
             </div>
             <div>
@@ -81,10 +84,10 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* Desktop Navigation Links */}
-        <nav className="hidden xl:flex items-center gap-5 text-xs font-medium text-slate-400">
+        <nav className="hidden xl:flex items-center gap-3.5 2xl:gap-4 text-xs font-medium text-slate-400">
           <button
             onClick={() => handleNavClick('home')}
-            className={`transition-colors py-1 cursor-pointer ${
+            className={`transition-colors py-1 cursor-pointer whitespace-nowrap ${
               activeTab === 'home' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
@@ -93,7 +96,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={() => handleNavClick('scanner')}
-            className={`transition-colors py-1 cursor-pointer ${
+            className={`transition-colors py-1 cursor-pointer whitespace-nowrap ${
               activeTab === 'scanner' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
@@ -103,7 +106,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {hasScanResults && (
             <button
               onClick={() => handleNavClick('report')}
-              className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer ${
+              className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap ${
                 activeTab === 'report' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
               }`}
             >
@@ -118,7 +121,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={() => handleNavClick('darkweb')}
-            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer ${
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap ${
               activeTab === 'darkweb' ? 'text-white border-b-2 border-red-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
@@ -127,8 +130,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <button
+            onClick={() => handleNavClick('deindex')}
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+              activeTab === 'deindex' ? 'text-white border-b-2 border-sky-400 font-semibold' : 'hover:text-slate-200'
+            }`}
+          >
+            <SearchCode className="w-3.5 h-3.5 text-sky-400" />
+            <span>De-Index</span>
+          </button>
+
+          <button
             onClick={() => handleNavClick('monitoring')}
-            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'monitoring' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
@@ -138,7 +151,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={() => handleNavClick('profiles')}
-            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer ${
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap ${
               activeTab === 'profiles' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
@@ -148,32 +161,46 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={() => handleNavClick('bureaus')}
-            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer ${
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap ${
               activeTab === 'bureaus' ? 'text-white border-b-2 border-amber-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
             <Building2 className="w-3.5 h-3.5 text-amber-400" />
-            <span>Specialty Bureaus</span>
+            <span>Bureaus</span>
+          </button>
+
+          <button
+            onClick={() => handleNavClick('firewall')}
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+              activeTab === 'firewall' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
+            }`}
+          >
+            <Landmark className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Firewall</span>
           </button>
 
           <button
             onClick={() => handleNavClick('gmail')}
-            className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === 'gmail' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
-            <Mail className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Email Dispatch</span>
+            {isDirectSendConnected ? (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Mail className="w-3.5 h-3.5 text-emerald-400" />
+            )}
+            <span>Email</span>
           </button>
 
           {hasScanResults && (
             <button
               onClick={() => handleNavClick('tracker')}
-              className={`transition-colors py-1 flex items-center gap-1.5 cursor-pointer ${
+              className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap ${
                 activeTab === 'tracker' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
               }`}
             >
-              <span>Tracker</span>
+              <span>SLA Tracker</span>
               {removedCount > 0 && (
                 <span className="text-[10px] font-mono tabular-nums text-emerald-400 bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20">
                   {removedCount}
@@ -184,7 +211,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={() => handleNavClick('directory')}
-            className={`transition-colors py-1 cursor-pointer ${
+            className={`transition-colors py-1 cursor-pointer whitespace-nowrap ${
               activeTab === 'directory' ? 'text-white border-b-2 border-emerald-400 font-semibold' : 'hover:text-slate-200'
             }`}
           >
@@ -193,24 +220,62 @@ export const Navbar: React.FC<NavbarProps> = ({
         </nav>
 
         {/* Right CTA */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => handleNavClick('gmail')}
+            title={
+              isDirectSendConnected && activeConnectedEmail
+                ? `Connected sender: ${activeConnectedEmail}`
+                : 'Connect your email to send opt-out demands'
+            }
+            className={`hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer max-w-[180px] ${
+              isDirectSendConnected
+                ? 'bg-emerald-950/50 text-emerald-300 border-emerald-500/40 hover:bg-emerald-950/70'
+                : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-emerald-500/40 hover:text-white'
+            }`}
+          >
+            {isDirectSendConnected ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                <span className="truncate font-mono">{activeConnectedEmail}</span>
+              </>
+            ) : (
+              <>
+                <Mail className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="whitespace-nowrap">Connect Email</span>
+              </>
+            )}
+          </button>
+
+          {onOpenVault && (
+            <button
+              type="button"
+              onClick={onOpenVault}
+              title="Encrypted Local Workspace Vault & Scan Snapshots"
+              className="hidden lg:flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border border-slate-800 bg-slate-900 text-slate-300 hover:text-white hover:border-slate-700 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Archive className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Vault</span>
+            </button>
+          )}
+
           {onOpenPowerOfAttorney && (
             <button
               onClick={onOpenPowerOfAttorney}
-              className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+              className={`hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer whitespace-nowrap ${
                 isPoaSigned
                   ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/40'
-                  : 'bg-amber-950/40 text-amber-300 border-amber-500/40 animate-pulse'
+                  : 'bg-amber-950/40 text-amber-300 border-amber-500/40'
               }`}
             >
               <FileCheck className="w-3.5 h-3.5" />
-              <span>{isPoaSigned ? 'POA Active' : 'Sign POA'}</span>
+              <span>{isPoaSigned ? 'POA' : 'Sign POA'}</span>
             </button>
           )}
 
           <button
             onClick={() => handleNavClick('scanner')}
-            className="px-4 py-2 rounded-xl text-xs font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 shadow-md shadow-emerald-500/20 transition-all cursor-pointer"
+            className="px-3.5 py-2 rounded-xl text-xs font-bold text-slate-950 bg-emerald-500 hover:bg-emerald-400 transition-all cursor-pointer whitespace-nowrap"
           >
             Scan Now
           </button>
@@ -227,7 +292,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Mobile Drawer */}
       {mobileMenuOpen && (
-        <div className="xl:hidden border-b border-slate-800 bg-slate-950/98 px-4 py-4 space-y-2 text-xs">
+        <div className="xl:hidden border-b border-slate-800 bg-slate-950/98 px-4 py-4 space-y-1.5 text-xs">
           <button onClick={() => handleNavClick('home')} className="w-full text-left p-2.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-900">
             Overview
           </button>
@@ -239,8 +304,16 @@ export const Navbar: React.FC<NavbarProps> = ({
               Exposures ({exposedCount})
             </button>
           )}
+          {hasScanResults && (
+            <button onClick={() => handleNavClick('tracker')} className="w-full text-left p-2.5 rounded-lg text-emerald-300 hover:bg-slate-900">
+              45-Day Statutory SLA &amp; Removal Tracker ({removedCount} Scrubbed)
+            </button>
+          )}
           <button onClick={() => handleNavClick('darkweb')} className="w-full text-left p-2.5 rounded-lg text-red-400 hover:bg-slate-900">
-            Dark Web & Tor Threat Neutralization
+            Dark Web &amp; Tor Threat Neutralization
+          </button>
+          <button onClick={() => handleNavClick('deindex')} className="w-full text-left p-2.5 rounded-lg text-sky-400 hover:bg-slate-900">
+            Search Engine De-Indexing (Google / Bing / DuckDuckGo)
           </button>
           <button onClick={() => handleNavClick('monitoring')} className="w-full text-left p-2.5 rounded-lg text-emerald-400 hover:bg-slate-900">
             Continuous Auto-Removal Engine
@@ -249,14 +322,33 @@ export const Navbar: React.FC<NavbarProps> = ({
             Search Profiles Quota (10 Slots)
           </button>
           <button onClick={() => handleNavClick('bureaus')} className="w-full text-left p-2.5 rounded-lg text-amber-400 hover:bg-slate-900">
-            Specialty Clearinghouses & Bureaus (LexisNexis)
+            Specialty Bureaus, Telco CNAM &amp; Marketing Registries
+          </button>
+          <button onClick={() => handleNavClick('firewall')} className="w-full text-left p-2.5 rounded-lg text-emerald-300 hover:bg-slate-900">
+            Public Records, Canary Aliases &amp; ID/EXIF Firewall
           </button>
           <button onClick={() => handleNavClick('gmail')} className="w-full text-left p-2.5 rounded-lg text-emerald-400 hover:bg-slate-900">
-            Email Dispatch (Connect Gmail / Outlook / Any Email)
+            {isDirectSendConnected && activeConnectedEmail
+              ? `Email Connected (${activeConnectedEmail})`
+              : 'Email Dispatch (Connect Gmail / Outlook / Any Email)'}
           </button>
           <button onClick={() => handleNavClick('directory')} className="w-full text-left p-2.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-900">
             700+ Data Broker Directory
           </button>
+          <button onClick={() => handleNavClick('guide')} className="w-full text-left p-2.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-900">
+            CCPA / TDPSA / GPC Signal Guide
+          </button>
+          {onOpenVault && (
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false);
+                onOpenVault();
+              }}
+              className="w-full text-left p-2.5 rounded-lg text-emerald-300 hover:bg-slate-900"
+            >
+              Encrypted Workspace Vault (Backup / Restore)
+            </button>
+          )}
         </div>
       )}
     </header>

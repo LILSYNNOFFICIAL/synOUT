@@ -312,19 +312,20 @@ export function getBrokerRecordSearchUrl(broker: DataBroker, profile?: UserProfi
 }
 
 export function saveStateToStorage<T>(key: string, data: T): void {
+  if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(`synout_${key}`, JSON.stringify(data));
-  } catch (e) {
-    console.error('Failed to save to localStorage:', e);
+    window.localStorage.setItem(`synout_${key}`, JSON.stringify(data));
+  } catch {
+    // Ignore storage restriction or quota errors in sandboxed iframes
   }
 }
 
 export function loadStateFromStorage<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
   try {
-    const item = localStorage.getItem(`synout_${key}`);
-    return item ? JSON.parse(item) : fallback;
-  } catch (e) {
-    console.error('Failed to load from localStorage:', e);
+    const item = window.localStorage.getItem(`synout_${key}`);
+    return item ? (JSON.parse(item) as T) : fallback;
+  } catch {
     return fallback;
   }
 }
