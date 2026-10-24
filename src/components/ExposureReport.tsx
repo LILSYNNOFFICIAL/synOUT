@@ -16,6 +16,11 @@ import {
 } from '../utils/exportEngines';
 import { exportExposureReportCsv } from '../utils/csvExport';
 import {
+  resolveBrokerContactProfile,
+  useBrokerContactOverrides,
+} from '../utils/brokerContactResolver';
+import { hasWebFormSubmission } from '../utils/optOutFormEngine';
+import {
   ShieldAlert,
   ShieldCheck,
   Search,
@@ -34,6 +39,7 @@ import {
   AlertTriangle,
   Archive,
   Flame,
+  FileCode2,
 } from 'lucide-react';
 
 interface ExposureReportProps {
@@ -58,6 +64,7 @@ interface ExposureReportProps {
   onOpenFirewallHub?: () => void;
   onOpenReplyTriage?: () => void;
   onOpenNukeAll?: () => void;
+  onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
 }
 
 export const ExposureReport: React.FC<ExposureReportProps> = ({
@@ -80,6 +87,7 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
   onOpenFirewallHub,
   onOpenReplyTriage,
   onOpenNukeAll,
+  onOpenWebFormWorkbench,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -90,6 +98,7 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
 
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const contactOverrides = useBrokerContactOverrides();
   const exposedItems = results.filter((r) => r.status === 'exposed');
   const pendingEmailCount = exposedItems.filter((r) => !hasVerifiedEmailReceipt(r)).length;
 
@@ -408,6 +417,16 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                 Triage Broker Reply
               </button>
             )}
+            {onOpenWebFormWorkbench && (
+              <button
+                type="button"
+                onClick={() => onOpenWebFormWorkbench()}
+                className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-emerald-500/30 text-emerald-300 hover:text-emerald-200 font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <FileCode2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Opt-Out Page Finder &amp; Forms</span>
+              </button>
+            )}
           </div>
 
           <button
@@ -514,8 +533,10 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
           {filteredItems.map((result) => {
             const broker = findBrokerById(result.brokerId);
             if (!broker) return null;
+            const contact = resolveBrokerContactProfile(broker, contactOverrides);
             const searchUrl = getBrokerRecordSearchUrl(broker, profile);
             const isDispatched = hasVerifiedEmailReceipt(result);
+            const isFormSubmitted = hasWebFormSubmission(result);
             const isRemoved = result.removalStatus === 'removed';
             const isSelected = selectedBrokerIds.includes(broker.id);
             const isRelisted =
@@ -544,7 +565,7 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                       />
                       <div className="min-w-0">
                         <span className="text-[10px] font-mono text-slate-400 block">
-                          {broker.category}
+                          {broker.category} · {broker.removalMethod}
                         </span>
                         <h3 className="text-base font-bold text-white mt-0.5 truncate">
                           {broker.name}
@@ -602,22 +623,28 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                     </a>
 
                     <a
-                      href={broker.optOutUrl}
+                      href={contact.optOutUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="w-full p-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 flex items-center justify-between text-slate-300 hover:text-white transition-colors"
+                      className="w-full p-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 flex items-center justify-between text-slate-300 hover:text-white transition-colors gap-2"
                     >
                       <span className="flex items-center gap-1.5 truncate">
                         <ExternalLink className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                        Official Opt-Out Link
+                        <span className="truncate">
+                          {contact.discoveredOptOutTitle
+                            ? `Opt-Out: ${contact.discoveredOptOutTitle}`
+                            : 'Official Opt-Out Link'}
+                        </span>
                       </span>
-                      <span className="text-[10px] text-slate-500 font-mono tabular-nums">{broker.removalTime}</span>
+                      <span className="text-[10px] text-slate-500 font-mono tabular-nums shrink-0">
+                        {broker.removalTime}
+                      </span>
                     </a>
                   </div>
                 </div>
 
                 {/* Removal Action Button */}
-                <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
+                <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-1.5">
                   <button
                     onClick={() => onOpenListingModal(broker, result)}
                     className="p-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -641,6 +668,22 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                   >
                     DIY
                   </button>
+
+                  {onOpenWebFormWorkbench && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenWebFormWorkbench(broker)}
+                      className={`px-2.5 py-2 rounded-xl border text-[11px] font-semibold transition-colors cursor-pointer inline-flex items-center gap-1 whitespace-nowrap ${
+                        isFormSubmitted
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                          : 'bg-slate-950 hover:bg-slate-800 text-emerald-300 border-slate-800'
+                      }`}
+                      title="Discover Opt-Out Page & Auto-Fill Web Form"
+                    >
+                      <FileCode2 className="w-3.5 h-3.5" />
+                      <span>{isFormSubmitted ? 'Form Done' : 'Form'}</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => onAutomatedOptOut(broker.id)}
@@ -699,8 +742,11 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
               {filteredItems.map((result) => {
                 const broker = findBrokerById(result.brokerId);
                 if (!broker) return null;
+                const contact = resolveBrokerContactProfile(broker, contactOverrides);
                 const searchUrl = getBrokerRecordSearchUrl(broker, profile);
                 const isSelected = selectedBrokerIds.includes(broker.id);
+                const emailSent = hasVerifiedEmailReceipt(result);
+                const formSent = hasWebFormSubmission(result);
 
                 return (
                   <tr key={result.id} className="hover:bg-slate-950/40">
@@ -732,35 +778,43 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                         href={searchUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-sky-400 hover:underline flex items-center gap-1"
+                        className="text-sky-400 hover:underline flex items-center gap-1 whitespace-nowrap"
                       >
                         Inspect Record <ExternalLink className="w-2.5 h-2.5" />
                       </a>
                     </td>
                     <td className="py-3">
                       <a
-                        href={broker.optOutUrl}
+                        href={contact.optOutUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-emerald-400 hover:underline flex items-center gap-1"
+                        className="text-emerald-400 hover:underline flex items-center gap-1 whitespace-nowrap"
                       >
                         Opt-Out Page <ExternalLink className="w-2.5 h-2.5" />
                       </a>
                     </td>
                     <td className="py-3">
                       <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${
                           result.removalStatus === 'removed'
                             ? 'text-emerald-400 bg-emerald-500/10'
-                            : hasVerifiedEmailReceipt(result)
+                            : emailSent && formSent
+                            ? 'text-emerald-300 bg-emerald-500/10'
+                            : emailSent
                             ? 'text-sky-400 bg-sky-500/10'
+                            : formSent
+                            ? 'text-emerald-400 bg-emerald-500/10'
                             : 'text-amber-400 bg-amber-500/10'
                         }`}
                       >
                         {result.removalStatus === 'removed'
                           ? 'removed'
-                          : hasVerifiedEmailReceipt(result)
+                          : emailSent && formSent
+                          ? 'form + email'
+                          : emailSent
                           ? 'email sent'
+                          : formSent
+                          ? 'form submitted'
                           : 'exposed'}
                       </span>
                     </td>
@@ -772,6 +826,15 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                         >
                           DIY
                         </button>
+                        {onOpenWebFormWorkbench && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenWebFormWorkbench(broker)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-emerald-300 font-semibold text-xs cursor-pointer whitespace-nowrap"
+                          >
+                            Form
+                          </button>
+                        )}
                         <button
                           onClick={() => onAutomatedOptOut(broker.id)}
                           className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer whitespace-nowrap"

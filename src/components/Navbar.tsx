@@ -14,6 +14,7 @@ import {
   Archive,
   Landmark,
   Flame,
+  FileCode2,
 } from 'lucide-react';
 import { useEmailConnection } from '../services/emailConnectionStore';
 
@@ -29,6 +30,7 @@ export type AppTab =
   | 'monitoring'
   | 'profiles'
   | 'gmail'
+  | 'webforms'
   | 'bureaus'
   | 'firewall';
 
@@ -180,6 +182,19 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Landmark className="w-3.5 h-3.5 text-emerald-400" />
             <span>Firewall</span>
+          </button>
+
+          <button
+            onClick={() => handleNavClick('webforms')}
+            className={`transition-colors py-1 flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
+              activeTab === 'webforms'
+                ? 'text-white border-b-2 border-emerald-400 font-semibold'
+                : 'hover:text-slate-200'
+            }`}
+            title="Discover disguised opt-out pages & auto-fill broker removal forms"
+          >
+            <FileCode2 className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Web Forms</span>
           </button>
 
           <button
@@ -362,6 +377,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
           <button onClick={() => handleNavClick('firewall')} className="w-full text-left p-2.5 rounded-lg text-emerald-300 hover:bg-slate-900">
             Public Records, Canary Aliases &amp; ID/EXIF Firewall
+          </button>
+          <button
+            onClick={() => handleNavClick('webforms')}
+            className="w-full text-left p-2.5 rounded-lg text-emerald-300 hover:bg-slate-900"
+          >
+            Opt-Out Page Finder &amp; Web Form Auto-Fill
           </button>
           <button onClick={() => handleNavClick('gmail')} className="w-full text-left p-2.5 rounded-lg text-emerald-400 hover:bg-slate-900">
             {isAnyEmailConnected && activeConnectedEmail

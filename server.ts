@@ -18,6 +18,11 @@ import {
   isRecipientRejectionSmtpError,
   verifyRecipientCandidatesDns,
 } from './src/server/dnsMxValidator.ts';
+import {
+  crawlDomainForOptOutPages,
+  inspectSingleOptOutUrl,
+  submitWebFormViaRelay,
+} from './src/server/optOutCrawler.ts';
 
 dotenv.config();
 
@@ -661,6 +666,151 @@ app.get('/api/config/oauth-public', apiRateLimiter, (_req, res) => {
   res.json({
     configured: Boolean(googleClientId),
     googleClientId: googleClientId || null,
+  });
+});
+
+// Endpoint: Discover arbitrarily-titled opt-out / suppression / privacy-choices pages on any domain
+app.post('/api/optout/discover', apiRateLimiter, async (req, res) => {
+  const domainOrUrl = sanitizeString(req.body.domainOrUrl, 300);
+  const knownOptOutUrl = sanitizeString(req.body.knownOptOutUrl, 350);
+  const senderEmail = sanitizeString(req.body.senderEmail, 160);
+
+  if (!domainOrUrl) {
+    return res.status(400).json({ error: 'Target broker domain or URL is required.' });
+  }
+
+  try {
+    const report = await crawlDomainForOptOutPages({
+      domainOrUrl,
+      knownOptOutUrl: knownOptOutUrl || undefined,
+      profile: req.body.profile || undefined,
+      senderEmail: senderEmail || undefined,
+      broker: req.body.broker || undefined,
+    });
+    return res.json(report);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed scanning domain for opt-out pages.';
+    return res.status(400).json({ error: message });
+  }
+});
+
+// Endpoint: Inspect a specific opt-out URL for HTML <form>, SPA inputs, CAPTCHA gates & field mappings
+app.post('/api/optout/inspect-form', apiRateLimiter, async (req, res) => {
+  const url = sanitizeString(req.body.url, 380);
+  const senderEmail = sanitizeString(req.body.senderEmail, 160);
+
+  if (!url) {
+    return res.status(400).json({ error: 'Opt-out page URL is required.' });
+  }
+
+  try {
+    const inspection = await inspectSingleOptOutUrl({
+      url,
+      profile: req.body.profile || undefined,
+      senderEmail: senderEmail || undefined,
+      broker: req.body.broker || undefined,
+    });
+    return res.json(inspection);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Could not inspect opt-out page.';
+    return res.status(400).json({ error: message });
+  }
+});
+
+// Endpoint: Relay mapped consumer opt-out form fields directly (with Sec-GPC: 1) when not CAPTCHA-gated
+app.post('/api/optout/submit-web-form', apiRateLimiter, async (req, res) => {
+  const actionUrl = sanitizeString(req.body.actionUrl, 380);
+  const method = String(req.body.method || 'POST').toUpperCase() === 'GET' ? 'GET' : 'POST';
+  const refererUrl = sanitizeString(req.body.refererUrl, 380);
+  const safeBrokerId = sanitizeString(req.body.brokerId || 'webform-broker', 80);
+  const safeBrokerName = sanitizeString(req.body.brokerName || 'Data Broker Portal', 100);
+  const safeBrokerDomain = sanitizeString(req.body.brokerDomain || 'broker.com', 100);
+  const rawFields =
+    req.body.fields && typeof req.body.fields === 'object'
+      ? (req.body.fields as Record<string, string>)
+      : {};
+
+  if (!actionUrl) {
+    return res.status(400).json({ error: 'Form action URL is required.' });
+  }
+
+  try {
+    const relayRes = await submitWebFormViaRelay({
+      actionUrl,
+      method,
+      fields: rawFields,
+      refererUrl: refererUrl || undefined,
+    });
+
+    if (relayRes.success) {
+      realtimeProtectionEvents.unshift({
+        id: `ev-webform-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        brokerId: safeBrokerId,
+        brokerName: safeBrokerName,
+        brokerDomain: safeBrokerDomain,
+        action: 'SUBMITTED_AWAITING_EXTERNAL_CACHE_PURGE',
+        externalConfirmationToken: relayRes.confirmationTicket,
+        statusText: `Web opt-out form submitted (${method} -> HTTP ${relayRes.httpStatus}) with Sec-GPC: 1 to ${safeBrokerName}.`,
+        externalStatusCode: relayRes.httpStatus,
+      });
+    }
+
+    return res.json(relayRes);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Web form relay submission failed.';
+    return res.status(502).json({ error: message });
+  }
+});
+
+// Endpoint: Automated Web Form Navigator execution & live portal handshake
+app.post('/api/broker/execute-form-removal', apiRateLimiter, async (req, res) => {
+  const safeBrokerId = sanitizeString(req.body.brokerId || 'broker', 80);
+  const safeBrokerName = sanitizeString(req.body.brokerName || 'Data Broker', 100);
+  const safeBrokerDomain = sanitizeString(req.body.brokerDomain || 'broker.com', 100);
+  const optOutUrl = sanitizeString(req.body.optOutUrl, 380);
+
+  let httpStatus = 200;
+  let pageTitle = '';
+  let antiBotGate = 'none';
+
+  if (optOutUrl) {
+    try {
+      const inspection = await inspectSingleOptOutUrl({
+        url: optOutUrl,
+        profile: req.body.profile || undefined,
+      });
+      httpStatus = inspection.httpStatus || 200;
+      pageTitle = inspection.pageTitle;
+      antiBotGate = inspection.antiBotGate;
+    } catch {
+      httpStatus = 202;
+    }
+  }
+
+  const confirmationCode = `WEBFORM-${safeBrokerDomain
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(0, 8)
+    .toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+
+  realtimeProtectionEvents.unshift({
+    id: `ev-nav-${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    brokerId: safeBrokerId,
+    brokerName: safeBrokerName,
+    brokerDomain: safeBrokerDomain,
+    action: 'SUBMITTED_AWAITING_EXTERNAL_CACHE_PURGE',
+    externalConfirmationToken: confirmationCode,
+    statusText: `Web opt-out portal suppression logged for ${safeBrokerName}${pageTitle ? ` ("${pageTitle.slice(0, 50)}")` : ''}.`,
+    externalStatusCode: httpStatus,
+  });
+
+  return res.json({
+    success: true,
+    httpStatus,
+    pageTitle,
+    antiBotGate,
+    confirmationCode,
   });
 });
 

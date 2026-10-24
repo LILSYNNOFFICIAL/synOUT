@@ -6,13 +6,21 @@ import {
   buildStatutoryNoticeForBroker,
 } from '../services/emailConnectionStore';
 import {
+  clearBrokerCustomOptOutUrl,
   isValidEmailSyntax,
   markBrokerEmailBounced,
   resetBrokerContactOverride,
   resolveBrokerContactProfile,
   setBrokerCustomEmail,
+  setBrokerCustomOptOutUrl,
   useBrokerContactOverrides,
 } from '../utils/brokerContactResolver';
+import {
+  type OptOutDiscoveryReport,
+  buildAutoFillBookmarkletHref,
+  buildUniversalAutoFillScript,
+} from '../utils/optOutFormEngine';
+import { discoverOptOutPagesClient } from '../services/optOutDiscoveryClient';
 import { copyTextToClipboard } from '../utils/exportEngines';
 import {
   X,
@@ -29,6 +37,9 @@ import {
   AlertTriangle,
   Edit3,
   RotateCcw,
+  Search,
+  Bookmark,
+  Pin,
 } from 'lucide-react';
 
 interface DiyOptOutAssistantModalProps {
@@ -36,18 +47,26 @@ interface DiyOptOutAssistantModalProps {
   result: ScanResult;
   profile: UserProfile;
   onClose: () => void;
-  onMarkWebFormSubmitted: (brokerId: string) => void;
+  onMarkWebFormSubmitted: (
+    brokerId: string,
+    confirmationCode?: string,
+    optOutUrl?: string,
+    discoveredTitle?: string
+  ) => void;
   onMarkEmailDispatched: (brokerId: string, messageId: string) => void;
   onOpenConnectEmail?: () => void;
+  onOpenFormWorkbench?: (broker: DataBroker) => void;
 }
 
 export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = ({
   broker,
+  result,
   profile,
   onClose,
   onMarkWebFormSubmitted,
   onMarkEmailDispatched,
   onOpenConnectEmail,
+  onOpenFormWorkbench,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
   const overrides = useBrokerContactOverrides();
@@ -66,6 +85,14 @@ export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = (
   const [isEditingEmail, setIsEditingEmail] = useState(false);
   const [draftEmail, setDraftEmail] = useState(contact.effectivePrimaryEmail);
 
+  // Opt-out page crawler, URL override & form ticket state
+  const [isScanningPages, setIsScanningPages] = useState(false);
+  const [discoveryReport, setDiscoveryReport] = useState<OptOutDiscoveryReport | null>(null);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [isEditingOptOutUrl, setIsEditingOptOutUrl] = useState(false);
+  const [draftOptOutUrl, setDraftOptOutUrl] = useState(contact.optOutUrl);
+  const [formTicketCode, setFormTicketCode] = useState(result.webFormConfirmationCode || '');
+
   const copyToClipboard = (text: string, fieldName: string) => {
     void copyTextToClipboard(text);
     setCopiedField(fieldName);
@@ -74,6 +101,45 @@ export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = (
 
   const fullName = `${profile.firstName} ${profile.lastName}`.trim();
   const primaryEmail = activeConnectedEmail || profile.emails[0] || '';
+  const autoFillScript = useMemo(
+    () => buildUniversalAutoFillScript(profile, primaryEmail, broker),
+    [profile, primaryEmail, broker]
+  );
+  const bookmarkletHref = useMemo(
+    () => buildAutoFillBookmarkletHref(profile, primaryEmail, broker),
+    [profile, primaryEmail, broker]
+  );
+
+  const handleScanBrokerOptOutPages = async () => {
+    setIsScanningPages(true);
+    setDiscoveryError(null);
+    try {
+      const report = await discoverOptOutPagesClient({
+        domainOrUrl: broker.domain,
+        knownOptOutUrl: contact.optOutUrl,
+        profile,
+        senderEmail: primaryEmail,
+        broker,
+      });
+      setDiscoveryReport(report);
+    } catch (err) {
+      setDiscoveryError(
+        err instanceof Error ? err.message : 'Failed scanning broker domain for opt-out pages.'
+      );
+    } finally {
+      setIsScanningPages(false);
+    }
+  };
+
+  const handleSaveCustomOptOutUrl = () => {
+    try {
+      setBrokerCustomOptOutUrl(broker.id, draftOptOutUrl);
+      setIsEditingOptOutUrl(false);
+      setDiscoveryError(null);
+    } catch (err) {
+      setDiscoveryError(err instanceof Error ? err.message : 'Enter a valid https:// URL.');
+    }
+  };
   const primaryPhone = profile.phoneNumbers[0] || '';
   const location = `${profile.currentCity}, ${profile.currentState} ${profile.currentZip || ''}`.trim();
 
@@ -183,6 +249,194 @@ Printed Name: ${fullName}`;
             <div className="flex items-center gap-2">
               <span className="text-slate-400">Est. Time:</span>
               <span className="font-mono text-emerald-400 font-medium">{broker.removalTime}</span>
+            </div>
+          </div>
+
+          {/* Live Opt-Out Page Discovery & Form Auto-Fill Toolkit */}
+          <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="space-y-0.5 min-w-0">
+                <div className="font-semibold text-white">
+                  Web Opt-Out Page &amp; Form Auto-Fill ({broker.domain})
+                </div>
+                <div className="text-[11px] text-slate-400 truncate">
+                  {contact.discoveredOptOutTitle
+                    ? `Detected Title: "${contact.discoveredOptOutTitle}"`
+                    : 'Not all brokers use email—find hidden opt-out pages ("Your Privacy Choices", "Do Not Sell", OneTrust) & auto-fill their form.'}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleScanBrokerOptOutPages}
+                  disabled={isScanningPages}
+                  className="px-2.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                >
+                  {isScanningPages ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Search className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isScanningPages ? 'Scanning...' : 'Find Real Opt-Out Page'}</span>
+                </button>
+
+                {onOpenFormWorkbench && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenFormWorkbench(broker);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold cursor-pointer whitespace-nowrap"
+                  >
+                    Form Workbench
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Active Opt-Out URL + Override Editor */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <a
+                href={contact.optOutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-emerald-400 hover:text-emerald-300 underline inline-flex items-center gap-1 truncate max-w-full"
+              >
+                <span className="truncate">{contact.optOutUrl}</span>
+                <ExternalLink className="w-3 h-3 shrink-0" />
+              </a>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftOptOutUrl(contact.optOutUrl);
+                    setIsEditingOptOutUrl((v) => !v);
+                  }}
+                  className="text-[11px] text-sky-400 hover:text-sky-300 inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <Edit3 className="w-3 h-3" />
+                  <span>{isEditingOptOutUrl ? 'Cancel' : 'Edit Opt-Out URL'}</span>
+                </button>
+                {contact.hasCustomOptOutUrl && (
+                  <button
+                    type="button"
+                    onClick={() => clearBrokerCustomOptOutUrl(broker.id)}
+                    className="text-[11px] text-slate-400 hover:text-white inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isEditingOptOutUrl && (
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+                <input
+                  type="url"
+                  value={draftOptOutUrl}
+                  onChange={(e) => setDraftOptOutUrl(e.target.value)}
+                  placeholder="https://broker.com/opt-out"
+                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveCustomOptOutUrl}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                >
+                  Save Opt-Out URL
+                </button>
+              </div>
+            )}
+
+            {discoveryError && (
+              <div className="text-rose-400 text-[11px]">{discoveryError}</div>
+            )}
+
+            {discoveryReport && (
+              <div className="space-y-2 pt-2 border-t border-slate-800">
+                <div className="text-[11px] text-slate-400 tabular-nums">
+                  Found {discoveryReport.candidates.length} opt-out/privacy route(s) on{' '}
+                  {discoveryReport.queriedDomain}:
+                </div>
+                <div className="max-h-36 overflow-y-auto space-y-1.5">
+                  {discoveryReport.candidates.slice(0, 5).map((cand) => (
+                    <div
+                      key={cand.url}
+                      className="p-2 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-semibold text-white truncate">
+                          {cand.pageTitle || cand.anchorText}
+                        </div>
+                        <a
+                          href={cand.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-[10px] text-sky-400 hover:underline truncate block"
+                        >
+                          {cand.url}
+                        </a>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setBrokerCustomOptOutUrl(
+                            broker.id,
+                            cand.url,
+                            cand.pageTitle || cand.anchorText,
+                            cand.mappedFieldCount
+                          )
+                        }
+                        className="px-2.5 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+                      >
+                        <Pin className="w-3 h-3" />
+                        <span>Use</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 1-Click Auto-Fill Bookmarklet & Copy Script */}
+            <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <a
+                ref={(el) => {
+                  if (el && bookmarkletHref) {
+                    el.setAttribute('href', bookmarkletHref);
+                  }
+                }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  copyToClipboard(autoFillScript, 'autofill');
+                }}
+                title="Drag to your Bookmarks Bar, then click it on the broker's opt-out page to fill all form inputs"
+                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold inline-flex items-center gap-1.5 cursor-grab whitespace-nowrap"
+              >
+                <Bookmark className="w-3.5 h-3.5" />
+                <span>Drag: synOUT Auto-Fill</span>
+              </a>
+
+              <button
+                type="button"
+                onClick={() => copyToClipboard(autoFillScript, 'autofill')}
+                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                {copiedField === 'autofill' ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-400">Copied Auto-Fill Script</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy 1-Click Form Auto-Fill Script</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
 
@@ -526,28 +780,42 @@ Printed Name: ${fullName}`;
         </div>
 
         {/* Footer Actions */}
-        <div className="p-6 border-t border-slate-800/80 bg-slate-950/60 flex flex-wrap items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              onMarkWebFormSubmitted(broker.id);
-              onClose();
-            }}
-            className="px-4 py-2.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
-          >
-            <CheckCircle className="w-3.5 h-3.5" />
-            <span>Log Manual Web-Form Submission</span>
-          </button>
+        <div className="p-6 border-t border-slate-800/80 bg-slate-950/60 space-y-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 text-xs">
+            <input
+              type="text"
+              value={formTicketCode}
+              onChange={(e) => setFormTicketCode(e.target.value)}
+              placeholder="Optional form confirmation / ticket # (e.g. OPT-48120)"
+              className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:outline-none focus:border-emerald-500"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                onMarkWebFormSubmitted(
+                  broker.id,
+                  formTicketCode.trim() || undefined,
+                  contact.optOutUrl,
+                  contact.discoveredOptOutTitle
+                );
+                onClose();
+              }}
+              className="px-4 py-2.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <CheckCircle className="w-3.5 h-3.5" />
+              <span>Log Web-Form Submission</span>
+            </button>
 
-          <a
-            href={broker.optOutUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-5 py-2.5 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors flex items-center gap-1.5"
-          >
-            <span>Open {broker.name} Official Opt-Out</span>
-            <ExternalLink className="w-3.5 h-3.5 text-slate-950" />
-          </a>
+            <a
+              href={contact.optOutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-5 py-2.5 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+            >
+              <span>Open {broker.name} Opt-Out</span>
+              <ExternalLink className="w-3.5 h-3.5 text-slate-950" />
+            </a>
+          </div>
         </div>
       </div>
     </div>

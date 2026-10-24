@@ -6,6 +6,7 @@ import {
   resolveBrokerContactProfile,
   useBrokerContactOverrides,
 } from '../utils/brokerContactResolver';
+import { hasWebFormSubmission } from '../utils/optOutFormEngine';
 import {
   Search,
   ExternalLink,
@@ -14,18 +15,21 @@ import {
   Send,
   CheckCircle2,
   Flame,
+  FileCode2,
 } from 'lucide-react';
 
 interface BrokerDirectoryProps {
   scanResults?: ScanResult[];
   onSendBrokerOptOut?: (broker: DataBroker) => void;
   onOpenNukeAll?: () => void;
+  onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
 }
 
 export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
   scanResults = [],
   onSendBrokerOptOut,
   onOpenNukeAll,
+  onOpenWebFormWorkbench,
 }) => {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
@@ -71,16 +75,28 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
           </p>
         </div>
 
-        {onOpenNukeAll && (
-          <button
-            type="button"
-            onClick={onOpenNukeAll}
-            className="px-5 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-extrabold inline-flex items-center justify-center gap-2 shadow-lg shadow-red-600/25 transition-colors cursor-pointer shrink-0 whitespace-nowrap tabular-nums"
-          >
-            <Flame className="w-4 h-4" />
-            <span>NUKE ALL ({registry.length}+ Brokers)</span>
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {onOpenWebFormWorkbench && (
+            <button
+              type="button"
+              onClick={() => onOpenWebFormWorkbench()}
+              className="px-4 py-3 rounded-xl bg-slate-950 hover:bg-slate-800 text-emerald-300 border border-emerald-500/30 text-xs font-bold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <FileCode2 className="w-4 h-4 text-emerald-400" />
+              <span>Find Opt-Out Page / Form</span>
+            </button>
+          )}
+          {onOpenNukeAll && (
+            <button
+              type="button"
+              onClick={onOpenNukeAll}
+              className="px-5 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-extrabold inline-flex items-center justify-center gap-2 shadow-lg shadow-red-600/25 transition-colors cursor-pointer shrink-0 whitespace-nowrap tabular-nums"
+            >
+              <Flame className="w-4 h-4" />
+              <span>NUKE ALL ({registry.length}+ Brokers)</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filter Bar */}
@@ -147,6 +163,7 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
           {filtered.map((broker) => {
             const existingResult = scanResults.find((r) => r.brokerId === broker.id);
             const emailSent = existingResult ? hasVerifiedEmailReceipt(existingResult) : false;
+            const formSent = existingResult ? hasWebFormSubmission(existingResult) : false;
             const contact = resolveBrokerContactProfile(broker, overrides);
 
             return (
@@ -157,7 +174,9 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
                 <div className="space-y-3">
                   {/* Unboxed metadata kicker */}
                   <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
-                    <span className="text-slate-400 truncate">{broker.category}</span>
+                    <span className="text-slate-400 truncate">
+                      {broker.category} · {broker.removalMethod}
+                    </span>
                     <span
                       className={`font-semibold shrink-0 ${
                         broker.risk === 'Critical'
@@ -185,7 +204,9 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
                       )}
                     </div>
                     <div className="text-[11px] text-slate-500 mt-0.5">
-                      {contact.deliverabilityLabel}
+                      {contact.discoveredOptOutTitle
+                        ? `Opt-Out Page: ${contact.discoveredOptOutTitle}`
+                        : contact.deliverabilityLabel}
                     </div>
                   </div>
 
@@ -203,24 +224,42 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
                       <Clock className="w-3.5 h-3.5" />
                       <span>{broker.removalTime}</span>
                     </span>
-                    {emailSent && (
+                    {(emailSent || formSent) && (
                       <span className="text-emerald-400 font-semibold flex items-center gap-1">
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Demand Sent</span>
+                        <span>
+                          {emailSent && formSent
+                            ? 'Form + Email Sent'
+                            : formSent
+                            ? 'Form Submitted'
+                            : 'Demand Sent'}
+                        </span>
                       </span>
                     )}
                   </div>
 
                   <div className="flex items-center justify-between gap-2">
                     <a
-                      href={broker.optOutUrl}
+                      href={contact.optOutUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                      className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap"
                     >
                       <span>Portal</span>
                       <ExternalLink className="w-3 h-3" />
                     </a>
+
+                    {onOpenWebFormWorkbench && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenWebFormWorkbench(broker)}
+                        className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 text-emerald-300 border border-slate-800 font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                        title="Discover Opt-Out Page & Auto-Fill Removal Form"
+                      >
+                        <FileCode2 className="w-3.5 h-3.5" />
+                        <span>Form</span>
+                      </button>
+                    )}
 
                     {broker.privacyEmail && onSendBrokerOptOut && (
                       <button

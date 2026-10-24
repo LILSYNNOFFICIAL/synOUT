@@ -328,12 +328,58 @@ const VERIFIED_EXPANSION_CATALOG: DataBroker[] = [
   },
 ];
 
+const CUSTOM_BROKERS_STORAGE_KEY = 'synout_custom_discovered_brokers_v1';
+
 let dynamicallyDiscoveredBrokers: DataBroker[] = [];
 let expansionCursor = 0;
 
+function loadStoredCustomBrokers(): DataBroker[] {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return [];
+    const raw = window.localStorage.getItem(CUSTOM_BROKERS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((b) => Boolean(b && typeof b.id === 'string' && typeof b.domain === 'string'))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function registerCustomDiscoveredBroker(broker: DataBroker): void {
+  if (!broker || !broker.id || !broker.domain) return;
+  const idx = dynamicallyDiscoveredBrokers.findIndex((b) => b.id === broker.id);
+  if (idx >= 0) {
+    dynamicallyDiscoveredBrokers[idx] = broker;
+  } else {
+    dynamicallyDiscoveredBrokers.unshift(broker);
+  }
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const stored = loadStoredCustomBrokers();
+      const next = [broker, ...stored.filter((b) => b.id !== broker.id)].slice(0, 100);
+      window.localStorage.setItem(CUSTOM_BROKERS_STORAGE_KEY, JSON.stringify(next));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function clearCustomDiscoveredBrokers(): void {
+  dynamicallyDiscoveredBrokers = [];
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(CUSTOM_BROKERS_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 /**
  * Returns the combined exhaustive broker pool:
- * Static verified brokers + seed discovery pool + runtime discovered real registries
+ * Static verified brokers + seed discovery pool + runtime/custom discovered real registries
  */
 export function getExhaustiveBrokerRegistry(): DataBroker[] {
   const map = new Map<string, DataBroker>();
@@ -347,6 +393,13 @@ export function getExhaustiveBrokerRegistry(): DataBroker[] {
 
   // Add seed discovery pool
   SEED_DISCOVERY_POOL.forEach((b) => {
+    if (b.id && !map.has(b.id)) {
+      map.set(b.id, b);
+    }
+  });
+
+  // Add persisted custom websites discovered by the user
+  loadStoredCustomBrokers().forEach((b) => {
     if (b.id && !map.has(b.id)) {
       map.set(b.id, b);
     }

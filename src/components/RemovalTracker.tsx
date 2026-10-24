@@ -11,6 +11,7 @@ import {
   generateIcsCalendarEvent,
 } from '../utils/statutorySlaEngine';
 import { downloadFile } from '../utils/exportEngines';
+import { hasWebFormSubmission } from '../utils/optOutFormEngine';
 import {
   ExternalLink,
   FileText,
@@ -23,6 +24,7 @@ import {
   AlertTriangle,
   Inbox,
   Flame,
+  FileCode2,
 } from 'lucide-react';
 
 interface RemovalTrackerProps {
@@ -37,6 +39,7 @@ interface RemovalTrackerProps {
   onAutomatedOptOut?: (brokerId: string) => void;
   onOpenDiyAssistantModal: (broker: DataBroker, result: ScanResult) => void;
   onOpenNukeAll?: () => void;
+  onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
 }
 
 export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
@@ -50,21 +53,25 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
   onAutomatedOptOut,
   onOpenDiyAssistantModal,
   onOpenNukeAll,
+  onOpenWebFormWorkbench,
 }) => {
   const [filter, setFilter] = useState<'all' | 'in_progress' | 'needs_escalation' | 'removed'>('all');
   const [search, setSearch] = useState('');
 
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const isItemSubmittedAnyChannel = (r: ScanResult) =>
+    hasVerifiedEmailReceipt(r) || hasWebFormSubmission(r) || r.removalStatus === 'submitted';
+
   const trackingItems = results.filter(
     (r) => r.removalStatus === 'submitted' || r.removalStatus === 'removed' || r.status === 'exposed'
   );
 
   const submittedCount = results.filter(
-    (r) => hasVerifiedEmailReceipt(r) && r.removalStatus !== 'removed'
+    (r) => isItemSubmittedAnyChannel(r) && r.removalStatus !== 'removed'
   ).length;
   const removedCount = results.filter((r) => r.removalStatus === 'removed').length;
   const pendingCount = results.filter(
-    (r) => r.status === 'exposed' && !hasVerifiedEmailReceipt(r) && r.removalStatus !== 'removed'
+    (r) => r.status === 'exposed' && !isItemSubmittedAnyChannel(r) && r.removalStatus !== 'removed'
   ).length;
   const overdueOrApproachingCount = trackingItems.filter((item) => {
     const sla = computeBrokerSlaStatus(item);
@@ -82,7 +89,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
     if (!matchesSearch) return false;
 
     if (filter === 'in_progress') {
-      return hasVerifiedEmailReceipt(item) && item.removalStatus !== 'removed';
+      return isItemSubmittedAnyChannel(item) && item.removalStatus !== 'removed';
     }
     if (filter === 'needs_escalation') {
       const sla = computeBrokerSlaStatus(item);
@@ -143,6 +150,17 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {onOpenWebFormWorkbench && (
+              <button
+                type="button"
+                onClick={() => onOpenWebFormWorkbench()}
+                className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-emerald-500/30 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <FileCode2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Opt-Out Forms</span>
+              </button>
+            )}
+
             {onOpenReplyTriage && (
               <button
                 type="button"
@@ -267,6 +285,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
           const searchUrl = getBrokerRecordSearchUrl(broker, profile);
           const isRemoved = result.removalStatus === 'removed';
           const isEmailVerified = hasVerifiedEmailReceipt(result);
+          const isWebFormSubmitted = hasWebFormSubmission(result);
           const sla = computeBrokerSlaStatus(result);
 
           return (
@@ -286,7 +305,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                         ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
                         : sla.state === 'approaching_deadline'
                         ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
-                        : isEmailVerified
+                        : isEmailVerified || isWebFormSubmitted
                         ? 'bg-sky-500/10 text-sky-400 border border-sky-500/20'
                         : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                     }`}
@@ -297,9 +316,13 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                       ? `SLA OVERDUE (${sla.daysElapsed}d Elapsed · Escalate Now)`
                       : sla.state === 'approaching_deadline'
                       ? `SLA Due in ${sla.daysRemaining}d (Due ${sla.deadlineDateLabel})`
+                      : isEmailVerified && isWebFormSubmitted
+                      ? `Web Form + Email · ${sla.daysRemaining}d Left on 45-Day SLA`
                       : isEmailVerified
                       ? `Email Sent · ${sla.daysRemaining}d Left on 45-Day SLA`
-                      : 'Pending Email Dispatch'}
+                      : isWebFormSubmitted
+                      ? `Web Form Submitted · ${sla.daysRemaining}d Left on 45-Day SLA`
+                      : 'Pending Removal Action'}
                   </span>
                 </div>
 
@@ -310,6 +333,20 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   {result.optOutConfirmationCode && (
                     <span>
                       Receipt: <strong className="text-emerald-400 font-mono">{result.optOutConfirmationCode}</strong>
+                    </span>
+                  )}
+                  {result.webFormConfirmationCode &&
+                    result.webFormConfirmationCode !== result.optOutConfirmationCode && (
+                      <span>
+                        Web Form Ref:{' '}
+                        <strong className="text-emerald-300 font-mono">
+                          {result.webFormConfirmationCode}
+                        </strong>
+                      </span>
+                    )}
+                  {result.discoveredOptOutTitle && (
+                    <span>
+                      Portal: <strong className="text-slate-200">{result.discoveredOptOutTitle}</strong>
                     </span>
                   )}
                   {result.brokerConfirmationTicket && (
@@ -343,6 +380,22 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   >
                     <Mail className="w-3.5 h-3.5" />
                     <span>{isEmailVerified ? 'Re-Send' : 'Send Email'}</span>
+                  </button>
+                )}
+
+                {!isRemoved && onOpenWebFormWorkbench && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenWebFormWorkbench(broker)}
+                    className={`px-2.5 py-1.5 rounded-xl border flex items-center gap-1 font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      isWebFormSubmitted
+                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                        : 'bg-slate-950 hover:bg-slate-800 border-slate-800 text-emerald-300 hover:text-emerald-200'
+                    }`}
+                    title="Find Opt-Out Page & Auto-Fill Web Form"
+                  >
+                    <FileCode2 className="w-3.5 h-3.5" />
+                    <span>{isWebFormSubmitted ? 'Form Logged' : 'Web Form'}</span>
                   </button>
                 )}
 

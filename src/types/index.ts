@@ -112,6 +112,10 @@ export interface ScanResult {
   disqualifiedReason?: string;
   brokerConfirmationTicket?: string;
   replyTriageSummary?: string;
+  webFormSubmittedAtIso?: string;
+  webFormConfirmationCode?: string;
+  submittedOptOutUrl?: string;
+  discoveredOptOutTitle?: string;
 }
 
 export type SearchEngineId = 'google' | 'bing' | 'duckduckgo' | 'yahoo' | 'brave';

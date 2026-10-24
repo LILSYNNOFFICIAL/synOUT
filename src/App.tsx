@@ -18,6 +18,7 @@ import {
 } from './utils/scanEngine';
 import {
   findBrokerById,
+  hasVerifiedEmailReceipt,
   disconnectSmtpAccount,
   disconnectGoogleOAuthAccount,
   purgeAllEmailConnections,
@@ -25,6 +26,7 @@ import {
   resolveActiveConnectedEmailFromState,
   useEmailConnection,
 } from './services/emailConnectionStore';
+import { clearCustomDiscoveredBrokers } from './utils/dynamicBrokerRegistry';
 import {
   SearchTypeCategory,
   saveSearchProfile,
@@ -90,6 +92,7 @@ import { WorkspaceVaultModal } from './components/WorkspaceVaultModal';
 import { PublicRecordsFirewallCenter } from './components/PublicRecordsFirewallCenter';
 import { BrokerReplyTriageModal } from './components/BrokerReplyTriageModal';
 import { NukeAllModal } from './components/NukeAllModal';
+import { OptOutFormWorkbench } from './components/OptOutFormWorkbench';
 import { Footer } from './components/Footer';
 import { CheckCircle2 } from 'lucide-react';
 
@@ -171,6 +174,7 @@ export default function App() {
   const [isVaultModalOpen, setIsVaultModalOpen] = useState(false);
   const [isNukeAllModalOpen, setIsNukeAllModalOpen] = useState(false);
   const [emailDispatchQueue, setEmailDispatchQueue] = useState<ScanResult[] | null>(null);
+  const [webFormTargetBroker, setWebFormTargetBroker] = useState<DataBroker | null>(null);
 
   // Toast notifications
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -344,10 +348,107 @@ export default function App() {
     );
   };
 
-  // Records a manual web-form submission (distinct from verified email transmission)
-  const handleLogManualWebForm = (brokerId: string) => {
+  // Records a web-form submission while preserving any verified Email Message-ID receipt (Dual-Channel Tracking)
+  const handleRecordWebFormSubmitted = ({
+    broker,
+    confirmationCode,
+    optOutUrl,
+    discoveredTitle,
+  }: {
+    broker: DataBroker;
+    confirmationCode?: string;
+    optOutUrl?: string;
+    discoveredTitle?: string;
+  }) => {
+    const activeProfile = ensureActiveProfile();
+    const cleanedRef = confirmationCode?.trim();
+    const formRef =
+      cleanedRef || `DIY-FORM-${Date.now().toString(36).toUpperCase()}`;
+    const nowIso = new Date().toISOString();
+    const dateLabel = new Date(nowIso).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    setScanResults((prev) => {
+      const exists = prev.some((item) => item.brokerId === broker.id);
+      if (exists) {
+        return prev.map((item) => {
+          if (item.brokerId !== broker.id) return item;
+          const keepVerifiedEmailReceipt = hasVerifiedEmailReceipt(item);
+          return {
+            ...item,
+            status: 'exposed',
+            removalStatus: item.removalStatus === 'removed' ? 'removed' : 'submitted',
+            optOutConfirmationCode: keepVerifiedEmailReceipt
+              ? item.optOutConfirmationCode
+              : formRef,
+            submissionDate: item.submissionDate || dateLabel,
+            submittedAtIso: item.submittedAtIso || nowIso,
+            webFormSubmittedAtIso: nowIso,
+            webFormConfirmationCode: formRef,
+            submittedOptOutUrl: optOutUrl || item.submittedOptOutUrl || broker.optOutUrl,
+            discoveredOptOutTitle: discoveredTitle || item.discoveredOptOutTitle,
+            isRegression: false,
+          };
+        });
+      }
+
+      const created: ScanResult = {
+        id: `webform-${broker.id}-${Date.now()}`,
+        brokerId: broker.id,
+        status: 'exposed',
+        removalStatus: 'submitted',
+        optOutConfirmationCode: formRef,
+        submissionDate: dateLabel,
+        submittedAtIso: nowIso,
+        webFormSubmittedAtIso: nowIso,
+        webFormConfirmationCode: formRef,
+        submittedOptOutUrl: optOutUrl || broker.optOutUrl,
+        discoveredOptOutTitle: discoveredTitle,
+        mockListingData: {
+          fullName: `${activeProfile.firstName} ${activeProfile.lastName}`.trim(),
+          age: 36,
+          locations: [`${activeProfile.currentCity}, ${activeProfile.currentState}`],
+          phones: activeProfile.phoneNumbers.length > 0 ? activeProfile.phoneNumbers : ['On file'],
+          emails: activeProfile.emails.length > 0 ? activeProfile.emails : ['On file'],
+          relatives: activeProfile.relatives,
+          recordsCount: broker.dataExposedList.length || 3,
+          riskLevel: broker.risk,
+          leakTypes: broker.dataExposedList,
+          profiles: [`https://${broker.domain}`],
+          matchConfidence: 'HIGH_CONFIDENCE_MATCH',
+          evidenceBasis: `Opt-out web form submitted on ${optOutUrl || broker.optOutUrl}.`,
+        },
+      };
+
+      return [created, ...prev];
+    });
+
+    showToast(`Logged web-form opt-out submission for ${broker.name} (${formRef}).`);
+  };
+
+  // Records a manual web-form submission by brokerId (used by DIY Opt-Out Assistant modal)
+  const handleLogManualWebForm = (
+    brokerId: string,
+    confirmationCode?: string,
+    optOutUrl?: string,
+    discoveredTitle?: string
+  ) => {
     const broker = findBrokerById(brokerId);
-    const formRef = `DIY-FORM-${Date.now().toString(36).toUpperCase()}`;
+    if (broker) {
+      handleRecordWebFormSubmitted({
+        broker,
+        confirmationCode,
+        optOutUrl,
+        discoveredTitle,
+      });
+      return;
+    }
+
+    const formRef =
+      confirmationCode?.trim() || `DIY-FORM-${Date.now().toString(36).toUpperCase()}`;
     const nowIso = new Date().toISOString();
     const dateLabel = new Date(nowIso).toLocaleDateString('en-US', {
       month: 'short',
@@ -356,21 +457,33 @@ export default function App() {
     });
 
     setScanResults((prev) =>
-      prev.map((item) =>
-        item.brokerId === brokerId
-          ? {
-              ...item,
-              removalStatus: 'submitted',
-              optOutConfirmationCode: formRef,
-              submissionDate: dateLabel,
-              submittedAtIso: item.submittedAtIso || nowIso,
-              isRegression: false,
-            }
-          : item
-      )
+      prev.map((item) => {
+        if (item.brokerId !== brokerId) return item;
+        const keepVerifiedEmailReceipt = hasVerifiedEmailReceipt(item);
+        return {
+          ...item,
+          removalStatus: item.removalStatus === 'removed' ? 'removed' : 'submitted',
+          optOutConfirmationCode: keepVerifiedEmailReceipt
+            ? item.optOutConfirmationCode
+            : formRef,
+          submissionDate: item.submissionDate || dateLabel,
+          submittedAtIso: item.submittedAtIso || nowIso,
+          webFormSubmittedAtIso: nowIso,
+          webFormConfirmationCode: formRef,
+          submittedOptOutUrl: optOutUrl || item.submittedOptOutUrl,
+          discoveredOptOutTitle: discoveredTitle || item.discoveredOptOutTitle,
+          isRegression: false,
+        };
+      })
     );
 
-    showToast(`Logged manual web-form opt-out submission for ${broker?.name || brokerId}.`);
+    showToast(`Logged manual web-form opt-out submission for ${brokerId}.`);
+  };
+
+  const handleOpenWebFormWorkbench = (broker?: DataBroker) => {
+    ensureActiveProfile();
+    setWebFormTargetBroker(broker || null);
+    setActiveTab('webforms');
   };
 
   // Opens real Email Opt-Out modal for a single broker
@@ -704,6 +817,7 @@ export default function App() {
     clearPublicRecordProgress();
     clearBrokerContactOverrides();
     clearClientMxCache();
+    clearCustomDiscoveredBrokers();
     try {
       localStorage.removeItem('synout_profile');
       localStorage.removeItem('synout_results');
@@ -797,6 +911,7 @@ export default function App() {
               }}
               onOpenReplyTriage={() => setActiveReplyTriageModal({})}
               onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+              onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
             />
           ) : (
             <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
@@ -883,6 +998,26 @@ export default function App() {
           />
         )}
 
+        {activeTab === 'webforms' && (
+          <OptOutFormWorkbench
+            profile={userProfile || DEFAULT_FALLBACK_PROFILE}
+            results={scanResults}
+            initialBroker={webFormTargetBroker}
+            onRecordWebFormSubmitted={handleRecordWebFormSubmitted}
+            onRecordEmailDispatched={(brokerId, msgId) => {
+              const target = findBrokerById(brokerId);
+              if (target && !scanResults.some((r) => r.brokerId === brokerId)) {
+                handleBrokerNuked(target, msgId);
+                showToast(`Sent statutory opt-out email to ${target.name} · Receipt: ${msgId}`);
+              } else {
+                handleMarkEmailDispatched(brokerId, msgId);
+              }
+            }}
+            onOpenConnectEmail={() => setActiveTab('gmail')}
+            onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+          />
+        )}
+
         {activeTab === 'gmail' && (
           <GmailDispatchCenter
             results={scanResults}
@@ -910,6 +1045,7 @@ export default function App() {
               onAutomatedOptOut={handleSingleBrokerOptOutRequest}
               onOpenDiyAssistantModal={(b, r) => setActiveDiyModal({ broker: b, result: r })}
               onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+              onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
             />
           ) : (
             <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
@@ -932,6 +1068,7 @@ export default function App() {
             scanResults={scanResults}
             onSendBrokerOptOut={handleDirectBrokerOptOut}
             onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+            onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
           />
         )}
         {activeTab === 'guide' && (
@@ -1010,13 +1147,17 @@ export default function App() {
           result={activeDiyModal.result}
           profile={userProfile}
           onClose={() => setActiveDiyModal(null)}
-          onMarkWebFormSubmitted={(brokerId) => {
-            handleLogManualWebForm(brokerId);
+          onMarkWebFormSubmitted={(brokerId, confirmationCode, optOutUrl, discoveredTitle) => {
+            handleLogManualWebForm(brokerId, confirmationCode, optOutUrl, discoveredTitle);
           }}
           onMarkEmailDispatched={(brokerId, messageId) => {
             handleMarkEmailDispatched(brokerId, messageId);
           }}
           onOpenConnectEmail={() => setActiveTab('gmail')}
+          onOpenFormWorkbench={(broker) => {
+            setActiveDiyModal(null);
+            handleOpenWebFormWorkbench(broker);
+          }}
         />
       )}
 
@@ -1114,6 +1255,10 @@ export default function App() {
           onBureauNuked={handleBureauNuked}
           onDeindexNuked={handleDeindexNuked}
           onOpenConnectEmail={() => setActiveTab('gmail')}
+          onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+          onBrokerWebFormLogged={(broker, optOutUrl) => {
+            handleRecordWebFormSubmitted({ broker, optOutUrl });
+          }}
           onClose={() => setIsNukeAllModalOpen(false)}
         />
       )}

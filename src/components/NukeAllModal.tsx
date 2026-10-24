@@ -20,6 +20,12 @@ import {
 } from '../utils/nukeAllEngine';
 import { copyTextToClipboard } from '../utils/exportEngines';
 import {
+  buildAutoFillBookmarkletHref,
+  buildUniversalAutoFillScript,
+  classifyBrokerChannelStrategy,
+  hasWebFormSubmission,
+} from '../utils/optOutFormEngine';
+import {
   Flame,
   X,
   Mail,
@@ -34,6 +40,8 @@ import {
   Check,
   Plus,
   UserCheck,
+  FileCode2,
+  Bookmark,
 } from 'lucide-react';
 
 interface NukeAllModalProps {
@@ -47,6 +55,8 @@ interface NukeAllModalProps {
   onBureauNuked: (bureauId: string, receiptMessageId: string) => void;
   onDeindexNuked: (deindexId: string, receiptMessageId: string) => void;
   onOpenConnectEmail: () => void;
+  onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
+  onBrokerWebFormLogged?: (broker: DataBroker, optOutUrl?: string) => void;
   onClose: () => void;
 }
 
@@ -68,13 +78,15 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
   onBureauNuked,
   onDeindexNuked,
   onOpenConnectEmail,
+  onOpenWebFormWorkbench,
+  onBrokerWebFormLogged,
   onClose,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail, smtp } = useEmailConnection();
   const contactOverrides = useBrokerContactOverrides();
 
-  // Dispatch mode tab: direct connected dispatch vs instant BCC webmail batches
-  const [dispatchMode, setDispatchMode] = useState<'direct' | 'webmail'>(
+  // Dispatch mode tab: direct connected dispatch vs instant BCC webmail batches vs web-form portal queue
+  const [dispatchMode, setDispatchMode] = useState<'direct' | 'webmail' | 'webforms'>(
     isDirectSendConnected ? 'direct' : 'webmail'
   );
 
@@ -122,9 +134,11 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
     failed: number;
   } | null>(null);
 
-  // Webmail copy helpers
+  // Webmail & Web-Form copy helpers
   const [copiedAllEmails, setCopiedAllEmails] = useState<boolean>(false);
   const [copiedOmnibusBody, setCopiedOmnibusBody] = useState<boolean>(false);
+  const [copiedAutoFillScript, setCopiedAutoFillScript] = useState<boolean>(false);
+  const [loggedWebFormIds, setLoggedWebFormIds] = useState<Record<string, boolean>>({});
 
   const effectiveProfile: UserProfile = useMemo(
     () => ({
@@ -180,6 +194,24 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
   const webmailBatches = useMemo(
     () => buildMassBccWebmailBatches(targets, effectiveProfile, senderEmail, 18),
     [targets, effectiveProfile, senderEmail]
+  );
+
+  const portalPrimaryTargets = useMemo(() => {
+    const portalFirst = targets.filter(
+      (t) =>
+        Boolean(t.brokerRef) &&
+        (t.requiresPortalWarning || classifyBrokerChannelStrategy(t.brokerRef!) !== 'email_primary')
+    );
+    return portalFirst.length > 0 ? portalFirst : targets.filter((t) => Boolean(t.brokerRef));
+  }, [targets]);
+
+  const autoFillScript = useMemo(
+    () => buildUniversalAutoFillScript(effectiveProfile),
+    [effectiveProfile]
+  );
+  const bookmarkletHref = useMemo(
+    () => buildAutoFillBookmarkletHref(effectiveProfile),
+    [effectiveProfile]
   );
 
   const countsByKind = useMemo(() => {
@@ -650,6 +682,18 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                 Instant Mass BCC Webmail Blast ({webmailBatches.length} Batch
                 {webmailBatches.length === 1 ? '' : 'es'})
               </button>
+              <button
+                type="button"
+                onClick={() => setDispatchMode('webforms')}
+                className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5 ${
+                  dispatchMode === 'webforms'
+                    ? 'bg-emerald-500 text-slate-950'
+                    : 'text-emerald-300 hover:text-white'
+                }`}
+              >
+                <FileCode2 className="w-3.5 h-3.5" />
+                <span>Web-Form &amp; Portal Queue ({portalPrimaryTargets.length} Portals)</span>
+              </button>
             </div>
 
             {dispatchMode === 'direct' ? (
@@ -787,7 +831,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                   </div>
                 )}
               </div>
-            ) : (
+            ) : dispatchMode === 'webmail' ? (
               /* Instant Mass BCC Webmail Blast Mode */
               <div className="p-4 sm:p-5 bg-slate-950 border border-slate-800 rounded-xl space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -909,6 +953,163 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                   </div>
                 )}
               </div>
+            ) : (
+              /* Web-Form & Disguised Opt-Out Portal Queue Mode */
+              <div className="p-4 sm:p-5 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-4">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-bold text-white">
+                      Web-Form &amp; Disguised Opt-Out Page Companion Queue ({portalPrimaryTargets.length} Brokers)
+                    </div>
+                    <p className="text-xs text-slate-400 max-w-2xl">
+                      Some brokers require submitting an online web form (titled &ldquo;Your Privacy Choices&rdquo;, &ldquo;Do Not Sell or Share&rdquo;, or &ldquo;Data Suppression Center&rdquo;) in addition to email. Copy the universal auto-fill script or open the Opt-Out Page Finder to spider &amp; auto-fill any broker form.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <a
+                      ref={(el) => {
+                        if (el && bookmarkletHref) {
+                          el.setAttribute('href', bookmarkletHref);
+                        }
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        void copyTextToClipboard(autoFillScript);
+                        setCopiedAutoFillScript(true);
+                        setTimeout(() => setCopiedAutoFillScript(false), 2000);
+                      }}
+                      title="Drag to your Bookmarks Bar, or click to copy the Universal Auto-Fill Script"
+                      className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-emerald-500/40 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-grab whitespace-nowrap"
+                    >
+                      <Bookmark className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>synOUT Auto-Fill</span>
+                    </a>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void copyTextToClipboard(autoFillScript);
+                        setCopiedAutoFillScript(true);
+                        setTimeout(() => setCopiedAutoFillScript(false), 2000);
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      {copiedAutoFillScript ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Copied Auto-Fill Script</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Auto-Fill Script</span>
+                        </>
+                      )}
+                    </button>
+
+                    {onOpenWebFormWorkbench && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUpdateProfile(effectiveProfile);
+                          onClose();
+                          onOpenWebFormWorkbench();
+                        }}
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <FileCode2 className="w-3.5 h-3.5" />
+                        <span>Open Opt-Out Page Finder</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="max-h-56 overflow-y-auto divide-y divide-slate-800/80 border border-slate-800 rounded-xl bg-slate-900/60">
+                  {portalPrimaryTargets.length === 0 ? (
+                    <div className="p-4 text-center text-xs text-slate-400">
+                      No web-form targets in current filter scope.
+                    </div>
+                  ) : (
+                    portalPrimaryTargets.map((item) => {
+                      const existingScan = scanResults.find((r) => r.brokerId === item.brokerId);
+                      const alreadyLogged =
+                        Boolean(loggedWebFormIds[item.id]) ||
+                        (existingScan ? hasWebFormSubmission(existingScan) : false);
+
+                      return (
+                        <div
+                          key={`wf-${item.id}`}
+                          className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                        >
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-white">{item.name}</span>
+                              <span className="text-slate-600">·</span>
+                              <span className="font-mono text-slate-400">{item.domain}</span>
+                              {item.brokerRef && (
+                                <>
+                                  <span className="text-slate-600">·</span>
+                                  <span className="text-amber-300">{item.brokerRef.removalMethod}</span>
+                                </>
+                              )}
+                            </div>
+                            <div className="text-[11px] font-mono text-slate-500 truncate">
+                              {item.optOutUrl}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            {item.brokerRef && onOpenWebFormWorkbench && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onUpdateProfile(effectiveProfile);
+                                  onClose();
+                                  onOpenWebFormWorkbench(item.brokerRef);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-emerald-500/30 text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                              >
+                                <FileCode2 className="w-3 h-3" />
+                                <span>Spider &amp; Fill</span>
+                              </button>
+                            )}
+
+                            <a
+                              href={item.optOutUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                            >
+                              <span>Open Portal</span>
+                              <ExternalLink className="w-3 h-3 text-emerald-400" />
+                            </a>
+
+                            {item.brokerRef && onBrokerWebFormLogged && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onUpdateProfile(effectiveProfile);
+                                  onBrokerWebFormLogged(item.brokerRef!, item.optOutUrl);
+                                  setLoggedWebFormIds((prev) => ({ ...prev, [item.id]: true }));
+                                }}
+                                className={`px-2.5 py-1.5 rounded-lg font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                                  alreadyLogged
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                                }`}
+                              >
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>{alreadyLogged ? 'Form Logged' : 'Log Form Sent'}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             )}
           </div>
 
@@ -1014,6 +1215,22 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                             >
                               <Edit3 className="w-3 h-3 text-sky-400" />
                               <span>Edit DPO</span>
+                            </button>
+                          )}
+
+                          {item.brokerRef && onOpenWebFormWorkbench && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onUpdateProfile(effectiveProfile);
+                                onClose();
+                                onOpenWebFormWorkbench(item.brokerRef);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-emerald-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                              title="Find Opt-Out Page & Auto-Fill Web Form"
+                            >
+                              <FileCode2 className="w-3 h-3 text-emerald-400" />
+                              <span>Form</span>
                             </button>
                           )}
 

@@ -5,6 +5,9 @@ export interface BrokerContactOverride {
   customEmail?: string;
   ccEmails?: string[];
   bouncedEmails?: string[];
+  customOptOutUrl?: string;
+  discoveredOptOutTitle?: string;
+  discoveredFormFieldCount?: number;
   note?: string;
   updatedAtIso: string;
 }
@@ -24,6 +27,10 @@ export interface ResolvedBrokerContactProfile {
   deliverabilityLabel: string;
   requiresPortalWarning: boolean;
   optOutUrl: string;
+  defaultCatalogOptOutUrl: string;
+  hasCustomOptOutUrl: boolean;
+  discoveredOptOutTitle?: string;
+  discoveredFormFieldCount?: number;
 }
 
 export interface CandidateMxCheckResult {
@@ -135,6 +142,72 @@ export function setBrokerCustomEmail(
       updatedAtIso: new Date().toISOString(),
     },
   };
+  persistOverridesToStorage(overridesState);
+  emitOverridesChange();
+}
+
+export function isValidHttpOptOutUrl(rawUrl: string): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    return Boolean(parsed.hostname && parsed.hostname.includes('.'));
+  } catch {
+    return false;
+  }
+}
+
+export function setBrokerCustomOptOutUrl(
+  brokerId: string,
+  customOptOutUrl: string,
+  discoveredOptOutTitle?: string,
+  discoveredFormFieldCount?: number
+): void {
+  const cleanedUrl = (customOptOutUrl || '').trim();
+  if (!brokerId || !isValidHttpOptOutUrl(cleanedUrl)) {
+    throw new Error('Enter a valid https:// or http:// opt-out page URL.');
+  }
+
+  const existing = overridesState[brokerId];
+  overridesState = {
+    ...overridesState,
+    [brokerId]: {
+      ...existing,
+      customOptOutUrl: cleanedUrl,
+      discoveredOptOutTitle: discoveredOptOutTitle?.trim() || existing?.discoveredOptOutTitle,
+      discoveredFormFieldCount:
+        typeof discoveredFormFieldCount === 'number'
+          ? discoveredFormFieldCount
+          : existing?.discoveredFormFieldCount,
+      updatedAtIso: new Date().toISOString(),
+    },
+  };
+  persistOverridesToStorage(overridesState);
+  emitOverridesChange();
+}
+
+export function clearBrokerCustomOptOutUrl(brokerId: string): void {
+  const existing = overridesState[brokerId];
+  if (!existing) return;
+  const nextEntry: BrokerContactOverride = {
+    ...existing,
+    customOptOutUrl: undefined,
+    discoveredOptOutTitle: undefined,
+    discoveredFormFieldCount: undefined,
+    updatedAtIso: new Date().toISOString(),
+  };
+  const hasAnyRemaining = Boolean(
+    nextEntry.customEmail ||
+      (nextEntry.ccEmails && nextEntry.ccEmails.length > 0) ||
+      (nextEntry.bouncedEmails && nextEntry.bouncedEmails.length > 0)
+  );
+  if (!hasAnyRemaining) {
+    const copy = { ...overridesState };
+    delete copy[brokerId];
+    overridesState = copy;
+  } else {
+    overridesState = { ...overridesState, [brokerId]: nextEntry };
+  }
   persistOverridesToStorage(overridesState);
   emitOverridesChange();
 }
@@ -267,6 +340,12 @@ export function resolveBrokerContactProfile(
     deliverabilityLabel = 'Web-Portal Primary · Hybrid';
   }
 
+  const customOptOutUrl =
+    override?.customOptOutUrl && isValidHttpOptOutUrl(override.customOptOutUrl)
+      ? override.customOptOutUrl.trim()
+      : '';
+  const effectiveOptOutUrl = customOptOutUrl || broker.optOutUrl;
+
   return {
     brokerId: broker.id,
     effectivePrimaryEmail,
@@ -281,7 +360,11 @@ export function resolveBrokerContactProfile(
     deliverabilityTier,
     deliverabilityLabel,
     requiresPortalWarning: deliverabilityTier === 'portal_primary',
-    optOutUrl: broker.optOutUrl,
+    optOutUrl: effectiveOptOutUrl,
+    defaultCatalogOptOutUrl: broker.optOutUrl,
+    hasCustomOptOutUrl: Boolean(customOptOutUrl),
+    discoveredOptOutTitle: override?.discoveredOptOutTitle,
+    discoveredFormFieldCount: override?.discoveredFormFieldCount,
   };
 }
 
