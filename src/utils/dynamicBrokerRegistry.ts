@@ -325,18 +325,196 @@ const VERIFIED_EXPANSION_CATALOG: DataBroker[] = [
     overview: 'High-traffic people search portal indexing residential and phone carrier headers.',
     instructions: ['Submit email on the removal portal, select your profile, and click the inbox verification link.'],
     exposureLikelihood: 0.85,
+    provenanceSource: 'verified_privacy_portal',
+  },
+  {
+    id: 'pipl',
+    name: 'Pipl Identity Intelligence',
+    domain: 'pipl.com',
+    category: 'B2B & Professional Intelligence',
+    risk: 'High',
+    optOutUrl: 'https://pipl.com/personal-information-removal-request',
+    recordsUrl: 'https://pipl.com',
+    privacyEmail: 'privacy@pipl.com',
+    fallbackEmails: ['dpo@pipl.com'],
+    emailDeliverability: 'verified_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '15-30 Days',
+    dataExposedList: ['Cross-Referenced Identity Graph', 'Work & Personal Emails', 'Phone Numbers', 'Social Profiles'],
+    overview: 'Enterprise identity resolution engine registered under the California Delete Act.',
+    instructions: ['Submit the Pipl Personal Information Removal Request form and confirm via email.'],
+    exposureLikelihood: 0.82,
+    adapterId: 'generic_dom_form',
+    workflowType: 'direct_web_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'cpra_data_broker_registry',
+  },
+  {
+    id: 'zoominfo',
+    name: 'ZoomInfo Privacy Center',
+    domain: 'zoominfo.com',
+    category: 'B2B & Professional Intelligence',
+    risk: 'High',
+    optOutUrl: 'https://www.zoominfo.com/about-zoominfo/privacy-manage-profile',
+    recordsUrl: 'https://www.zoominfo.com',
+    privacyEmail: 'privacy@zoominfo.com',
+    fallbackEmails: ['remove@zoominfo.com'],
+    emailDeliverability: 'verified_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '7-14 Days',
+    dataExposedList: ['Direct Dial Phone', 'Business Email', 'Job History', 'Corporate Org Chart'],
+    overview: 'Commercial B2B contact intelligence database indexing corporate directories and email signatures.',
+    instructions: ['Enter your email address in the ZoomInfo Manage Profile portal and verify the code sent to your inbox.'],
+    exposureLikelihood: 0.84,
+    adapterId: 'generic_dom_form',
+    workflowType: 'direct_web_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'cpra_data_broker_registry',
+  },
+  {
+    id: 'rocketreach',
+    name: 'RocketReach',
+    domain: 'rocketreach.co',
+    category: 'B2B & Professional Intelligence',
+    risk: 'High',
+    optOutUrl: 'https://rocketreach.co/claim-profile',
+    recordsUrl: 'https://rocketreach.co',
+    privacyEmail: 'privacy@rocketreach.co',
+    fallbackEmails: ['support@rocketreach.co'],
+    emailDeliverability: 'verified_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '5-10 Days',
+    dataExposedList: ['Personal & Work Emails', 'Direct Phone Numbers', 'Employment Links'],
+    overview: 'Professional contact finder indexing executive profiles, emails, and direct phone numbers.',
+    instructions: ['Submit profile removal via RocketReach claim/removal portal or email privacy@rocketreach.co.'],
+    exposureLikelihood: 0.79,
+    adapterId: 'generic_dom_form',
+    workflowType: 'profile_url_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'cpra_data_broker_registry',
+  },
+  {
+    id: 'lusha',
+    name: 'Lusha Privacy Center',
+    domain: 'lusha.com',
+    category: 'B2B & Professional Intelligence',
+    risk: 'High',
+    optOutUrl: 'https://www.lusha.com/privacy/removal/',
+    recordsUrl: 'https://www.lusha.com',
+    privacyEmail: 'privacy@lusha.com',
+    fallbackEmails: ['support@lusha.com'],
+    emailDeliverability: 'verified_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '7-14 Days',
+    dataExposedList: ['Direct Mobile Numbers', 'Work Emails', 'Company Title'],
+    overview: 'Crowdsourced B2B contact enrichment broker registered in California and Texas.',
+    instructions: ['Complete the Lusha Privacy Removal form and click the confirmation email link.'],
+    exposureLikelihood: 0.78,
+    adapterId: 'generic_dom_form',
+    workflowType: 'direct_web_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'cpra_data_broker_registry',
+  },
+  {
+    id: 'melissa',
+    name: 'Melissa Data Corp',
+    domain: 'melissa.com',
+    category: 'Marketing & Advertising',
+    risk: 'High',
+    optOutUrl: 'https://www.melissa.com/privacy-center',
+    recordsUrl: 'https://www.melissa.com',
+    privacyEmail: 'privacy@melissa.com',
+    fallbackEmails: ['ccpa@melissa.com'],
+    emailDeliverability: 'verified_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '15-30 Days',
+    dataExposedList: ['Postal Address Verification', 'Property Owner Lists', 'Household Demographics'],
+    overview: 'National address verification and direct-mail consumer list broker.',
+    instructions: ['Submit deletion request through the Melissa Privacy Center form or email privacy@melissa.com.'],
+    exposureLikelihood: 0.83,
+    adapterId: 'generic_dom_form',
+    workflowType: 'direct_web_form',
+    provenanceSource: 'cpra_data_broker_registry',
+  },
+  {
+    id: 'veripages',
+    name: 'Veripages',
+    domain: 'veripages.com',
+    category: 'People Search',
+    risk: 'High',
+    optOutUrl: 'https://veripages.com/ClassAction/OptOut',
+    recordsUrl: 'https://veripages.com',
+    privacyEmail: 'support@veripages.com',
+    fallbackEmails: ['privacy@veripages.com'],
+    emailDeliverability: 'verified_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '48-72 Hours',
+    dataExposedList: ['Full Name', 'Address History', 'Phone Numbers', 'Relatives'],
+    overview: 'Public people-finder directory indexing US residential addresses and phone records.',
+    instructions: ['Complete the Veripages Opt-Out form and confirm via email link.'],
+    exposureLikelihood: 0.80,
+    adapterId: 'generic_dom_form',
+    workflowType: 'direct_web_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'verified_privacy_portal',
+  },
+  {
+    id: 'publicrecordsnow',
+    name: 'PublicRecordsNow',
+    domain: 'publicrecordsnow.com',
+    category: 'People Search',
+    risk: 'High',
+    optOutUrl: 'https://www.publicrecordsnow.com/static/view/optout/',
+    recordsUrl: 'https://www.publicrecordsnow.com',
+    privacyEmail: 'privacy@peoplefinders.com',
+    fallbackEmails: ['privacy@publicrecordsnow.com'],
+    parentEntity: 'PeopleFinders Network',
+    emailDeliverability: 'parent_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '2-5 Days',
+    dataExposedList: ['Address History', 'Phone Numbers', 'Age & Relatives'],
+    overview: 'PeopleFinders-affiliated public record directory.',
+    instructions: ['Paste your profile URL on the PublicRecordsNow opt-out form or contact privacy@peoplefinders.com.'],
+    exposureLikelihood: 0.79,
+    adapterId: 'generic_dom_form',
+    workflowType: 'profile_url_form',
+    requiresProfileUrl: true,
+    provenanceSource: 'parent_network_dpo',
+  },
+  {
+    id: 'infotracer',
+    name: 'InfoTracer',
+    domain: 'infotracer.com',
+    category: 'People Search',
+    risk: 'High',
+    optOutUrl: 'https://infotracer.com/optout/',
+    recordsUrl: 'https://infotracer.com',
+    privacyEmail: 'privacy@infotracer.com',
+    fallbackEmails: ['support@infotracer.com'],
+    emailDeliverability: 'verified_dpo',
+    removalMethod: 'Online Form',
+    removalTime: '3-7 Days',
+    dataExposedList: ['Public Records Summary', 'Vehicle & Property Indexes', 'Phone Numbers'],
+    overview: 'Public records search portal indexing residential, property, and telecom records.',
+    instructions: ['Search your record or submit the InfoTracer opt-out form and confirm via email.'],
+    exposureLikelihood: 0.81,
+    adapterId: 'generic_dom_form',
+    workflowType: 'record_search_then_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'cpra_data_broker_registry',
   },
 ];
 
 const CUSTOM_BROKERS_STORAGE_KEY = 'synout_custom_discovered_brokers_v1';
 
 let dynamicallyDiscoveredBrokers: DataBroker[] = [];
-let expansionCursor = 0;
 
 function loadStoredCustomBrokers(): DataBroker[] {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) return [];
-    const raw = window.localStorage.getItem(CUSTOM_BROKERS_STORAGE_KEY);
+    if (typeof window === 'undefined') return [];
+    const raw =
+      window.sessionStorage?.getItem(CUSTOM_BROKERS_STORAGE_KEY) ||
+      window.localStorage?.getItem(CUSTOM_BROKERS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -349,17 +527,21 @@ function loadStoredCustomBrokers(): DataBroker[] {
 
 export function registerCustomDiscoveredBroker(broker: DataBroker): void {
   if (!broker || !broker.id || !broker.domain) return;
-  const idx = dynamicallyDiscoveredBrokers.findIndex((b) => b.id === broker.id);
+  const enriched: DataBroker = {
+    ...broker,
+    provenanceSource: broker.provenanceSource || 'user_custom_discovered',
+  };
+  const idx = dynamicallyDiscoveredBrokers.findIndex((b) => b.id === enriched.id);
   if (idx >= 0) {
-    dynamicallyDiscoveredBrokers[idx] = broker;
+    dynamicallyDiscoveredBrokers[idx] = enriched;
   } else {
-    dynamicallyDiscoveredBrokers.unshift(broker);
+    dynamicallyDiscoveredBrokers.unshift(enriched);
   }
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
+    if (typeof window !== 'undefined') {
       const stored = loadStoredCustomBrokers();
-      const next = [broker, ...stored.filter((b) => b.id !== broker.id)].slice(0, 100);
-      window.localStorage.setItem(CUSTOM_BROKERS_STORAGE_KEY, JSON.stringify(next));
+      const next = [enriched, ...stored.filter((b) => b.id !== enriched.id)].slice(0, 100);
+      window.sessionStorage?.setItem(CUSTOM_BROKERS_STORAGE_KEY, JSON.stringify(next));
     }
   } catch {
     // Ignore storage quota errors
@@ -369,8 +551,9 @@ export function registerCustomDiscoveredBroker(broker: DataBroker): void {
 export function clearCustomDiscoveredBrokers(): void {
   dynamicallyDiscoveredBrokers = [];
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.removeItem(CUSTOM_BROKERS_STORAGE_KEY);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage?.removeItem(CUSTOM_BROKERS_STORAGE_KEY);
+      window.localStorage?.removeItem(CUSTOM_BROKERS_STORAGE_KEY);
     }
   } catch {
     // Ignore storage errors
@@ -415,9 +598,14 @@ export function getExhaustiveBrokerRegistry(): DataBroker[] {
   return Array.from(map.values());
 }
 
+export function getUnaddedExpansionCatalogCount(): number {
+  const existingIds = new Set(getExhaustiveBrokerRegistry().map((b) => b.id));
+  return VERIFIED_EXPANSION_CATALOG.filter((b) => !existingIds.has(b.id)).length;
+}
+
 /**
- * Autonomously expands the broker pool dynamically using verified, real-world
- * data brokers with live DNS MX records (never synthetic NXDOMAIN domains).
+ * Expands the active broker registry exclusively with real, verified data brokers
+ * from the curated expansion catalog (never fabricating synthetic `-affiliate-N` entries).
  */
 export function triggerAutonomousRegistryExpansion(): {
   newlyDiscoveredCount: number;
@@ -428,25 +616,12 @@ export function triggerAutonomousRegistryExpansion(): {
   const existingIds = new Set(currentPool.map((b) => b.id));
   const newItems: DataBroker[] = [];
 
-  // Pull next real unindexed broker from VERIFIED_EXPANSION_CATALOG
   const unadded = VERIFIED_EXPANSION_CATALOG.filter((b) => !existingIds.has(b.id));
 
   if (unadded.length > 0) {
     const candidate = unadded[0];
     dynamicallyDiscoveredBrokers.push(candidate);
     newItems.push(candidate);
-  } else {
-    // If all 10 expansion brokers were already added in this session, add a distinct
-    // regional compliance division of a real registered data broker with live MX
-    const template = VERIFIED_EXPANSION_CATALOG[expansionCursor % VERIFIED_EXPANSION_CATALOG.length];
-    expansionCursor += 1;
-    const divisionBroker: DataBroker = {
-      ...template,
-      id: `${template.id}-affiliate-${expansionCursor}`,
-      name: `${template.name} Affiliate Syndicate #${expansionCursor}`,
-    };
-    dynamicallyDiscoveredBrokers.push(divisionBroker);
-    newItems.push(divisionBroker);
   }
 
   const updatedTotal = getExhaustiveBrokerRegistry().length;

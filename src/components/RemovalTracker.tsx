@@ -40,6 +40,8 @@ interface RemovalTrackerProps {
   onOpenDiyAssistantModal: (broker: DataBroker, result: ScanResult) => void;
   onOpenNukeAll?: () => void;
   onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
+  onOpenInboxHarvester?: () => void;
+  onOpenStateRegistries?: () => void;
 }
 
 export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
@@ -54,6 +56,8 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
   onOpenDiyAssistantModal,
   onOpenNukeAll,
   onOpenWebFormWorkbench,
+  onOpenInboxHarvester,
+  onOpenStateRegistries,
 }) => {
   const [filter, setFilter] = useState<'all' | 'in_progress' | 'needs_escalation' | 'removed'>('all');
   const [search, setSearch] = useState('');
@@ -136,54 +140,70 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
+    <div className="max-w-7xl mx-auto py-8 px-4 space-y-6">
       {/* Header Banner */}
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-3xl space-y-6">
+      <div className="p-6 sm:p-8 glass-panel rounded-2xl space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+              <span className="text-emerald-400 font-medium">45-Day Statutory Compliance</span>
+              <span aria-hidden="true">·</span>
+              <span>CCPA / CPRA / TDPSA / Delete Act</span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight [text-wrap:balance]">
               Removal &amp; 45-Day Statutory SLA Tracker
             </h1>
-            <p className="text-xs text-slate-400">
-              Tracks 45-day statutory compliance countdowns (CCPA / CPRA / TDPSA), dispatches overdue cure notices, and builds CPPA &amp; State AG enforcement packets.
+            <p className="text-sm text-slate-400 max-w-2xl leading-relaxed">
+              Monitors statutory deletion countdowns, completes inbound confirmation links via Inbox Harvester, and generates regulator enforcement dossiers when brokers breach SLA deadlines.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {onOpenInboxHarvester && (
+              <button
+                type="button"
+                onClick={onOpenInboxHarvester}
+                className="px-3.5 py-2.5 rounded-xl glass-card text-sky-300 hover:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Inbox className="w-3.5 h-3.5 text-sky-400" />
+                <span>Inbox Harvester</span>
+              </button>
+            )}
+
+            {onOpenStateRegistries && (
+              <button
+                type="button"
+                onClick={onOpenStateRegistries}
+                className="px-3.5 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Scale className="w-3.5 h-3.5 text-amber-400" />
+                <span>Complaint Packets</span>
+              </button>
+            )}
+
             {onOpenWebFormWorkbench && (
               <button
                 type="button"
                 onClick={() => onOpenWebFormWorkbench()}
-                className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-emerald-500/30 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                className="px-3.5 py-2.5 rounded-xl glass-card text-emerald-300 hover:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <FileCode2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Opt-Out Forms</span>
-              </button>
-            )}
-
-            {onOpenReplyTriage && (
-              <button
-                type="button"
-                onClick={() => onOpenReplyTriage()}
-                className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
-              >
-                <Inbox className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Triage Broker Reply</span>
+                <span>Web-Form Runner</span>
               </button>
             )}
 
             <button
               type="button"
               onClick={handleDownloadBatchSlaIcs}
-              className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+              className="px-3.5 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <Calendar className="w-3.5 h-3.5 text-emerald-400" />
-              <span>45-Day Calendar Reminder (.ics)</span>
+              <span>45-Day Reminder (.ics)</span>
             </button>
 
             <button
               onClick={onBatchOptOut}
-              className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-all shadow-lg shadow-emerald-500/20 cursor-pointer inline-flex items-center gap-2 whitespace-nowrap tabular-nums"
+              className="px-4 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer inline-flex items-center gap-2 whitespace-nowrap shrink-0 tabular-nums"
             >
               <Mail className="w-4 h-4" />
               <span>
@@ -197,7 +217,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
               <button
                 type="button"
                 onClick={onOpenNukeAll}
-                className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-extrabold transition-colors shadow-lg shadow-red-600/25 cursor-pointer inline-flex items-center gap-2 whitespace-nowrap"
+                className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/25 text-xs font-bold transition-colors cursor-pointer inline-flex items-center gap-2 whitespace-nowrap shrink-0"
               >
                 <Flame className="w-4 h-4" />
                 <span>NUKE ALL</span>
@@ -206,34 +226,26 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
           </div>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2 tabular-nums">
-          <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              In Statutory SLA
-            </span>
-            <span className="text-2xl font-bold text-sky-400 font-mono">{submittedCount}</span>
+        {/* Hairline Stats Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-white/[0.07] border-t border-white/[0.07] pt-5 tabular-nums">
+          <div className="py-2 sm:py-0 sm:pr-6">
+            <span className="text-xs text-slate-400 block">In Statutory SLA</span>
+            <span className="text-2xl font-bold text-sky-400 font-mono mt-0.5 block">{submittedCount}</span>
           </div>
 
-          <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              Confirmed Scrubbed
-            </span>
-            <span className="text-2xl font-bold text-emerald-400 font-mono">{removedCount}</span>
+          <div className="py-2 sm:py-0 sm:px-6">
+            <span className="text-xs text-slate-400 block">Confirmed Scrubbed</span>
+            <span className="text-2xl font-bold text-emerald-400 font-mono mt-0.5 block">{removedCount}</span>
           </div>
 
-          <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              Pending Opt-Out
-            </span>
-            <span className="text-2xl font-bold text-amber-400 font-mono">{pendingCount}</span>
+          <div className="py-2 sm:py-0 sm:px-6">
+            <span className="text-xs text-slate-400 block">Pending Opt-Out</span>
+            <span className="text-2xl font-bold text-amber-300 font-mono mt-0.5 block">{pendingCount}</span>
           </div>
 
-          <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              Overdue / Escalate
-            </span>
-            <span className="text-2xl font-bold text-rose-400 font-mono">
+          <div className="py-2 sm:py-0 sm:pl-6">
+            <span className="text-xs text-slate-400 block">Overdue / Escalate</span>
+            <span className="text-2xl font-bold text-rose-400 font-mono mt-0.5 block">
               {overdueOrApproachingCount}
             </span>
           </div>
@@ -241,19 +253,19 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
       </div>
 
       {/* Filter Bar */}
-      <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-2 max-w-sm w-full">
-          <Search className="w-4 h-4 text-slate-400 shrink-0" />
+      <div className="p-4 glass-panel rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="relative max-w-sm w-full">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
             placeholder="Search active removals..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-white placeholder-slate-500 focus:outline-none"
+            className="w-full glass-input rounded-xl pl-9 pr-3 py-2 text-white placeholder-slate-500"
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex flex-wrap items-center gap-1 p-1 glass-subtle rounded-xl">
           {(
             [
               ['all', 'All'],
@@ -265,10 +277,10 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
             <button
               key={mode}
               onClick={() => setFilter(mode)}
-              className={`px-3 py-1.5 rounded-xl font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                 filter === mode
-                  ? 'bg-emerald-500 text-slate-950 font-bold'
-                  : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800'
+                  ? 'bg-emerald-400 text-slate-950 font-semibold'
+                  : 'text-slate-300 hover:text-white'
               }`}
             >
               {label}
@@ -288,34 +300,37 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
           const isWebFormSubmitted = hasWebFormSubmission(result);
           const sla = computeBrokerSlaStatus(result);
 
+          const statusTextColor = isRemoved
+            ? 'text-emerald-400'
+            : sla.state === 'overdue'
+            ? 'text-rose-400'
+            : sla.state === 'approaching_deadline' || result.workflowState === 'awaiting_email_verification'
+            ? 'text-amber-300'
+            : isEmailVerified || isWebFormSubmitted
+            ? 'text-sky-300'
+            : 'text-amber-300';
+
           return (
             <div
               key={result.id}
-              className="p-5 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col xl:flex-row xl:items-center justify-between gap-4 text-xs"
+              className="p-5 glass-card rounded-2xl flex flex-col xl:flex-row xl:items-center justify-between gap-4 text-xs"
             >
               <div className="space-y-1.5 min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-bold text-white text-sm">{broker.name}</span>
-                  <span className="text-slate-500 font-mono">({broker.domain})</span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold tabular-nums ${
-                      isRemoved
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : sla.state === 'overdue'
-                        ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                        : sla.state === 'approaching_deadline'
-                        ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
-                        : isEmailVerified || isWebFormSubmitted
-                        ? 'bg-sky-500/10 text-sky-400 border border-sky-500/20'
-                        : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                    }`}
-                  >
+                  <span className="font-semibold text-white text-sm">{broker.name}</span>
+                  <span className="text-slate-500 font-mono">{broker.domain}</span>
+                  <span className="text-slate-600" aria-hidden="true">·</span>
+                  <span className={`font-medium tabular-nums ${statusTextColor}`}>
                     {isRemoved
-                      ? 'Verified Scrubbed'
+                      ? 'Verified Removed'
                       : sla.state === 'overdue'
-                      ? `SLA OVERDUE (${sla.daysElapsed}d Elapsed · Escalate Now)`
+                      ? `SLA Overdue (${sla.daysElapsed}d Elapsed · Escalate Now)`
                       : sla.state === 'approaching_deadline'
                       ? `SLA Due in ${sla.daysRemaining}d (Due ${sla.deadlineDateLabel})`
+                      : result.workflowState === 'awaiting_email_verification'
+                      ? 'Web Form Submitted · Awaiting Email Confirmation Link'
+                      : result.workflowState === 'submitted_unconfirmed' && !isEmailVerified
+                      ? `Web Form Submitted (Unconfirmed) · ${sla.daysRemaining}d Left on SLA`
                       : isEmailVerified && isWebFormSubmitted
                       ? `Web Form + Email · ${sla.daysRemaining}d Left on 45-Day SLA`
                       : isEmailVerified
@@ -326,43 +341,64 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   </span>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-400 text-[11px] tabular-nums">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-400 text-[11px] tabular-nums">
                   <span>
-                    Broker Speed: <strong className="text-white">{broker.removalTime}</strong>
+                    Typical Speed: <strong className="text-slate-200 font-medium">{broker.removalTime}</strong>
                   </span>
-                  {result.optOutConfirmationCode && (
-                    <span>
-                      Receipt: <strong className="text-emerald-400 font-mono">{result.optOutConfirmationCode}</strong>
-                    </span>
-                  )}
-                  {result.webFormConfirmationCode &&
-                    result.webFormConfirmationCode !== result.optOutConfirmationCode && (
+                  {isEmailVerified && result.optOutConfirmationCode && (
+                    <>
+                      <span aria-hidden="true">·</span>
                       <span>
-                        Web Form Ref:{' '}
-                        <strong className="text-emerald-300 font-mono">
-                          {result.webFormConfirmationCode}
+                        Message-ID:{' '}
+                        <strong className="text-emerald-400 font-mono">
+                          {result.optOutConfirmationCode}
                         </strong>
                       </span>
-                    )}
-                  {result.discoveredOptOutTitle && (
-                    <span>
-                      Portal: <strong className="text-slate-200">{result.discoveredOptOutTitle}</strong>
-                    </span>
+                    </>
                   )}
-                  {result.brokerConfirmationTicket && (
-                    <span>
-                      Broker Ticket: <strong className="text-sky-300 font-mono">{result.brokerConfirmationTicket}</strong>
-                    </span>
+                  {result.internalSubmissionId && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        Audit ID:{' '}
+                        <strong className="text-slate-300 font-mono">
+                          {result.internalSubmissionId}
+                        </strong>
+                      </span>
+                    </>
                   )}
-                  {sla.submittedDateLabel && <span>Sent: {sla.submittedDateLabel}</span>}
+                  {(result.brokerConfirmedReceipt || result.brokerConfirmationTicket) ? (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        Broker Ticket:{' '}
+                        <strong className="text-sky-300 font-mono">
+                          {result.brokerConfirmedReceipt || result.brokerConfirmationTicket}
+                        </strong>
+                      </span>
+                    </>
+                  ) : isWebFormSubmitted ? (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>
+                        Broker Ticket: <strong className="text-slate-400 font-mono">None issued</strong>
+                      </span>
+                    </>
+                  ) : null}
                   {sla.deadlineDateLabel && !isRemoved && (
-                    <span>Statutory Deadline: <strong className="text-slate-200">{sla.deadlineDateLabel}</strong></span>
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>Statutory Deadline: <strong className="text-slate-200">{sla.deadlineDateLabel}</strong></span>
+                    </>
                   )}
                   {Boolean(result.escalationCount) && (
-                    <span className="text-amber-300 font-mono flex items-center gap-1">
-                      <AlertTriangle className="w-3 h-3" />
-                      Escalated ×{result.escalationCount}
-                    </span>
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-amber-300 font-mono inline-flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" />
+                        Escalated ×{result.escalationCount}
+                      </span>
+                    </>
                   )}
                 </div>
               </div>
@@ -372,10 +408,10 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                 {!isRemoved && onAutomatedOptOut && (
                   <button
                     onClick={() => onAutomatedOptOut(broker.id)}
-                    className={`px-3 py-1.5 rounded-xl font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                       isEmailVerified
-                        ? 'bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300'
-                        : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                        ? 'glass-subtle hover:bg-white/[0.08] text-slate-300'
+                        : 'bg-emerald-400 hover:bg-emerald-300 text-slate-950'
                     }`}
                   >
                     <Mail className="w-3.5 h-3.5" />
@@ -387,10 +423,10 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   <button
                     type="button"
                     onClick={() => onOpenWebFormWorkbench(broker)}
-                    className={`px-2.5 py-1.5 rounded-xl border flex items-center gap-1 font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                    className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1 font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                       isWebFormSubmitted
-                        ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
-                        : 'bg-slate-950 hover:bg-slate-800 border-slate-800 text-emerald-300 hover:text-emerald-200'
+                        ? 'bg-emerald-500/15 border border-emerald-400/25 text-emerald-300'
+                        : 'glass-subtle hover:bg-white/[0.08] text-emerald-300'
                     }`}
                     title="Find Opt-Out Page & Auto-Fill Web Form"
                   >
@@ -403,11 +439,11 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   <button
                     type="button"
                     onClick={() => onOpenReplyTriage(broker, result)}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-emerald-300 hover:text-emerald-200 flex items-center gap-1 font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-emerald-300 flex items-center gap-1 font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
                     title="Parse Inbound Broker Reply, Strip Tracking Links, or Counter ID Demand"
                   >
                     <Inbox className="w-3.5 h-3.5" />
-                    <span>Triage Reply</span>
+                    <span>Triage</span>
                   </button>
                 )}
 
@@ -415,11 +451,11 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   <button
                     type="button"
                     onClick={() => onOpenEscalationModal(broker, result)}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-amber-500/30 text-amber-300 hover:text-amber-200 flex items-center gap-1 font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                    className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-amber-300 flex items-center gap-1 font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
                     title="Send Second Statutory Cure Notice or Generate CPPA/OAG Complaint"
                   >
                     <Scale className="w-3.5 h-3.5" />
-                    <span>Escalate / Complaint</span>
+                    <span>Escalate</span>
                   </button>
                 )}
 
@@ -427,7 +463,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   <button
                     type="button"
                     onClick={() => handleDownloadSingleBrokerIcs(broker, result)}
-                    className="p-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-emerald-400 transition-colors cursor-pointer"
+                    className="p-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 hover:text-emerald-400 transition-colors cursor-pointer"
                     title="Add 45-Day SLA Deadline to Calendar (.ics)"
                   >
                     <Calendar className="w-3.5 h-3.5" />
@@ -436,7 +472,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
 
                 <button
                   onClick={() => onOpenLegalNotice(broker, result)}
-                  className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white flex items-center gap-1 font-medium transition-colors cursor-pointer whitespace-nowrap"
+                  className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 hover:text-white flex items-center gap-1 font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   title="Custom Legal Demand"
                 >
                   <FileText className="w-3.5 h-3.5" />
@@ -445,7 +481,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
 
                 <button
                   onClick={() => onOpenDiyAssistantModal(broker, result)}
-                  className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white font-medium transition-colors cursor-pointer"
+                  className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 hover:text-white font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   title="Step-by-Step DIY Opt-Out"
                 >
                   DIY
@@ -455,19 +491,19 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                   href={searchUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-sky-400 flex items-center gap-1.5 font-medium transition-colors whitespace-nowrap"
+                  className="px-3 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-sky-400 flex items-center gap-1.5 font-medium transition-colors whitespace-nowrap shrink-0"
                 >
                   <Globe className="w-3.5 h-3.5" />
-                  <span>Verify on Site</span>
+                  <span>Verify</span>
                   <ExternalLink className="w-3 h-3 text-slate-500" />
                 </a>
 
                 <button
                   onClick={() => onToggleStatus(broker.id)}
-                  className={`px-3.5 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                     isRemoved
-                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                      : 'bg-slate-800 hover:bg-slate-700 text-white'
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/25'
+                      : 'glass-card text-white hover:bg-white/[0.09]'
                   }`}
                 >
                   <ShieldCheck className="w-3.5 h-3.5" />
@@ -479,7 +515,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
         })}
 
         {filteredItems.length === 0 && (
-          <div className="p-8 bg-slate-900 border border-slate-800 rounded-2xl text-center text-xs text-slate-400">
+          <div className="p-8 glass-panel rounded-2xl text-center text-xs text-slate-400">
             No brokers match the selected lifecycle filter.
           </div>
         )}

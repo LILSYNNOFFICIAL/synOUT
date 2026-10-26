@@ -200,7 +200,8 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
     const portalFirst = targets.filter(
       (t) =>
         Boolean(t.brokerRef) &&
-        (t.requiresPortalWarning || classifyBrokerChannelStrategy(t.brokerRef!) !== 'email_primary')
+        (t.requiresPortalWarning ||
+          classifyBrokerChannelStrategy(t.brokerRef!).strategy !== 'email_primary')
     );
     return portalFirst.length > 0 ? portalFirst : targets.filter((t) => Boolean(t.brokerRef));
   }, [targets]);
@@ -413,9 +414,9 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
       aria-modal="true"
       aria-labelledby="nuke-all-modal-title"
     >
-      <div className="bg-slate-900 border border-red-500/40 rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden my-auto">
+      <div className="glass-popover border border-red-500/35 rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden my-auto">
         {/* Top Tactical Header */}
-        <div className="p-5 sm:p-6 bg-gradient-to-r from-red-950/60 via-slate-900 to-slate-900 border-b border-red-500/30 flex items-start justify-between gap-4">
+        <div className="p-5 sm:p-6 bg-gradient-to-r from-red-950/50 via-transparent to-transparent border-b border-white/[0.08] flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-red-300 tabular-nums">
               <Flame className="w-4 h-4 text-red-400 shrink-0" />

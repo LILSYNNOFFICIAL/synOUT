@@ -196,7 +196,7 @@ export const SearchEngineDeindexCenter: React.FC<SearchEngineDeindexCenterProps>
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
       {/* Header */}
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
+      <div className="glass-panel rounded-2xl p-6 sm:p-8 space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
@@ -204,7 +204,7 @@ export const SearchEngineDeindexCenter: React.FC<SearchEngineDeindexCenterProps>
               <span aria-hidden="true">·</span>
               <span>Google · Bing · DuckDuckGo · Yahoo · Brave</span>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+            <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
               Search Snippet &amp; Outdated Cache Neutralization
             </h1>
             <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
@@ -217,7 +217,7 @@ export const SearchEngineDeindexCenter: React.FC<SearchEngineDeindexCenterProps>
               href="https://search.google.com/search-console/remove-outdated-content"
               target="_blank"
               rel="noopener noreferrer"
-              className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              className="px-4 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-semibold text-xs inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
             >
               <span>Google Outdated Cache Tool</span>
               <ExternalLink className="w-3.5 h-3.5" />
@@ -226,7 +226,7 @@ export const SearchEngineDeindexCenter: React.FC<SearchEngineDeindexCenterProps>
               href="https://www.bing.com/webmasters/tools/contentremoval"
               target="_blank"
               rel="noopener noreferrer"
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold text-xs inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              className="px-4 py-2.5 rounded-xl glass-subtle hover:border-white/20 text-slate-200 font-semibold text-xs inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
             >
               <span>Bing Content Removal</span>
               <ExternalLink className="w-3.5 h-3.5" />
@@ -234,30 +234,22 @@ export const SearchEngineDeindexCenter: React.FC<SearchEngineDeindexCenterProps>
           </div>
         </div>
 
-        {/* Metrics */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2 tabular-nums">
-          <div className="p-4 bg-slate-950 rounded-xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              Queued URLs
-            </span>
+        {/* Hairline-Divided Metrics Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-white/[0.06] border-t border-white/[0.08] pt-5 tabular-nums">
+          <div className="py-2 sm:py-0 sm:pr-5">
+            <span className="text-[11px] text-slate-400 block">Queued URLs</span>
             <span className="text-2xl font-bold text-amber-400 font-mono">{stats.detected}</span>
           </div>
-          <div className="p-4 bg-slate-950 rounded-xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              Submitted to Search
-            </span>
+          <div className="py-2 sm:py-0 sm:px-5">
+            <span className="text-[11px] text-slate-400 block">Submitted to Search</span>
             <span className="text-2xl font-bold text-sky-400 font-mono">{stats.submitted}</span>
           </div>
-          <div className="p-4 bg-slate-950 rounded-xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              Cache Demands Sent
-            </span>
-            <span className="text-2xl font-bold text-indigo-400 font-mono">{stats.cacheEmailed}</span>
+          <div className="py-2 sm:py-0 sm:px-5">
+            <span className="text-[11px] text-slate-400 block">Cache Demands Sent</span>
+            <span className="text-2xl font-bold text-indigo-300 font-mono">{stats.cacheEmailed}</span>
           </div>
-          <div className="p-4 bg-slate-950 rounded-xl border border-slate-800">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-mono">
-              Verified De-Indexed
-            </span>
+          <div className="py-2 sm:py-0 sm:pl-5">
+            <span className="text-[11px] text-slate-400 block">Verified De-Indexed</span>
             <span className="text-2xl font-bold text-emerald-400 font-mono">{stats.deindexed}</span>
           </div>
         </div>
@@ -626,9 +618,12 @@ export const SearchEngineDeindexCenter: React.FC<SearchEngineDeindexCenterProps>
                 className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs"
               >
                 <div className="space-y-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-bold text-white">{item.brokerName}</span>
-                    <span className="font-mono uppercase text-[10px] text-sky-400 bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-semibold text-white">{item.brokerName}</span>
+                    <span aria-hidden="true" className="text-slate-600">
+                      ·
+                    </span>
+                    <span className="font-mono uppercase text-[11px] text-sky-400">
                       {item.engine}
                     </span>
                     <span

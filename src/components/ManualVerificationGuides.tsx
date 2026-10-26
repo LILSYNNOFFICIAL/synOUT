@@ -528,7 +528,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-3">
+      <div className="p-6 sm:p-8 glass-panel rounded-2xl space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-slate-400 tabular-nums">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-amber-400 font-semibold flex items-center gap-1.5">
@@ -541,18 +541,18 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
             {completedFreezesCount} / {BUREAU_GUIDES.length} Freezes Completed
           </span>
         </div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
+        <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
           Specialty Bureaus, Telco CNAM &amp; Marketing Suppression Hub
         </h1>
-        <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
+        <p className="text-sm text-slate-300/90 max-w-3xl leading-relaxed">
           Lock down Tier-1 FCRA consumer bureaus (LexisNexis, CoreLogic, ChexSystems, Innovis, NCTUE), freeze Equifax payroll records (The Work Number), suppress wireless Caller-ID / Do Not Call feeds, and cut postal list-broker resale.
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         <div className="lg:col-span-4 space-y-3">
-          <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">
-            Select Clearinghouse or Registry ({BUREAU_GUIDES.length})
+          <h2 className="text-xs font-bold text-slate-400 px-1 tabular-nums">
+            Clearinghouses &amp; Registries ({BUREAU_GUIDES.length})
           </h2>
           <div className="space-y-2 max-h-[680px] overflow-y-auto pr-1">
             {BUREAU_GUIDES.map((bureau) => {
@@ -564,10 +564,10 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                 <button
                   key={bureau.id}
                   onClick={() => handleSelectBureau(bureau.id)}
-                  className={`w-full text-left p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                  className={`w-full text-left p-3.5 rounded-xl transition-all cursor-pointer flex items-center justify-between gap-3 glass-card ${
                     isSelected
-                      ? 'bg-slate-900 border-emerald-500/60 text-white shadow-lg shadow-emerald-500/5'
-                      : 'bg-slate-900/60 hover:bg-slate-900 border-slate-800 text-slate-300'
+                      ? '!border-emerald-400/55 !bg-emerald-500/[0.08] text-white shadow-lg shadow-emerald-500/5'
+                      : 'text-slate-300'
                   }`}
                 >
                   <div className="space-y-1 min-w-0">
@@ -597,7 +597,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                   </div>
                   <ChevronRight
                     className={`w-4 h-4 shrink-0 ${
-                      isSelected ? 'text-emerald-400' : 'text-slate-600'
+                      isSelected ? 'text-emerald-400' : 'text-slate-500'
                     }`}
                   />
                 </button>
@@ -607,8 +607,8 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
         </div>
 
         <div className="lg:col-span-8 space-y-6">
-          <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-6 border-b border-slate-800">
+          <div className="p-6 sm:p-8 glass-panel rounded-2xl space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-6 border-b border-white/[0.08]">
               <div className="space-y-1">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
                   <span className="text-emerald-400 font-semibold">{selectedBureau.category}</span>
@@ -616,7 +616,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                   <span>{selectedBureau.domain}</span>
                 </div>
                 <h2 className="text-2xl font-bold text-white">{selectedBureau.name}</h2>
-                <p className="text-xs text-slate-400 leading-relaxed">{selectedBureau.overview}</p>
+                <p className="text-xs text-slate-300/90 leading-relaxed">{selectedBureau.overview}</p>
               </div>
 
               <a
@@ -632,7 +632,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
 
             {/* Persistent Completion Tracker Bar */}
             {onUpdateBureauProgress && (
-              <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-4 text-xs">
+              <div className="p-4 glass-subtle rounded-xl flex flex-wrap items-center justify-between gap-4 text-xs">
                 <span className="font-semibold text-slate-300">
                   Your Local Progress Checklist:
                 </span>
@@ -646,7 +646,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                           freezePlaced: e.target.checked,
                         })
                       }
-                      className="rounded border-slate-700 bg-slate-900 text-emerald-500 cursor-pointer"
+                      className="rounded border-white/20 bg-slate-950 text-emerald-500 cursor-pointer"
                     />
                     <span>Freeze / Suppression Completed</span>
                   </label>
@@ -659,7 +659,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                           pinSaved: e.target.checked,
                         })
                       }
-                      className="rounded border-slate-700 bg-slate-900 text-emerald-500 cursor-pointer"
+                      className="rounded border-white/20 bg-slate-950 text-emerald-500 cursor-pointer"
                     />
                     <span>Confirmation / Freeze PIN Stored Safely</span>
                   </label>
@@ -667,16 +667,16 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
-                <span className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+            <div className="grid grid-cols-1 md:grid-cols-2 glass-subtle rounded-xl divide-y md:divide-y-0 md:divide-x divide-white/[0.07]">
+              <div className="p-4 space-y-1.5">
+                <span className="text-[11px] font-semibold text-amber-400 flex items-center gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5" /> Verification Requirement
                 </span>
                 <p className="text-xs text-slate-300 leading-relaxed">{selectedBureau.whyManual}</p>
               </div>
 
-              <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
-                <span className="text-[11px] font-semibold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
+              <div className="p-4 space-y-1.5">
+                <span className="text-[11px] font-semibold text-sky-400 flex items-center gap-1.5">
                   <ShieldCheck className="w-3.5 h-3.5" /> Statutory Basis &amp; Timeline
                 </span>
                 <p className="text-xs text-slate-300">
@@ -688,15 +688,15 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
               </div>
             </div>
 
-            <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-3 text-xs">
-              <h3 className="font-bold text-white uppercase tracking-wider text-[11px]">
+            <div className="p-4 glass-subtle rounded-xl space-y-3 text-xs">
+              <h3 className="font-bold text-white text-xs">
                 Official Contact Endpoints
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-slate-300">
                 <div className="flex items-center gap-2">
                   <Phone className="w-4 h-4 text-emerald-400 shrink-0" />
                   <span>
-                    Telephone: <strong className="text-white font-mono">{selectedBureau.phone}</strong>
+                    Telephone: <strong className="text-white font-mono tabular-nums">{selectedBureau.phone}</strong>
                   </span>
                 </div>
                 {selectedBureau.complianceEmail && (
@@ -718,25 +718,25 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
             </div>
 
             <div className="space-y-3">
-              <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+              <h3 className="text-sm font-bold text-white">
                 Step-by-Step Removal &amp; Freeze Workflow
               </h3>
-              <ol className="space-y-2.5">
+              <ol className="glass-subtle rounded-xl divide-y divide-white/[0.07]">
                 {selectedBureau.instructions.map((step, idx) => (
                   <li
                     key={idx}
-                    className="flex items-start gap-3 p-3 bg-slate-950/70 rounded-xl border border-slate-800/80 text-xs text-slate-300"
+                    className="flex items-start gap-3 p-3.5 text-xs text-slate-300"
                   >
                     <span className="font-mono font-bold text-emerald-400 shrink-0 tabular-nums">
                       0{idx + 1}.
                     </span>
-                    <span>{step}</span>
+                    <span className="leading-relaxed">{step}</span>
                   </li>
                 ))}
               </ol>
             </div>
 
-            <div className="space-y-3 pt-4 border-t border-slate-800">
+            <div className="space-y-3 pt-4 border-t border-white/[0.08]">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -754,7 +754,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                   <button
                     type="button"
                     onClick={handleCopy}
-                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                    className="px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.09] text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                   >
                     {copiedLetter ? (
                       <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -813,7 +813,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
               )}
 
               {confirmSend && selectedBureau.complianceEmail && isDirectSendConnected && (
-                <div className="p-4 bg-slate-950 border border-emerald-500/40 rounded-xl space-y-3 text-xs">
+                <div className="p-4 glass-subtle !border-emerald-500/40 rounded-xl space-y-3 text-xs">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <span className="text-slate-200">
                       Confirm sending this statutory notice from{' '}
@@ -825,7 +825,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                         type="button"
                         onClick={() => setConfirmSend(false)}
                         disabled={isSending}
-                        className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                        className="px-3 py-1.5 rounded-lg bg-white/[0.06] text-slate-300 hover:text-white cursor-pointer"
                       >
                         Cancel
                       </button>
@@ -844,12 +844,12 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                       </button>
                     </div>
                   </div>
-                  <label className="flex items-center gap-2 text-slate-300 cursor-pointer pt-2 border-t border-slate-800/80">
+                  <label className="flex items-center gap-2 text-slate-300 cursor-pointer pt-2 border-t border-white/[0.07]">
                     <input
                       type="checkbox"
                       checked={bccSelf}
                       onChange={(e) => setBccSelf(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+                      className="rounded border-white/20 bg-slate-950 text-emerald-500 focus:ring-0 cursor-pointer"
                     />
                     <span>
                       Send a BCC copy to my own inbox (<span className="font-mono">{activeConnectedEmail}</span>)
@@ -858,7 +858,7 @@ export const ManualVerificationGuides: React.FC<ManualVerificationGuidesProps> =
                 </div>
               )}
 
-              <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-56 overflow-y-auto leading-relaxed select-text">
+              <div className="p-4 glass-subtle rounded-xl font-mono text-xs text-slate-300 whitespace-pre-wrap max-h-56 overflow-y-auto leading-relaxed select-text">
                 {letterText}
               </div>
             </div>

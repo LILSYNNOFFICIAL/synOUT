@@ -140,6 +140,7 @@ export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = (
       setDiscoveryError(err instanceof Error ? err.message : 'Enter a valid https:// URL.');
     }
   };
+
   const primaryPhone = profile.phoneNumbers[0] || '';
   const location = `${profile.currentCity}, ${profile.currentState} ${profile.currentZip || ''}`.trim();
 
@@ -210,29 +211,37 @@ Printed Name: ${fullName}`;
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl relative my-8">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/75 backdrop-blur-md overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="glass-popover rounded-3xl w-full max-w-2xl overflow-hidden relative my-8">
         {/* Header */}
-        <div className="p-6 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/60">
+        <div className="p-6 border-b border-white/[0.08] flex items-center justify-between bg-white/[0.02]">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
               <Shield className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
-                <span className="text-emerald-400 font-semibold">{broker.removalMethod}</span>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                <span className="text-emerald-400 font-medium">{broker.removalMethod}</span>
                 <span aria-hidden="true">·</span>
-                <span>{broker.domain}</span>
+                <span className="font-mono">{broker.domain}</span>
                 <span aria-hidden="true">·</span>
                 <span>{contact.deliverabilityLabel}</span>
               </div>
-              <h3 className="text-lg font-bold text-white">Opt-Out Assistant: {broker.name}</h3>
+              <h3 className="text-lg font-bold text-white tracking-tight">
+                Opt-Out Assistant: {broker.name}
+              </h3>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+            aria-label="Close modal"
+            className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -240,20 +249,20 @@ Printed Name: ${fullName}`;
 
         {/* Content */}
         <div className="p-6 sm:p-8 space-y-6">
-          {/* Methodology Banner */}
-          <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between gap-3 text-xs">
+          {/* Methodology Summary Row */}
+          <div className="px-4 py-3 glass-subtle rounded-xl flex items-center justify-between gap-3 text-xs tabular-nums">
             <div className="flex items-center gap-2">
               <span className="text-slate-400">Methodology:</span>
               <span className="font-semibold text-white">{broker.removalMethod}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-slate-400">Est. Time:</span>
+              <span className="text-slate-400">Estimated SLA:</span>
               <span className="font-mono text-emerald-400 font-medium">{broker.removalTime}</span>
             </div>
           </div>
 
           {/* Live Opt-Out Page Discovery & Form Auto-Fill Toolkit */}
-          <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs">
+          <div className="p-4 glass-subtle rounded-2xl space-y-3 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="space-y-0.5 min-w-0">
                 <div className="font-semibold text-white">
@@ -262,7 +271,7 @@ Printed Name: ${fullName}`;
                 <div className="text-[11px] text-slate-400 truncate">
                   {contact.discoveredOptOutTitle
                     ? `Detected Title: "${contact.discoveredOptOutTitle}"`
-                    : 'Not all brokers use email—find hidden opt-out pages ("Your Privacy Choices", "Do Not Sell", OneTrust) & auto-fill their form.'}
+                    : 'Find disguised opt-out pages ("Your Privacy Choices", "Do Not Sell", OneTrust) & auto-fill their form.'}
                 </div>
               </div>
 
@@ -271,7 +280,7 @@ Printed Name: ${fullName}`;
                   type="button"
                   onClick={handleScanBrokerOptOutPages}
                   disabled={isScanningPages}
-                  className="px-2.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="px-2.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   {isScanningPages ? (
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -288,7 +297,7 @@ Printed Name: ${fullName}`;
                       onClose();
                       onOpenFormWorkbench(broker);
                     }}
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold cursor-pointer whitespace-nowrap"
+                    className="px-2.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-slate-200 font-semibold transition-colors cursor-pointer whitespace-nowrap"
                   >
                     Form Workbench
                   </button>
@@ -307,14 +316,14 @@ Printed Name: ${fullName}`;
                 <span className="truncate">{contact.optOutUrl}</span>
                 <ExternalLink className="w-3 h-3 shrink-0" />
               </a>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
                     setDraftOptOutUrl(contact.optOutUrl);
                     setIsEditingOptOutUrl((v) => !v);
                   }}
-                  className="text-[11px] text-sky-400 hover:text-sky-300 inline-flex items-center gap-1 cursor-pointer"
+                  className="text-[11px] text-sky-400 hover:text-sky-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                 >
                   <Edit3 className="w-3 h-3" />
                   <span>{isEditingOptOutUrl ? 'Cancel' : 'Edit Opt-Out URL'}</span>
@@ -323,7 +332,7 @@ Printed Name: ${fullName}`;
                   <button
                     type="button"
                     onClick={() => clearBrokerCustomOptOutUrl(broker.id)}
-                    className="text-[11px] text-slate-400 hover:text-white inline-flex items-center gap-1 cursor-pointer"
+                    className="text-[11px] text-slate-400 hover:text-white inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                   >
                     <RotateCcw className="w-3 h-3" />
                     <span>Reset</span>
@@ -339,7 +348,7 @@ Printed Name: ${fullName}`;
                   value={draftOptOutUrl}
                   onChange={(e) => setDraftOptOutUrl(e.target.value)}
                   placeholder="https://broker.com/opt-out"
-                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                  className="flex-1 glass-input rounded-lg px-2.5 py-1.5 text-white font-mono"
                 />
                 <button
                   type="button"
@@ -351,21 +360,19 @@ Printed Name: ${fullName}`;
               </div>
             )}
 
-            {discoveryError && (
-              <div className="text-rose-400 text-[11px]">{discoveryError}</div>
-            )}
+            {discoveryError && <div className="text-rose-400 text-[11px]">{discoveryError}</div>}
 
             {discoveryReport && (
-              <div className="space-y-2 pt-2 border-t border-slate-800">
+              <div className="space-y-2 pt-2 border-t border-white/[0.08]">
                 <div className="text-[11px] text-slate-400 tabular-nums">
                   Found {discoveryReport.candidates.length} opt-out/privacy route(s) on{' '}
                   {discoveryReport.queriedDomain}:
                 </div>
-                <div className="max-h-36 overflow-y-auto space-y-1.5">
+                <div className="max-h-36 overflow-y-auto divide-y divide-white/[0.07] rounded-xl border border-white/[0.08] bg-slate-950/40">
                   {discoveryReport.candidates.slice(0, 5).map((cand) => (
                     <div
                       key={cand.url}
-                      className="p-2 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-between gap-2"
+                      className="p-2.5 flex items-center justify-between gap-2"
                     >
                       <div className="min-w-0">
                         <div className="font-semibold text-white truncate">
@@ -390,7 +397,7 @@ Printed Name: ${fullName}`;
                             cand.mappedFieldCount
                           )
                         }
-                        className="px-2.5 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+                        className="px-2.5 py-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
                       >
                         <Pin className="w-3 h-3" />
                         <span>Use</span>
@@ -402,7 +409,7 @@ Printed Name: ${fullName}`;
             )}
 
             {/* 1-Click Auto-Fill Bookmarklet & Copy Script */}
-            <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+            <div className="pt-2.5 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-2">
               <a
                 ref={(el) => {
                   if (el && bookmarkletHref) {
@@ -423,7 +430,7 @@ Printed Name: ${fullName}`;
               <button
                 type="button"
                 onClick={() => copyToClipboard(autoFillScript, 'autofill')}
-                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-slate-200 font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 {copiedField === 'autofill' ? (
                   <>
@@ -442,7 +449,7 @@ Printed Name: ${fullName}`;
 
           {/* Direct Connected Email Dispatch for Any Broker With a Privacy Email */}
           {contact.effectivePrimaryEmail && (
-            <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3">
+            <div className="p-4 glass-subtle rounded-2xl space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-2 font-semibold text-emerald-400 font-mono">
                   <Mail className="w-4 h-4 shrink-0" />
@@ -455,7 +462,7 @@ Printed Name: ${fullName}`;
                       setDraftEmail(contact.effectivePrimaryEmail);
                       setIsEditingEmail((v) => !v);
                     }}
-                    className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg text-xs font-medium inline-flex items-center gap-1 cursor-pointer"
+                    className="px-2.5 py-1 bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 rounded-lg text-xs font-medium inline-flex items-center gap-1 transition-colors cursor-pointer"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                     <span>{isEditingEmail ? 'Close' : 'Edit DPO'}</span>
@@ -463,7 +470,7 @@ Printed Name: ${fullName}`;
                   <button
                     type="button"
                     onClick={() => copyToClipboard(contact.effectivePrimaryEmail, 'pEmail')}
-                    className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg text-xs font-medium inline-flex items-center gap-1 cursor-pointer"
+                    className="px-2.5 py-1 bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 rounded-lg text-xs font-medium inline-flex items-center gap-1 transition-colors cursor-pointer"
                   >
                     {copiedField === 'pEmail' ? (
                       <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -476,14 +483,14 @@ Printed Name: ${fullName}`;
               </div>
 
               {isEditingEmail && (
-                <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2 text-xs">
+                <div className="pt-2.5 border-t border-white/[0.08] space-y-2 text-xs">
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                     <input
                       type="email"
                       value={draftEmail}
                       onChange={(e) => setDraftEmail(e.target.value)}
                       placeholder="privacy@broker.com"
-                      className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                      className="flex-1 glass-input rounded-lg px-2.5 py-1.5 text-white font-mono"
                     />
                     <div className="flex items-center gap-1.5">
                       <button
@@ -500,7 +507,7 @@ Printed Name: ${fullName}`;
                             resetBrokerContactOverride(broker.id);
                             setIsEditingEmail(false);
                           }}
-                          className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                          className="px-2.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                         >
                           <RotateCcw className="w-3 h-3" />
                           <span>Reset</span>
@@ -519,7 +526,7 @@ Printed Name: ${fullName}`;
                             setBrokerCustomEmail(broker.id, cand);
                             setIsEditingEmail(false);
                           }}
-                          className="px-2 py-0.5 rounded bg-slate-950 hover:bg-slate-800 border border-slate-800 font-mono text-emerald-300 cursor-pointer"
+                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] font-mono text-emerald-300 cursor-pointer"
                         >
                           {cand}
                         </button>
@@ -536,7 +543,7 @@ Printed Name: ${fullName}`;
               </p>
 
               {sentReceipt && (
-                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-300 flex items-center gap-2">
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                   <span>
                     Sent from <strong>{activeConnectedEmail}</strong> · Receipt:{' '}
@@ -546,26 +553,26 @@ Printed Name: ${fullName}`;
               )}
 
               {sendError && (
-                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-xs text-rose-300 flex items-center gap-2">
+                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
                   <span>{sendError}</span>
                 </div>
               )}
 
               {confirmEmailSend && isDirectSendConnected ? (
-                <div className="p-3.5 bg-slate-900 border border-emerald-500/40 rounded-xl space-y-2.5 text-xs">
+                <div className="pt-3 border-t border-white/[0.08] space-y-2.5 text-xs">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <span className="text-slate-200">
                       Confirm sending statutory demand from{' '}
-                      <strong className="text-emerald-400 font-mono">{activeConnectedEmail}</strong> to{' '}
-                      <strong className="font-mono">{contact.effectivePrimaryEmail}</strong>?
+                      <strong className="text-emerald-400 font-mono">{activeConnectedEmail}</strong>{' '}
+                      to <strong className="font-mono">{contact.effectivePrimaryEmail}</strong>?
                     </span>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         type="button"
                         onClick={() => setConfirmEmailSend(false)}
                         disabled={isSending}
-                        className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                        className="px-3 py-1.5 rounded-lg bg-white/[0.06] text-slate-300 hover:text-white cursor-pointer"
                       >
                         Cancel
                       </button>
@@ -573,7 +580,7 @@ Printed Name: ${fullName}`;
                         type="button"
                         onClick={handleDirectSend}
                         disabled={isSending}
-                        className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                       >
                         {isSending ? (
                           <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -584,14 +591,14 @@ Printed Name: ${fullName}`;
                       </button>
                     </div>
                   </div>
-                  <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                  <div className="space-y-1.5 pt-2 border-t border-white/[0.07]">
                     {contact.recommendedCcEmails.length > 0 && (
                       <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={ccBackupDpo}
                           onChange={(e) => setCcBackupDpo(e.target.checked)}
-                          className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-0 cursor-pointer"
+                          className="rounded border-white/20 bg-slate-950/60 text-emerald-500 focus:ring-0 cursor-pointer"
                         />
                         <span>Also CC backup DPO ({contact.recommendedCcEmails[0]})</span>
                       </label>
@@ -601,7 +608,7 @@ Printed Name: ${fullName}`;
                         type="checkbox"
                         checked={bccSelf}
                         onChange={(e) => setBccSelf(e.target.checked)}
-                        className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-0 cursor-pointer"
+                        className="rounded border-white/20 bg-slate-950/60 text-emerald-500 focus:ring-0 cursor-pointer"
                       />
                       <span>Send a BCC copy to {activeConnectedEmail}</span>
                     </label>
@@ -613,7 +620,7 @@ Printed Name: ${fullName}`;
                     <button
                       type="button"
                       onClick={() => setConfirmEmailSend(true)}
-                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                     >
                       <Send className="w-3.5 h-3.5" />
                       <span>Send From {activeConnectedEmail}</span>
@@ -626,7 +633,7 @@ Printed Name: ${fullName}`;
                           onClose();
                           onOpenConnectEmail();
                         }}
-                        className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                        className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                       >
                         <Mail className="w-3.5 h-3.5" />
                         <span>Connect Email &amp; Send</span>
@@ -636,7 +643,7 @@ Printed Name: ${fullName}`;
 
                   <a
                     href={mailtoUrl}
-                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
+                    className="px-3.5 py-2 bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-slate-200 rounded-xl text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
                   >
                     <Mail className="w-3.5 h-3.5" />
                     <span>Open Default Mail Client</span>
@@ -648,18 +655,19 @@ Printed Name: ${fullName}`;
 
           {/* Special Action for Mail-In Demand */}
           {broker.removalMethod === 'Mail-In' && (
-            <div className="p-4 bg-amber-950/30 border border-amber-800/40 rounded-xl space-y-3">
+            <div className="p-4 bg-amber-950/25 border border-amber-500/30 rounded-2xl space-y-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
                 <FileText className="w-4 h-4 text-amber-400" />
                 <span>Written / Notarized Postal Demand</span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed">
-                This institution requires a written declaration to freeze consumer payroll and employment archives:
+                This institution requires a written declaration to freeze consumer payroll and
+                employment archives:
               </p>
               <button
                 type="button"
                 onClick={() => copyToClipboard(writtenDeclaration, 'decl')}
-                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 {copiedField === 'decl' ? (
                   <Check className="w-3.5 h-3.5 text-slate-950" />
@@ -671,22 +679,22 @@ Printed Name: ${fullName}`;
             </div>
           )}
 
-          {/* Quick-Copy Pre-fill Fields */}
-          <div>
-            <div className="text-xs font-semibold text-slate-300 mb-3">
-              1-Click Copy Fields (Paste into {broker.name} Web Form):
+          {/* Quick-Copy Pre-fill Fields — Single Hairline-Divided Glass Grid */}
+          <div className="space-y-2.5">
+            <div className="text-xs font-semibold text-slate-300">
+              1-Click Copy Fields (Paste into {broker.name} Web Form)
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] text-slate-500 block">Full Name</span>
-                  <span className="font-mono text-white font-medium">{fullName}</span>
+            <div className="glass-subtle rounded-2xl overflow-hidden grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 border border-white/[0.08] text-xs">
+              <div className="p-3.5 sm:border-r sm:border-b border-white/[0.07] flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-[11px] text-slate-400 block">Full Name</span>
+                  <span className="font-mono text-white font-medium truncate block">{fullName}</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => copyToClipboard(fullName, 'name')}
-                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+                  className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-slate-300 transition-colors cursor-pointer shrink-0"
                   title="Copy Full Name"
                 >
                   {copiedField === 'name' ? (
@@ -697,10 +705,10 @@ Printed Name: ${fullName}`;
                 </button>
               </div>
 
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] text-slate-500 block">Email Address</span>
-                  <span className="font-mono text-white font-medium truncate max-w-[170px] block">
+              <div className="p-3.5 sm:border-b border-white/[0.07] flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-[11px] text-slate-400 block">Email Address</span>
+                  <span className="font-mono text-white font-medium truncate block">
                     {primaryEmail || 'No email entered'}
                   </span>
                 </div>
@@ -708,7 +716,7 @@ Printed Name: ${fullName}`;
                   <button
                     type="button"
                     onClick={() => copyToClipboard(primaryEmail, 'email')}
-                    className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+                    className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-slate-300 transition-colors cursor-pointer shrink-0"
                     title="Copy Email"
                   >
                     {copiedField === 'email' ? (
@@ -720,10 +728,10 @@ Printed Name: ${fullName}`;
                 )}
               </div>
 
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] text-slate-500 block">Phone Number</span>
-                  <span className="font-mono text-white font-medium">
+              <div className="p-3.5 sm:border-r border-white/[0.07] flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-[11px] text-slate-400 block">Phone Number</span>
+                  <span className="font-mono text-white font-medium truncate block">
                     {primaryPhone || 'No phone entered'}
                   </span>
                 </div>
@@ -731,7 +739,7 @@ Printed Name: ${fullName}`;
                   <button
                     type="button"
                     onClick={() => copyToClipboard(primaryPhone, 'phone')}
-                    className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+                    className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-slate-300 transition-colors cursor-pointer shrink-0"
                     title="Copy Phone"
                   >
                     {copiedField === 'phone' ? (
@@ -743,15 +751,15 @@ Printed Name: ${fullName}`;
                 )}
               </div>
 
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] text-slate-500 block">Location</span>
-                  <span className="font-mono text-white font-medium">{location}</span>
+              <div className="p-3.5 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-[11px] text-slate-400 block">Location</span>
+                  <span className="font-mono text-white font-medium truncate block">{location}</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => copyToClipboard(location, 'location')}
-                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 transition-colors cursor-pointer"
+                  className="p-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-slate-300 transition-colors cursor-pointer shrink-0"
                   title="Copy Location"
                 >
                   {copiedField === 'location' ? (
@@ -767,9 +775,9 @@ Printed Name: ${fullName}`;
           {/* Broker Instructions */}
           <div className="space-y-2">
             <div className="text-xs font-semibold text-slate-300">
-              Official Web-Form Steps for {broker.domain}:
+              Official Web-Form Steps for {broker.domain}
             </div>
-            <ol className="list-decimal list-inside space-y-2 text-xs text-slate-300 bg-slate-950 p-4 rounded-xl border border-slate-800">
+            <ol className="list-decimal list-inside space-y-2 text-xs text-slate-300 glass-subtle p-4 rounded-2xl">
               {broker.instructions.map((step, idx) => (
                 <li key={idx} className="leading-relaxed">
                   {step}
@@ -780,14 +788,14 @@ Printed Name: ${fullName}`;
         </div>
 
         {/* Footer Actions */}
-        <div className="p-6 border-t border-slate-800/80 bg-slate-950/60 space-y-3">
+        <div className="p-6 border-t border-white/[0.08] bg-white/[0.02] space-y-3">
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 text-xs">
             <input
               type="text"
               value={formTicketCode}
               onChange={(e) => setFormTicketCode(e.target.value)}
               placeholder="Optional form confirmation / ticket # (e.g. OPT-48120)"
-              className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:outline-none focus:border-emerald-500"
+              className="flex-1 glass-input rounded-xl px-3 py-2 text-white font-mono"
             />
             <button
               type="button"
@@ -800,7 +808,7 @@ Printed Name: ${fullName}`;
                 );
                 onClose();
               }}
-              className="px-4 py-2.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="px-4 py-2.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-xl transition-colors inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <CheckCircle className="w-3.5 h-3.5" />
               <span>Log Web-Form Submission</span>

@@ -1,6 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { DataBroker, ScanResult, UserProfile } from '../types';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
+import { buildUniversalAutoFillScript } from '../utils/optOutFormEngine';
+import { copyTextToClipboard } from '../utils/exportEngines';
+import {
+  type ClientRemovalWorkflowJob,
+  approveAndSubmitWorkflowClient,
+  completeWorkflowEmailVerificationClient,
+  recheckWorkflowRemovalClient,
+  recordManualHandoffClient,
+  startWorkflowClient,
+} from '../services/optOutDiscoveryClient';
 import {
   Globe,
   ShieldCheck,
@@ -11,11 +21,11 @@ import {
   Play,
   RotateCcw,
   Check,
-  Server,
   FileCheck,
-  ArrowRight,
-  Shield,
-  Bot
+  Bot,
+  Copy,
+  Send,
+  Link2,
 } from 'lucide-react';
 
 interface AutomatedRemovalNavigatorProps {
@@ -23,8 +33,40 @@ interface AutomatedRemovalNavigatorProps {
   result: ScanResult;
   profile: UserProfile;
   onClose: () => void;
-  onExecutionComplete: (brokerId: string, confirmationCode: string, receiptData: any) => void;
+  onExecutionComplete: (
+    brokerId: string,
+    confirmationCode: string | null,
+    receiptData: {
+      job: ClientRemovalWorkflowJob;
+      internalSubmissionId: string;
+      brokerConfirmationCode: string | null;
+      verifiedRemoved: boolean;
+    }
+  ) => void;
   onOpenPowerOfAttorney: () => void;
+}
+
+function formatWorkflowStateLabel(state?: string): string {
+  switch (state) {
+    case 'ready_to_submit':
+      return 'Ready for Approval';
+    case 'awaiting_user_input':
+      return 'Awaiting User Input';
+    case 'awaiting_email_verification':
+      return 'Awaiting Email Confirmation';
+    case 'awaiting_broker_processing':
+      return 'Submitted · Awaiting Processing';
+    case 'submitted_unconfirmed':
+      return 'Submitted (Unconfirmed)';
+    case 'removal_verified':
+      return 'Removal Verified';
+    case 'blocked':
+      return 'Human Handoff Needed';
+    case 'failed':
+      return 'Validation Failed';
+    default:
+      return state ? state.replace(/_/g, ' ') : 'Idle';
+  }
 }
 
 export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps> = ({
@@ -36,134 +78,198 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
   onOpenPowerOfAttorney,
 }) => {
   const [isRunning, setIsRunning] = useState(false);
-  const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [confirmationCode, setConfirmationCode] = useState<string>(
-    result.optOutConfirmationCode || ''
-  );
-  const [isCompleted, setIsCompleted] = useState<boolean>(result.removalStatus === 'removed');
-  const [httpStatus, setHttpStatus] = useState<number | null>(null);
+  const [job, setJob] = useState<ClientRemovalWorkflowJob | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [fieldOverrides, setFieldOverrides] = useState<Record<string, string>>({});
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string>('');
+  const [verificationUrl, setVerificationUrl] = useState('');
+  const [handoffCode, setHandoffCode] = useState('');
+  const [copiedScript, setCopiedScript] = useState(false);
 
   const poa = profile.powerOfAttorney;
   const entryOfRecordsUrl = getBrokerRecordSearchUrl(broker, profile);
+  const senderEmail = profile.emails.find((e) => Boolean(e && e.trim())) || '';
 
-  const steps = [
-    { title: 'DNS & SSL Handshake', desc: `Establishing encrypted connection to ${broker.domain}...` },
-    { title: 'Locate Opt-Out Endpoint', desc: `Navigating to suppression URL: ${broker.optOutUrl}` },
-    { title: 'Analyze Form DOM', desc: 'Detecting form action, CSRF tokens, and required consumer inputs...' },
-    { title: 'Inject Consumer Dossier', desc: `Pre-filling ${profile.firstName} ${profile.lastName}, ${profile.currentCity}, ${profile.currentState}...` },
-    { title: 'Attach Power of Attorney', desc: poa?.isSigned ? `Linking verified Certificate ${poa.authCode}...` : 'Attaching statutory consumer agency declaration...' },
-    { title: 'Transmit Statutory Deletion', desc: 'Submitting deletion payload under Cal. Civ. Code § 1798.105 & TDPSA...' },
-    { title: 'Verify External Purge', desc: 'Capturing broker server HTTP receipt & suppression confirmation token...' },
-  ];
+  const applyJobUpdate = (updated: ClientRemovalWorkflowJob) => {
+    setJob(updated);
+    const nextOverrides: Record<string, string> = {};
+    for (const f of updated.mappedFields) {
+      if (!f.preserveOriginalHidden && f.disclosureAllowed) {
+        nextOverrides[f.fieldKey] = f.plannedValue;
+      }
+    }
+    setFieldOverrides(nextOverrides);
+    if (updated.selectedCandidateId) {
+      setSelectedCandidateId(updated.selectedCandidateId);
+    } else {
+      const eligible = updated.candidateRecords.find((c) => !c.disqualifiedHomonym);
+      if (eligible) setSelectedCandidateId(eligible.candidateId);
+    }
 
-  const handleStartExecution = async () => {
-    setIsRunning(true);
-    setLogs([`[00:00.01] Connecting to target broker host: ${broker.domain}`]);
-    setCurrentStepIndex(0);
+    const isSubmittedOrVerified =
+      updated.state === 'awaiting_broker_processing' ||
+      updated.state === 'awaiting_email_verification' ||
+      updated.state === 'submitted_unconfirmed' ||
+      updated.state === 'removal_verified';
 
-    // Progressive step simulation while making backend call
-    const timer1 = setTimeout(() => {
-      setCurrentStepIndex(1);
-      setLogs((prev) => [...prev, `[00:00.85] GET ${broker.optOutUrl} -> 200 OK`]);
-    }, 900);
-
-    const timer2 = setTimeout(() => {
-      setCurrentStepIndex(2);
-      setLogs((prev) => [...prev, `[00:01.70] Located form[action="${broker.optOutUrl}"] - 7 input fields identified`]);
-    }, 1800);
-
-    const timer3 = setTimeout(() => {
-      setCurrentStepIndex(3);
-      setLogs((prev) => [...prev, `[00:02.40] Injecting values: name="${profile.firstName} ${profile.lastName}", city="${profile.currentCity}", state="${profile.currentState}"`]);
-    }, 2500);
-
-    const timer4 = setTimeout(() => {
-      setCurrentStepIndex(4);
-      setLogs((prev) => [...prev, `[00:03.10] Power of Attorney: ${poa?.authCode || 'Authorized Consumer Representative (Signed In-App)'}`]);
-    }, 3200);
-
-    const timer5 = setTimeout(() => {
-      setCurrentStepIndex(5);
-      setLogs((prev) => [...prev, `[00:03.90] POST payload transmitted to broker suppression gateway`]);
-    }, 3900);
-
-    try {
-      const response = await fetch('/api/broker/execute-form-removal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          brokerId: broker.id,
-          brokerName: broker.name,
-          brokerDomain: broker.domain,
-          optOutUrl: broker.optOutUrl,
-          profile,
-          powerOfAttorney: poa,
-        }),
+    if (isSubmittedOrVerified) {
+      onExecutionComplete(broker.id, updated.brokerConfirmationCode, {
+        job: updated,
+        internalSubmissionId: updated.internalSubmissionId,
+        brokerConfirmationCode: updated.brokerConfirmationCode,
+        verifiedRemoved: updated.state === 'removal_verified',
       });
-
-      const data = await response.json();
-      setCurrentStepIndex(6);
-      setHttpStatus(data.httpStatus || 200);
-      setConfirmationCode(data.confirmationCode);
-      setIsCompleted(true);
-      setIsRunning(false);
-
-      setLogs((prev) => [
-        ...prev,
-        `[00:04.80] External Broker Server Response: HTTP ${data.httpStatus || 200} OK`,
-        `[00:04.90] Suppression Request Acknowledged: Reference ${data.confirmationCode}`,
-        `[00:05.00] Statutory compliance clock active (15-45 calendar days). Listing marked: In Statutory Processing.`,
-      ]);
-
-      onExecutionComplete(broker.id, data.confirmationCode, data);
-    } catch (err) {
-      // Fallback client simulation if server offline
-      setCurrentStepIndex(6);
-      const randomCode = `SUBMIT-${broker.domain.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()}-${Date.now().toString().slice(-6)}`;
-      setConfirmationCode(randomCode);
-      setIsCompleted(true);
-      setIsRunning(false);
-      setHttpStatus(200);
-      onExecutionComplete(broker.id, randomCode, { success: true });
     }
   };
 
+  const handleRunWorkflow = async (mode: 'inspect_and_preview' | 'autonomous_auto_submit') => {
+    setIsRunning(true);
+    setErrorMessage(null);
+    try {
+      const executed = await startWorkflowClient({
+        broker,
+        brokerId: broker.id,
+        brokerName: broker.name,
+        brokerDomain: broker.domain,
+        targetUrl: broker.optOutUrl,
+        profile,
+        senderEmail: senderEmail || undefined,
+        mode,
+      });
+      applyJobUpdate(executed);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : 'Headless browser execution unavailable; open the opt-out URL and use the Auto-Fill Script.'
+      );
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleApproveAndSubmit = async () => {
+    if (!job) return;
+    setIsRunning(true);
+    setErrorMessage(null);
+    try {
+      const executed = await approveAndSubmitWorkflowClient({
+        jobId: job.jobId,
+        fieldOverrides,
+        selectedCandidateId: selectedCandidateId || undefined,
+      });
+      applyJobUpdate(executed);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Approval & submission failed.');
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleVerifyEmailLink = async () => {
+    if (!job || !verificationUrl.trim()) return;
+    setIsRunning(true);
+    setErrorMessage(null);
+    try {
+      const executed = await completeWorkflowEmailVerificationClient({
+        jobId: job.jobId,
+        verificationUrl: verificationUrl.trim(),
+      });
+      applyJobUpdate(executed);
+      setVerificationUrl('');
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Email confirmation link check failed.');
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleRecheckRemoval = async () => {
+    if (!job) return;
+    setIsRunning(true);
+    setErrorMessage(null);
+    try {
+      const executed = await recheckWorkflowRemovalClient({ jobId: job.jobId });
+      applyJobUpdate(executed);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Live re-verification failed.');
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleConfirmManualHandoff = async () => {
+    if (!job) return;
+    setIsRunning(true);
+    setErrorMessage(null);
+    try {
+      const executed = await recordManualHandoffClient({
+        jobId: job.jobId,
+        userProvidedConfirmationCode: handoffCode.trim() || undefined,
+      });
+      applyJobUpdate(executed);
+      setHandoffCode('');
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Could not record manual handoff.');
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleCopyBookmarkletScript = () => {
+    const script = buildUniversalAutoFillScript(profile, senderEmail, broker);
+    void copyTextToClipboard(script);
+    setCopiedScript(true);
+    setTimeout(() => setCopiedScript(false), 2000);
+  };
+
+  const isSubmitted =
+    job?.state === 'awaiting_broker_processing' ||
+    job?.state === 'awaiting_email_verification' ||
+    job?.state === 'submitted_unconfirmed' ||
+    job?.state === 'removal_verified' ||
+    result.removalStatus === 'removed';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md overflow-y-auto">
-      <div className="relative w-full max-w-3xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-6 sm:p-8 space-y-6 my-8">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="relative w-full max-w-3xl glass-popover rounded-3xl p-6 sm:p-8 space-y-5 my-8">
         {/* Header */}
-        <div className="flex items-start justify-between border-b border-slate-800 pb-4">
+        <div className="flex items-start justify-between border-b border-white/[0.08] pb-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
+            <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/25 flex items-center justify-center text-sky-400 shrink-0">
               <Bot className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold text-white">Automated Web Removal Bot</h2>
-                <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30">
-                  Live Form Navigator
-                </span>
-              </div>
+              <h2 className="text-lg font-bold text-white tracking-tight">
+                Autonomous Headless Opt-Out Navigator
+              </h2>
               <p className="text-xs text-slate-400">
-                Directly navigates to <strong className="text-slate-200">{broker.name}</strong> ({broker.domain}) and executes statutory deletion on their website
+                Launches Playwright Chromium against{' '}
+                <strong className="text-slate-200">{broker.name}</strong> ({broker.domain}) with
+                SSRF protection and cryptographic submission evidence.
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            aria-label="Close modal"
+            className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* URLs Bar: Records Entry vs Official Opt-Out Page */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+        {/* URLs Bar */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 glass-subtle rounded-2xl text-xs">
           <div>
             <div className="text-[11px] text-slate-400 font-semibold mb-1 flex items-center gap-1.5">
               <Globe className="w-3.5 h-3.5 text-sky-400" />
-              Exposure Page (Entry of Records on Site):
+              <span>Record Search URL</span>
             </div>
             <a
               href={entryOfRecordsUrl}
@@ -172,14 +278,14 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
               className="text-sky-400 hover:text-sky-300 underline font-mono text-[11px] flex items-center gap-1 truncate"
             >
               <span className="truncate">{entryOfRecordsUrl}</span>
-              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+              <ExternalLink className="w-3 h-3 shrink-0" />
             </a>
           </div>
 
           <div>
             <div className="text-[11px] text-slate-400 font-semibold mb-1 flex items-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              Official Opt-Out / Suppression Page:
+              <span>Official Opt-Out Portal</span>
             </div>
             <a
               href={broker.optOutUrl}
@@ -188,165 +294,282 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
               className="text-emerald-400 hover:text-emerald-300 underline font-mono text-[11px] flex items-center gap-1 truncate"
             >
               <span className="truncate">{broker.optOutUrl}</span>
-              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+              <ExternalLink className="w-3 h-3 shrink-0" />
             </a>
           </div>
         </div>
 
-        {/* Power of Attorney Status Indicator */}
-        <div className="flex items-center justify-between p-3 rounded-xl bg-slate-800/40 border border-slate-700/60 text-xs">
+        {/* Power of Attorney Status */}
+        <div className="flex items-center justify-between px-4 py-3 rounded-2xl glass-subtle text-xs">
           <div className="flex items-center gap-2">
-            <FileCheck className={`w-4 h-4 ${poa?.isSigned ? 'text-emerald-400' : 'text-amber-400'}`} />
+            <FileCheck
+              className={`w-4 h-4 shrink-0 ${poa?.isSigned ? 'text-emerald-400' : 'text-amber-400'}`}
+            />
             <span>
               <strong>Power of Attorney:</strong>{' '}
               {poa?.isSigned ? (
                 <span className="text-emerald-300 font-medium">
-                  Signed & Active ({poa.authCode})
+                  Signed &amp; Active ({poa.authCode})
                 </span>
               ) : (
                 <span className="text-amber-300 font-medium">
-                  Not Signed Yet (Recommended for automated legal representation)
+                  Optional authorized-agent declaration unsigned
                 </span>
               )}
             </span>
           </div>
           {!poa?.isSigned && (
             <button
+              type="button"
               onClick={onOpenPowerOfAttorney}
-              className="px-2.5 py-1 text-[11px] font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-colors cursor-pointer"
+              className="px-2.5 py-1 text-[11px] font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
             >
-              Sign POA Now
+              Sign POA
             </button>
           )}
         </div>
 
-        {/* Live Execution Steps & Terminal Log */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-            <span>Automated Removal Protocol Steps:</span>
-            {isCompleted && (
-              <span className="text-emerald-400 flex items-center gap-1 font-mono text-[11px]">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Purge Confirmed (HTTP {httpStatus || 200})
-              </span>
-            )}
+        {errorMessage && (
+          <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-xs text-rose-300 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <span>{errorMessage}</span>
           </div>
+        )}
 
-          <div className="grid grid-cols-1 md:grid-cols-7 gap-1.5">
-            {steps.map((st, idx) => {
-              const isPast = idx < currentStepIndex || isCompleted;
-              const isCurrent = idx === currentStepIndex && isRunning;
-              return (
-                <div
-                  key={idx}
-                  className={`p-2 rounded-lg border text-center transition-all ${
-                    isPast
-                      ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
-                      : isCurrent
-                      ? 'bg-sky-950/40 border-sky-400 text-sky-200 animate-pulse'
-                      : 'bg-slate-950 border-slate-800 text-slate-500'
-                  }`}
-                >
-                  <div className="text-[10px] font-bold uppercase tracking-wider mb-0.5">Step {idx + 1}</div>
-                  <div className="text-[11px] font-medium leading-tight truncate">{st.title}</div>
-                </div>
-              );
-            })}
+        {/* Real Execution Trace & Job Details */}
+        <div className="glass-subtle rounded-2xl p-4 text-xs text-slate-300 space-y-2 max-h-48 overflow-y-auto">
+          <div className="text-slate-400 text-[11px] border-b border-white/[0.08] pb-2 mb-1 flex items-center justify-between">
+            <span className="font-semibold text-slate-300">Playwright Workflow Trace</span>
+            <span className="text-emerald-400 font-medium">
+              {job ? formatWorkflowStateLabel(job.state) : 'Idle'}
+            </span>
           </div>
-
-          {/* Terminal Console View */}
-          <div className="bg-slate-950 rounded-xl border border-slate-800 p-4 font-mono text-xs text-slate-300 space-y-1.5 max-h-44 overflow-y-auto">
-            <div className="text-slate-500 text-[11px] border-b border-slate-800/80 pb-1 mb-2 flex items-center justify-between">
-              <span>REMOTE_BROKER_AGENT_STDOUT</span>
-              <span>TLSv1.3 / AES-256-GCM</span>
+          {!job || job.steps.length === 0 ? (
+            <div className="text-slate-400 py-3 text-center">
+              Choose &ldquo;Inspect &amp; Preview&rdquo; or &ldquo;Autonomous Auto-Submit&rdquo; to
+              start real browser execution.
             </div>
-            {logs.length === 0 ? (
-              <div className="text-slate-500 italic py-2 text-center">
-                Ready to execute automated web form removal against {broker.name}.
-              </div>
-            ) : (
-              logs.map((lg, i) => (
-                <div key={i} className="leading-relaxed flex items-start gap-2">
-                  <span className="text-emerald-400 select-none">&gt;</span>
-                  <span className={lg.includes('Confirmed') || lg.includes('200 OK') ? 'text-emerald-300 font-semibold' : 'text-slate-300'}>
-                    {lg}
+          ) : (
+            <div className="font-mono space-y-1.5 tabular-nums">
+              {job.steps.map((step) => (
+                <div key={step.stepIndex} className="leading-relaxed flex items-start gap-2">
+                  <span className="text-emerald-400 select-none">#{step.stepIndex}</span>
+                  <span>
+                    <strong className="text-white">{step.action}</strong> — {step.details}
                   </span>
                 </div>
-              ))
-            )}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Confirmation Banner */}
-        {isCompleted && confirmationCode && (
-          <div className="p-4 bg-indigo-950/30 border border-indigo-500/40 rounded-xl space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-indigo-400 text-xs font-bold">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                SUPPRESSION REQUEST DISPATCHED TO {broker.name.toUpperCase()}
+        {/* Blocker Handoff */}
+        {job?.blocker && (
+          <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-3 text-xs">
+            <div className="font-bold text-amber-300 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>Human Handoff Required</span>
+            </div>
+            <p className="text-amber-100/90 leading-relaxed">{job.blocker.summary}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={job.blocker.handoffUrl || broker.optOutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold inline-flex items-center gap-1 whitespace-nowrap"
+              >
+                <span>Open Opt-Out Page</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+              <button
+                type="button"
+                onClick={handleCopyBookmarkletScript}
+                className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-white font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedScript ? 'Copied Auto-Fill Script' : 'Copy Auto-Fill Script'}</span>
+              </button>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 pt-1">
+              <input
+                type="text"
+                value={handoffCode}
+                onChange={(e) => setHandoffCode(e.target.value)}
+                placeholder="Optional broker confirmation code shown after CAPTCHA"
+                className="flex-1 glass-input rounded-lg px-3 py-1.5 text-white font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleConfirmManualHandoff}
+                disabled={isRunning}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+              >
+                Record Manual Completion
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Preview Approval Controls */}
+        {job &&
+          (job.state === 'ready_to_submit' || job.state === 'awaiting_user_input') &&
+          job.mappedFields.filter((f) => !f.preserveOriginalHidden).length > 0 && (
+            <div className="p-4 glass-subtle rounded-2xl space-y-3 text-xs">
+              <div className="font-bold text-white tabular-nums">
+                Review Mapped Fields Before Submission (
+                {job.mappedFields.filter((f) => !f.preserveOriginalHidden).length} Controls)
               </div>
-              <span className="text-slate-400 text-[11px]">
-                {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-44 overflow-y-auto">
+                {job.mappedFields
+                  .filter((f) => !f.preserveOriginalHidden && f.disclosureAllowed)
+                  .map((f) => (
+                    <div key={f.fieldKey} className="space-y-1">
+                      <span className="text-[11px] text-slate-400 block truncate tabular-nums">
+                        {f.label || f.name} ({Math.round(f.confidence * 100)}%)
+                      </span>
+                      <input
+                        type="text"
+                        value={fieldOverrides[f.fieldKey] ?? f.plannedValue}
+                        onChange={(e) =>
+                          setFieldOverrides((prev) => ({
+                            ...prev,
+                            [f.fieldKey]: e.target.value,
+                          }))
+                        }
+                        className="w-full glass-input rounded-lg px-2.5 py-1.5 text-white font-mono"
+                      />
+                    </div>
+                  ))}
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleApproveAndSubmit}
+                  disabled={isRunning}
+                  className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Approve &amp; Submit Form</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+        {/* Submission Evidence Summary */}
+        {job && isSubmitted && (
+          <div className="p-4 glass-subtle border-emerald-500/30 rounded-2xl space-y-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold text-emerald-400 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{formatWorkflowStateLabel(job.state)}</span>
+              </span>
+              <span className="font-mono text-[11px] text-slate-400">
+                Internal ID: {job.internalSubmissionId}
               </span>
             </div>
-            <div className="font-mono text-xs text-indigo-200 bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between">
-              <span>External Submission Reference:</span>
-              <strong className="text-white font-bold">{confirmationCode}</strong>
+            <div className="font-mono text-slate-200">
+              Broker Confirmation Code:{' '}
+              <strong>{job.brokerConfirmationCode || 'None issued by broker'}</strong>
             </div>
-            <p className="text-[11px] text-slate-300">
-              The statutory deletion payload was delivered to {broker.domain}. By law under CCPA/CPRA, the broker has 15-45 calendar days to expunge their database cache. Status has been updated to <strong>In Statutory Processing</strong>. Verify your live listing anytime using the link below before confirming permanent removal.
-            </p>
+            {job.evidence && (
+              <div className="font-mono text-[11px] text-slate-400 truncate">
+                Evidence SHA-256: {job.evidence.evidenceManifestSha256}
+              </div>
+            )}
+
+            {job.state === 'awaiting_email_verification' && (
+              <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                <input
+                  type="url"
+                  value={verificationUrl}
+                  onChange={(e) => setVerificationUrl(e.target.value)}
+                  placeholder={`Paste confirmation link from ${broker.domain} email...`}
+                  className="flex-1 glass-input rounded-lg px-3 py-1.5 text-white font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={handleVerifyEmailLink}
+                  disabled={isRunning || !verificationUrl.trim()}
+                  className="px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  <span>Verify Link</span>
+                </button>
+              </div>
+            )}
+
+            <div className="pt-1 flex justify-end">
+              <button
+                type="button"
+                onClick={handleRecheckRemoval}
+                disabled={isRunning}
+                className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-sky-300 font-semibold cursor-pointer whitespace-nowrap"
+              >
+                Re-Verify Live Listing Removal
+              </button>
+            </div>
           </div>
         )}
 
         {/* Actions Bar */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-800">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-white/[0.08]">
           <a
             href={entryOfRecordsUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="w-full sm:w-auto px-4 py-2.5 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            className="w-full sm:w-auto px-4 py-2.5 text-xs font-semibold text-slate-300 glass-subtle hover:border-white/20 rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
           >
             <Globe className="w-3.5 h-3.5 text-sky-400" />
-            Verify on Broker Site (Direct Link)
+            <span>Verify on Broker Site</span>
             <ExternalLink className="w-3 h-3 text-slate-400" />
           </a>
 
-          <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+          <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto justify-end">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2.5 text-xs font-semibold text-slate-400 hover:text-white rounded-xl transition-colors cursor-pointer"
+              className="px-4 py-2.5 text-xs font-semibold text-slate-400 hover:text-white rounded-xl transition-colors cursor-pointer whitespace-nowrap"
             >
               Close
             </button>
 
-            {!isCompleted ? (
-              <button
-                type="button"
-                onClick={handleStartExecution}
-                disabled={isRunning}
-                className="px-6 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 rounded-xl flex items-center gap-2 transition-colors cursor-pointer shadow-lg shadow-emerald-500/20"
-              >
-                {isRunning ? (
-                  <>
-                    <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                    Executing Deletion on {broker.domain}...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    Execute Automated Form Removal
-                  </>
-                )}
-              </button>
+            {!isSubmitted ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleRunWorkflow('inspect_and_preview')}
+                  disabled={isRunning}
+                  className="px-4 py-2.5 text-xs font-semibold text-white bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] disabled:opacity-50 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  Inspect &amp; Preview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRunWorkflow('autonomous_auto_submit')}
+                  disabled={isRunning}
+                  className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 rounded-xl flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  {isRunning ? (
+                    <>
+                      <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Running Chromium...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>Autonomous Auto-Submit</span>
+                    </>
+                  )}
+                </button>
+              </>
             ) : (
               <button
                 type="button"
                 onClick={onClose}
-                className="px-6 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+                className="px-6 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Check className="w-4 h-4" />
-                Done & Verified
+                <span>Done</span>
               </button>
             )}
           </div>

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { DataBroker, ScanResult, UserProfile } from '../types';
+import { DataBroker, RemovalWorkflowState, ScanResult, UserProfile } from '../types';
 import {
   getExhaustiveBrokerRegistry,
   registerCustomDiscoveredBroker,
@@ -19,6 +19,8 @@ import {
   useBrokerContactOverrides,
 } from '../utils/brokerContactResolver';
 import {
+  DEFAULT_DISCLOSURE_POLICY,
+  type ConsumerDisclosurePolicy,
   type DiscoveredOptOutCandidate,
   type OptOutDiscoveryReport,
   type OptOutPageInspection,
@@ -31,11 +33,22 @@ import {
   isSafePublicOptOutUrl,
 } from '../utils/optOutFormEngine';
 import {
+  type ClientAutomationCapabilities,
+  type ClientRemovalWorkflowJob,
+  approveAndSubmitWorkflowClient,
+  cancelWorkflowClient,
+  completeWorkflowEmailVerificationClient,
   discoverOptOutPagesClient,
+  getWorkflowCapabilitiesClient,
   inspectOptOutUrlClient,
   inspectPastedHtmlClient,
+  listSessionWorkflowsClient,
+  recheckWorkflowRemovalClient,
+  recordManualHandoffClient,
+  startWorkflowClient,
   submitOptOutWebFormClient,
 } from '../services/optOutDiscoveryClient';
+import { resolveBrokerPlaybook } from '../utils/brokerAdapterCatalog';
 import { copyTextToClipboard } from '../utils/exportEngines';
 import {
   Search,
@@ -55,6 +68,11 @@ import {
   Flame,
   Edit3,
   ClipboardCheck,
+  Bot,
+  ShieldCheck,
+  Play,
+  Link2,
+  XCircle,
 } from 'lucide-react';
 
 interface OptOutFormWorkbenchProps {
@@ -66,6 +84,12 @@ interface OptOutFormWorkbenchProps {
     confirmationCode?: string;
     optOutUrl?: string;
     discoveredTitle?: string;
+    workflowJobId?: string;
+    workflowState?: RemovalWorkflowState;
+    internalSubmissionId?: string;
+    brokerConfirmedReceipt?: string | null;
+    submissionEvidenceHash?: string;
+    verifiedRemoved?: boolean;
   }) => void;
   onRecordEmailDispatched: (brokerId: string, messageId: string) => void;
   onOpenConnectEmail: () => void;
@@ -73,6 +97,43 @@ interface OptOutFormWorkbenchProps {
 }
 
 type QueueFilterMode = 'exposed' | 'web_form_primary' | 'all' | 'completed';
+
+function formatWorkflowStateLabel(state: RemovalWorkflowState): string {
+  switch (state) {
+    case 'queued':
+      return 'Queued';
+    case 'discovering':
+      return 'Discovering Opt-Out Endpoint';
+    case 'inspecting':
+      return 'Inspecting Live DOM';
+    case 'matching_record':
+      return 'Matching Person Listing';
+    case 'awaiting_user_input':
+      return 'Awaiting User Selection / Input';
+    case 'ready_to_submit':
+      return 'Preview Ready for Approval';
+    case 'submitting':
+      return 'Submitting Form';
+    case 'submitted_unconfirmed':
+      return 'Submitted (No Broker Ticket Issued)';
+    case 'awaiting_email_verification':
+      return 'Awaiting Email Confirmation Link';
+    case 'awaiting_broker_processing':
+      return 'Submitted · Awaiting Broker Purge';
+    case 'removal_verified':
+      return 'Removal Verified on Live Site';
+    case 'rejected':
+      return 'Rejected by Portal';
+    case 'blocked':
+      return 'Paused for Human Handoff (Anti-Bot / Gate)';
+    case 'failed':
+      return 'Failed (Validation / Network)';
+    case 'cancelled':
+      return 'Cancelled';
+    default:
+      return state;
+  }
+}
 
 export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
   profile,
@@ -139,6 +200,23 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
     [activeBroker, overrides]
   );
 
+  // Autonomous Headless Browser Workflow Runner state
+  const [capabilities, setCapabilities] = useState<ClientAutomationCapabilities | null>(null);
+  const [workflowJobsByBroker, setWorkflowJobsByBroker] = useState<
+    Record<string, ClientRemovalWorkflowJob>
+  >({});
+  const [isWorkflowBusy, setIsWorkflowBusy] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [disclosurePolicy, setDisclosurePolicy] = useState<ConsumerDisclosurePolicy>(
+    DEFAULT_DISCLOSURE_POLICY
+  );
+  const [liveFieldOverrides, setLiveFieldOverrides] = useState<Record<string, string>>({});
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string>('');
+  const [verificationLinkInput, setVerificationLinkInput] = useState('');
+  const [handoffTicketInput, setHandoffTicketInput] = useState('');
+  const [handoffNeedsEmailVerify, setHandoffNeedsEmailVerify] = useState(false);
+  const [showTraceLog, setShowTraceLog] = useState(false);
+
   // Discovery & Form Inspection state per broker
   const [isCrawling, setIsCrawling] = useState(false);
   const [isInspecting, setIsInspecting] = useState(false);
@@ -164,6 +242,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
     ok: boolean;
     message: string;
     ticket?: string;
+    internalId?: string;
     requiresCaptcha?: boolean;
   } | null>(null);
   const [manualTicketInput, setManualTicketInput] = useState('');
@@ -175,19 +254,61 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
   // Clipboard indicators
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Load automation capabilities & existing session jobs on mount
+  useEffect(() => {
+    void getWorkflowCapabilitiesClient().then(setCapabilities);
+    void listSessionWorkflowsClient().then((jobs) => {
+      if (jobs.length === 0) return;
+      const map: Record<string, ClientRemovalWorkflowJob> = {};
+      for (const j of jobs) {
+        if (!map[j.brokerId]) {
+          map[j.brokerId] = j;
+        }
+      }
+      setWorkflowJobsByBroker(map);
+    });
+  }, []);
+
+  const activeWorkflowJob = activeBroker ? workflowJobsByBroker[activeBroker.id] || null : null;
+
+  // Sync live field overrides & candidate selection whenever active workflow job updates
+  useEffect(() => {
+    if (!activeWorkflowJob) {
+      setLiveFieldOverrides({});
+      setSelectedCandidateId('');
+      return;
+    }
+    const nextOverrides: Record<string, string> = {};
+    for (const f of activeWorkflowJob.mappedFields) {
+      if (!f.preserveOriginalHidden && f.disclosureAllowed) {
+        nextOverrides[f.fieldKey] = f.plannedValue;
+      }
+    }
+    setLiveFieldOverrides(nextOverrides);
+    if (activeWorkflowJob.selectedCandidateId) {
+      setSelectedCandidateId(activeWorkflowJob.selectedCandidateId);
+    } else {
+      const firstEligible = activeWorkflowJob.candidateRecords.find((c) => !c.disqualifiedHomonym);
+      setSelectedCandidateId(firstEligible?.candidateId || '');
+    }
+  }, [activeWorkflowJob?.jobId, activeWorkflowJob?.updatedAtIso]);
+
   // Reset transient discovery views when switching active broker
   useEffect(() => {
     setDiscoveryReport(null);
     setActiveInspection(null);
     setDiscoveryError(null);
+    setWorkflowError(null);
     setRelayFeedback(null);
     setEmailFeedback(null);
     setEditedFieldValues({});
-    setManualTicketInput(activeScanResult?.webFormConfirmationCode || '');
+    setVerificationLinkInput('');
+    setHandoffTicketInput('');
+    setManualTicketInput(activeScanResult?.brokerConfirmedReceipt || '');
     setIsEditingOptOutUrl(false);
-  }, [activeBroker?.id, activeScanResult?.webFormConfirmationCode]);
+  }, [activeBroker?.id, activeScanResult?.brokerConfirmedReceipt]);
 
-  // Seed editable form values whenever a new form inspection arrives
+  // Seed editable form values whenever a new static form inspection arrives
   useEffect(() => {
     const primaryForm = activeInspection?.forms[0];
     if (!primaryForm) {
@@ -203,6 +324,153 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
 
   const senderEmail = activeConnectedEmail || profile.emails[0] || '';
 
+  const syncJobToParentState = (job: ClientRemovalWorkflowJob, brokerTarget: DataBroker) => {
+    setWorkflowJobsByBroker((prev) => ({ ...prev, [brokerTarget.id]: job }));
+
+    const isSubmittedState =
+      job.state === 'awaiting_broker_processing' ||
+      job.state === 'awaiting_email_verification' ||
+      job.state === 'submitted_unconfirmed' ||
+      job.state === 'removal_verified';
+
+    if (isSubmittedState) {
+      onRecordWebFormSubmitted({
+        broker: brokerTarget,
+        confirmationCode: job.brokerConfirmationCode || undefined,
+        optOutUrl: job.currentUrl || job.targetUrl,
+        discoveredTitle: job.discoveredTitle || undefined,
+        workflowJobId: job.jobId,
+        workflowState: job.state,
+        internalSubmissionId: job.internalSubmissionId,
+        brokerConfirmedReceipt: job.brokerConfirmationCode,
+        submissionEvidenceHash: job.evidence?.evidenceManifestSha256,
+        verifiedRemoved: job.state === 'removal_verified',
+      });
+    }
+  };
+
+  const handleRunHeadlessWorkflow = async (
+    mode: 'inspect_and_preview' | 'autonomous_auto_submit'
+  ) => {
+    if (!activeBroker || !contact) return;
+    setIsWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      const job = await startWorkflowClient({
+        broker: activeBroker,
+        brokerId: activeBroker.id,
+        brokerName: activeBroker.name,
+        brokerDomain: activeBroker.domain,
+        targetUrl: contact.optOutUrl,
+        profile,
+        senderEmail: senderEmail || undefined,
+        mode,
+        disclosurePolicy,
+      });
+      syncJobToParentState(job, activeBroker);
+    } catch (err) {
+      setWorkflowError(
+        err instanceof Error ? err.message : 'Failed executing headless opt-out workflow.'
+      );
+    } finally {
+      setIsWorkflowBusy(false);
+    }
+  };
+
+  const handleApproveAndSubmitWorkflow = async () => {
+    if (!activeBroker || !activeWorkflowJob) return;
+    setIsWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      const job = await approveAndSubmitWorkflowClient({
+        jobId: activeWorkflowJob.jobId,
+        fieldOverrides: liveFieldOverrides,
+        disclosurePolicy,
+        selectedCandidateId: selectedCandidateId || undefined,
+      });
+      syncJobToParentState(job, activeBroker);
+    } catch (err) {
+      setWorkflowError(
+        err instanceof Error ? err.message : 'Failed submitting approved opt-out form.'
+      );
+    } finally {
+      setIsWorkflowBusy(false);
+    }
+  };
+
+  const handleCompleteEmailVerification = async () => {
+    if (!activeBroker || !activeWorkflowJob || !verificationLinkInput.trim()) return;
+    setIsWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      const job = await completeWorkflowEmailVerificationClient({
+        jobId: activeWorkflowJob.jobId,
+        verificationUrl: verificationLinkInput.trim(),
+      });
+      syncJobToParentState(job, activeBroker);
+      setVerificationLinkInput('');
+    } catch (err) {
+      setWorkflowError(
+        err instanceof Error ? err.message : 'Inbound email verification link failed.'
+      );
+    } finally {
+      setIsWorkflowBusy(false);
+    }
+  };
+
+  const handleRecheckListingRemoval = async () => {
+    if (!activeBroker || !activeWorkflowJob) return;
+    setIsWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      const job = await recheckWorkflowRemovalClient({
+        jobId: activeWorkflowJob.jobId,
+      });
+      syncJobToParentState(job, activeBroker);
+    } catch (err) {
+      setWorkflowError(
+        err instanceof Error ? err.message : 'Live listing removal re-check failed.'
+      );
+    } finally {
+      setIsWorkflowBusy(false);
+    }
+  };
+
+  const handleRecordManualHandoff = async () => {
+    if (!activeBroker || !activeWorkflowJob) return;
+    setIsWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      const job = await recordManualHandoffClient({
+        jobId: activeWorkflowJob.jobId,
+        userProvidedConfirmationCode: handoffTicketInput.trim() || undefined,
+        requiresEmailVerification: handoffNeedsEmailVerify,
+      });
+      syncJobToParentState(job, activeBroker);
+      setHandoffTicketInput('');
+    } catch (err) {
+      setWorkflowError(
+        err instanceof Error ? err.message : 'Could not record manual browser handoff.'
+      );
+    } finally {
+      setIsWorkflowBusy(false);
+    }
+  };
+
+  const handleCancelWorkflow = async () => {
+    if (!activeBroker || !activeWorkflowJob) return;
+    setIsWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      const job = await cancelWorkflowClient(activeWorkflowJob.jobId);
+      setWorkflowJobsByBroker((prev) => ({ ...prev, [activeBroker.id]: job }));
+    } catch (err) {
+      setWorkflowError(err instanceof Error ? err.message : 'Could not cancel workflow.');
+    } finally {
+      setIsWorkflowBusy(false);
+    }
+  };
+
   const filteredQueue = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return combinedBrokers.filter((b) => {
@@ -217,7 +485,12 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
 
       if (queueFilter === 'exposed' && !isExposed) return false;
       if (queueFilter === 'web_form_primary' && !isWebFormPrimary) return false;
-      if (queueFilter === 'completed' && !formDone && !emailDone && scanItem?.removalStatus !== 'removed') {
+      if (
+        queueFilter === 'completed' &&
+        !formDone &&
+        !emailDone &&
+        scanItem?.removalStatus !== 'removed'
+      ) {
         return false;
       }
 
@@ -276,10 +549,11 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
         overview: `User-added website (${regDomain}) queued for opt-out page discovery and web-form suppression.`,
         instructions: [
           `Crawl ${regDomain} to uncover its opt-out or "Your Privacy Choices" form regardless of page title.`,
-          'Auto-fill consumer details using the synOUT Bookmarklet or Direct Relay.',
-          'Save any confirmation ticket and optionally send a statutory CCPA email notice.',
+          'Run the Autonomous Headless Browser Runner or 1-Click Auto-Fill Bookmarklet.',
+          'Save any genuine broker confirmation code and optionally send a statutory CCPA email notice.',
         ],
         exposureLikelihood: 0.75,
+        provenanceSource: 'user_custom_discovered',
       };
       registerCustomDiscoveredBroker(targetBroker);
       setAdHocBrokers((prev) => [targetBroker, ...prev.filter((b) => b.id !== targetBroker.id)]);
@@ -403,25 +677,40 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
       });
 
       if (response.success) {
+        const brokerCode = response.brokerConfirmationCode;
         setRelayFeedback({
           ok: true,
-          message: `Form submitted directly (${primaryForm.method} -> HTTP ${response.httpStatus}) with Sec-GPC: 1. Logged receipt ${response.confirmationTicket}.`,
-          ticket: response.confirmationTicket,
+          message: brokerCode
+            ? `Form accepted (${primaryForm.method} -> HTTP ${response.httpStatus}). Broker Confirmation Code: ${brokerCode} · Internal Audit ID: ${response.internalSubmissionId}.`
+            : `Form transmitted (${primaryForm.method} -> HTTP ${response.httpStatus}) with Sec-GPC: 1. No confirmation ticket was issued by ${activeBroker.name}; tracked under Internal Audit ID ${response.internalSubmissionId}.`,
+          ticket: brokerCode || undefined,
+          internalId: response.internalSubmissionId,
         });
-        setManualTicketInput(response.confirmationTicket);
+        if (brokerCode) {
+          setManualTicketInput(brokerCode);
+        }
         onRecordWebFormSubmitted({
           broker: activeBroker,
-          confirmationCode: response.confirmationTicket,
+          confirmationCode: brokerCode || undefined,
           optOutUrl: activeInspection?.finalUrl || contact?.optOutUrl,
           discoveredTitle: activeInspection?.pageTitle,
+          workflowState:
+            response.outcomeClassification === 'awaiting_email_verification'
+              ? 'awaiting_email_verification'
+              : response.outcomeClassification === 'awaiting_broker_processing'
+              ? 'awaiting_broker_processing'
+              : 'submitted_unconfirmed',
+          internalSubmissionId: response.internalSubmissionId,
+          brokerConfirmedReceipt: brokerCode,
         });
       } else {
         setRelayFeedback({
           ok: false,
           requiresCaptcha: response.requiresBrowserCaptcha,
           message: response.requiresBrowserCaptcha
-            ? `Broker returned HTTP ${response.httpStatus} (${response.antiBotGate}) requiring interactive human verification in your browser. Click "Open Opt-Out Page", run the 1-Click synOUT Auto-Fill Bookmarklet, check the CAPTCHA, and log your confirmation below.`
-            : `Broker endpoint returned HTTP ${response.httpStatus}. Open the page directly and run the 1-Click Auto-Fill Bookmarklet to complete submission.`,
+            ? `Broker returned HTTP ${response.httpStatus} (${response.antiBotGate}) requiring interactive human verification. Open the opt-out page in your browser, run the synOUT Auto-Fill Bookmarklet, complete the CAPTCHA, and log your submission below.`
+            : response.outcomeSummary ||
+              `Portal returned HTTP ${response.httpStatus} (${response.outcomeClassification || 'rejected'}). Use the Autonomous Headless Browser Runner above or open the page with the Bookmarklet.`,
         });
       }
     } catch (err) {
@@ -430,7 +719,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
         message:
           err instanceof Error
             ? err.message
-            : 'Direct form relay unavailable; use the 1-Click Browser Auto-Fill Bookmarklet.',
+            : 'Direct form relay unavailable; use the Autonomous Browser Runner or 1-Click Bookmarklet.',
       });
     } finally {
       setIsSubmittingRelay(false);
@@ -439,17 +728,15 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
 
   const handleLogCompletedWebForm = () => {
     if (!activeBroker || !contact) return;
-    const cleanTicket =
-      manualTicketInput.trim() ||
-      `WEBFORM-${activeBroker.domain.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()}-${Date.now()
-        .toString(36)
-        .toUpperCase()}`;
+    const trimmedTicket = manualTicketInput.trim();
 
     onRecordWebFormSubmitted({
       broker: activeBroker,
-      confirmationCode: cleanTicket,
+      confirmationCode: trimmedTicket || undefined,
       optOutUrl: activeInspection?.finalUrl || contact.optOutUrl,
       discoveredTitle: activeInspection?.pageTitle || contact.discoveredOptOutTitle,
+      workflowState: trimmedTicket ? 'awaiting_broker_processing' : 'submitted_unconfirmed',
+      brokerConfirmedReceipt: trimmedTicket || null,
     });
   };
 
@@ -492,17 +779,17 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
   const autoFillScript = useMemo(
     () =>
       activeBroker
-        ? buildUniversalAutoFillScript(profile, senderEmail, activeBroker)
+        ? buildUniversalAutoFillScript(profile, senderEmail, activeBroker, disclosurePolicy)
         : '',
-    [profile, senderEmail, activeBroker]
+    [profile, senderEmail, activeBroker, disclosurePolicy]
   );
 
   const bookmarkletHref = useMemo(
     () =>
       activeBroker
-        ? buildAutoFillBookmarkletHref(profile, senderEmail, activeBroker)
+        ? buildAutoFillBookmarkletHref(profile, senderEmail, activeBroker, disclosurePolicy)
         : '',
-    [profile, senderEmail, activeBroker]
+    [profile, senderEmail, activeBroker, disclosurePolicy]
   );
 
   const searchDorks = useMemo(
@@ -533,6 +820,11 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
     return null;
   }
 
+  const activePlaybook = useMemo(
+    () => (activeBroker ? resolveBrokerPlaybook(activeBroker.domain) : null),
+    [activeBroker]
+  );
+
   const recordSearchUrl = getBrokerRecordSearchUrl(activeBroker, profile);
   const isFormLogged = activeScanResult ? hasWebFormSubmission(activeScanResult) : false;
   const isEmailSent = activeScanResult ? hasVerifiedEmailReceipt(activeScanResult) : false;
@@ -542,32 +834,77 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-6">
+      {activePlaybook && (
+        <div className="glass-panel rounded-2xl p-5 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 text-slate-300">
+              <Bot className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="font-semibold text-white">
+                Dedicated Multi-Step Playbook Active: {activePlaybook.brokerName}
+              </span>
+              {activePlaybook.networkGroup && (
+                <>
+                  <span aria-hidden="true" className="text-slate-600">·</span>
+                  <span className="text-emerald-300">{activePlaybook.networkGroup}</span>
+                </>
+              )}
+            </div>
+            <span className="text-[11px] font-mono text-slate-400">
+              {activePlaybook.requiresEmailVerificationLink
+                ? 'Requires Email Confirmation Link (Auto-Supported in Inbox Harvester)'
+                : 'Direct Suppression Portal'}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px] text-slate-300">
+            {activePlaybook.stepsSummary.map((stepText, idx) => (
+              <div key={idx} className="glass-subtle rounded-xl px-3 py-2">
+                <span className="font-mono text-emerald-400 mr-1.5">0{idx + 1}.</span>
+                <span>{stepText}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {/* Top Workbench Header */}
       <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400 tabular-nums">
-              <span className="text-emerald-400 font-semibold">Dual-Channel Opt-Out Engine</span>
+              <span className="text-emerald-400 font-semibold">
+                Autonomous Headless Browser + Bookmarklet Opt-Out Engine
+              </span>
               <span aria-hidden="true">·</span>
               <span>{webFormPrimaryCatalogCount} Portal-Primary Brokers</span>
               <span aria-hidden="true">·</span>
-              <span>{webFormCompletedCount} Forms Logged</span>
+              <span>{webFormCompletedCount} Forms Tracked</span>
+              {capabilities && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span
+                    className={
+                      capabilities.headlessBrowserAvailable ? 'text-sky-400' : 'text-amber-400'
+                    }
+                  >
+                    {capabilities.headlessBrowserAvailable
+                      ? `Chromium Worker Ready (${capabilities.workerMode})`
+                      : 'Static Mode (Bookmarklet Fallback)'}
+                  </span>
+                </>
+              )}
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
-              Universal Opt-Out Page Finder &amp; Web Form Auto-Fill Workbench
+              Autonomous Opt-Out Web Form Runner &amp; Page Discovery Workbench
             </h1>
             <p className="text-xs text-slate-400 max-w-3xl leading-relaxed">
-              Many data brokers require filling out an online suppression form hidden behind disguised
-              titles like <em>&ldquo;Your Privacy Choices&rdquo;</em>,{' '}
-              <em>&ldquo;Do Not Sell or Share My Personal Information&rdquo;</em>,{' '}
-              <em>&ldquo;Control Center&rdquo;</em>, or OneTrust DSAR portals. Crawl any domain to
-              locate its true opt-out page, inspect and map its form inputs, auto-fill in one click,
-              and pair form suppression with statutory CCPA email demands.
+              Many data brokers require locating a profile, navigating multi-step JavaScript portals
+              (<em>&ldquo;Your Privacy Choices&rdquo;</em>, <em>&ldquo;Do Not Sell or Share&rdquo;</em>,
+              OneTrust DSARs), filling suppression forms, and clicking email confirmation links.
+              Launch a real headless Chromium session to inspect, match, populate, submit, and
+              re-verify removal — with clean human handoff whenever a CAPTCHA gate appears.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            {/* Drag-to-Bookmarks Universal Auto-Fill Bookmarklet */}
             <a
               ref={(el) => {
                 if (el && bookmarkletHref) {
@@ -639,13 +976,12 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Column: Broker & Portal Selector Queue */}
         <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-          {/* Segmented Filter Controls */}
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl text-[11px]">
             {(
               [
                 ['exposed', 'Exposed'],
                 ['web_form_primary', 'Form Primary'],
-                ['all', 'All 700+'],
+                ['all', `All (${combinedBrokers.length})`],
                 ['completed', 'Submitted'],
               ] as const
             ).map(([mode, label]) => (
@@ -653,7 +989,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                 key={mode}
                 type="button"
                 onClick={() => setQueueFilter(mode)}
-                className={`px-2.5 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                className={`px-2.5 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap tabular-nums ${
                   queueFilter === mode
                     ? 'bg-slate-800 text-white'
                     : 'text-slate-400 hover:text-slate-200'
@@ -677,10 +1013,10 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
 
           <div className="text-[11px] text-slate-500 font-mono flex items-center justify-between px-1 tabular-nums">
             <span>Showing {filteredQueue.length} brokers</span>
-            <span>Click to inspect form</span>
+            <span>Select portal</span>
           </div>
 
-          <div className="max-h-[600px] overflow-y-auto divide-y divide-slate-800/70 border border-slate-800 rounded-xl bg-slate-950">
+          <div className="max-h-[640px] overflow-y-auto divide-y divide-slate-800/70 border border-slate-800 rounded-xl bg-slate-950">
             {filteredQueue.length === 0 ? (
               <div className="p-6 text-center space-y-2 text-xs text-slate-400">
                 <p>No brokers match this filter.</p>
@@ -692,12 +1028,13 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   }}
                   className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-semibold cursor-pointer"
                 >
-                  Show All 700+ Brokers
+                  Show All {combinedBrokers.length} Brokers
                 </button>
               </div>
             ) : (
               filteredQueue.slice(0, 160).map((b) => {
                 const r = results.find((x) => x.brokerId === b.id);
+                const wfJob = workflowJobsByBroker[b.id];
                 const formDone = r ? hasWebFormSubmission(r) : false;
                 const mailDone = r ? hasVerifiedEmailReceipt(r) : false;
                 const strat = classifyBrokerChannelStrategy(b);
@@ -722,12 +1059,16 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                     <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-slate-500">
                       <span className="truncate">{b.domain}</span>
                       <span className="shrink-0">
-                        {r?.removalStatus === 'removed' ? (
-                          <span className="text-emerald-400">Scrubbed</span>
+                        {r?.removalStatus === 'removed' || wfJob?.state === 'removal_verified' ? (
+                          <span className="text-emerald-400">Verified Removed</span>
+                        ) : wfJob?.state === 'blocked' ? (
+                          <span className="text-amber-400">Handoff Needed</span>
+                        ) : wfJob?.state === 'awaiting_email_verification' ? (
+                          <span className="text-sky-400">Verify Email</span>
                         ) : formDone && mailDone ? (
                           <span className="text-emerald-400">Form + Email</span>
                         ) : formDone ? (
-                          <span className="text-sky-400">Form Logged</span>
+                          <span className="text-sky-400">Form Submitted</span>
                         ) : mailDone ? (
                           <span className="text-emerald-300">Email Sent</span>
                         ) : (
@@ -747,7 +1088,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
           </div>
         </div>
 
-        {/* Right Column: Active Opt-Out Page Spider, Form Field Mapper & Dual-Channel Actions */}
+        {/* Right Column: Autonomous Browser Runner, Opt-Out Spider, Field Mapper & Dual-Channel Actions */}
         <div className="lg:col-span-8 space-y-6">
           {/* Section 1: Active Broker Overview & Opt-Out Endpoint Controls */}
           <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
@@ -761,6 +1102,12 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   <span>{activeBroker.domain}</span>
                   <span aria-hidden="true">·</span>
                   <span>SLA Window: {activeBroker.removalTime}</span>
+                  {activeBroker.adapterId && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-slate-500">Adapter: {activeBroker.adapterId}</span>
+                    </>
+                  )}
                 </div>
                 <h2 className="text-xl font-extrabold text-white">{activeBroker.name}</h2>
                 <p className="text-xs text-slate-400 leading-relaxed">
@@ -773,7 +1120,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   type="button"
                   onClick={() => runDomainDiscovery(activeBroker)}
                   disabled={isCrawling}
-                  className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-100 border border-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isCrawling ? 'animate-spin' : ''}`} />
                   <span>{isCrawling ? 'Crawling Site...' : 'Crawl Site for Opt-Out Pages'}</span>
@@ -786,7 +1133,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <FileCode2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>{isInspecting ? 'Inspecting...' : 'Inspect Form Fields'}</span>
+                  <span>{isInspecting ? 'Inspecting...' : 'Static HTML Inspect'}</span>
                 </button>
               </div>
             </div>
@@ -844,7 +1191,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
               <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-slate-400 font-medium">
-                    Step 1 Lookup — Find Your Record URL First
+                    Step 1 Lookup — Direct Listing Search URL
                   </span>
                   <button
                     type="button"
@@ -911,6 +1258,526 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
               <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
                 <span>{discoveryError}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Section 1B: Autonomous Headless Browser Opt-Out Workflow Engine */}
+          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-5 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-slate-400">
+                  <Bot className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-emerald-400 font-semibold">
+                    Playwright Chromium Workflow Engine
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>SSRF-Guarded</span>
+                  <span aria-hidden="true">·</span>
+                  <span>Zero CAPTCHA Evasion</span>
+                </div>
+                <h3 className="text-base font-bold text-white">
+                  Autonomous Web-Form Discovery, Record Matching &amp; Submission
+                </h3>
+                <p className="text-slate-400 leading-relaxed">
+                  Renders JavaScript SPAs, traverses multi-step privacy wizards, matches candidate
+                  listings using multi-anchor jurisdiction checks, populates only permitted profile
+                  fields, and captures SHA-256 DOM submission evidence.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleRunHeadlessWorkflow('inspect_and_preview')}
+                  disabled={isWorkflowBusy}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white border border-slate-700 font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  {isWorkflowBusy ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Search className="w-3.5 h-3.5 text-sky-400" />
+                  )}
+                  <span>Inspect &amp; Preview Live Form</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleRunHeadlessWorkflow('autonomous_auto_submit')}
+                  disabled={isWorkflowBusy}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  {isWorkflowBusy ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                  )}
+                  <span>Autonomous Auto-Submit</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Consumer Data Minimization & Disclosure Policy */}
+            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-slate-200">
+                  Data-Minimization Disclosure Policy (11 CCR § 7060)
+                </span>
+                <span className="font-mono text-[11px] text-slate-500">
+                  SSN, Driver&apos;s License &amp; Govt ID uploads are always blocked
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1 text-slate-300">
+                {(
+                  [
+                    ['allowPhone', 'Allow Phone Number'],
+                    ['allowStreetAddress', 'Allow Street Address'],
+                    ['allowZip', 'Allow ZIP Code'],
+                    ['allowBirthYearOrAge', 'Allow Birth Year / Age'],
+                    ['allowAuthorizedAgent', 'Attach POA / Agent Flag'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key} className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={disclosurePolicy[key]}
+                      onChange={(e) =>
+                        setDisclosurePolicy((prev) => ({
+                          ...prev,
+                          [key]: e.target.checked,
+                        }))
+                      }
+                      className="rounded border-slate-700 bg-slate-900 text-emerald-500"
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {workflowError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{workflowError}</span>
+              </div>
+            )}
+
+            {/* Active Headless Workflow Job Panel */}
+            {activeWorkflowJob && (
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`font-bold ${
+                          activeWorkflowJob.state === 'removal_verified' ||
+                          activeWorkflowJob.state === 'awaiting_broker_processing'
+                            ? 'text-emerald-400'
+                            : activeWorkflowJob.state === 'awaiting_email_verification' ||
+                              activeWorkflowJob.state === 'ready_to_submit'
+                            ? 'text-sky-400'
+                            : activeWorkflowJob.state === 'blocked' ||
+                              activeWorkflowJob.state === 'awaiting_user_input'
+                            ? 'text-amber-400'
+                            : activeWorkflowJob.state === 'failed' ||
+                              activeWorkflowJob.state === 'rejected'
+                            ? 'text-rose-400'
+                            : 'text-slate-200'
+                        }`}
+                      >
+                        {formatWorkflowStateLabel(activeWorkflowJob.state)}
+                      </span>
+                      <span className="text-slate-600" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-400">
+                        Internal Audit ID: {activeWorkflowJob.internalSubmissionId}
+                      </span>
+                    </div>
+                    <div className="font-mono text-[11px] text-slate-400">
+                      Broker Confirmation Code:{' '}
+                      <strong className="text-white">
+                        {activeWorkflowJob.brokerConfirmationCode ||
+                          'None issued by broker portal'}
+                      </strong>
+                      {activeWorkflowJob.discoveredTitle && (
+                        <>
+                          {' '}
+                          · Title: <span className="text-slate-300">{activeWorkflowJob.discoveredTitle}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowTraceLog((v) => !v)}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-mono text-[11px] cursor-pointer"
+                    >
+                      {showTraceLog
+                        ? 'Hide Trace'
+                        : `Execution Trace (${activeWorkflowJob.steps.length})`}
+                    </button>
+
+                    {(activeWorkflowJob.state === 'awaiting_broker_processing' ||
+                      activeWorkflowJob.state === 'submitted_unconfirmed' ||
+                      activeWorkflowJob.state === 'awaiting_email_verification' ||
+                      activeWorkflowJob.state === 'removal_verified') && (
+                      <button
+                        type="button"
+                        onClick={handleRecheckListingRemoval}
+                        disabled={isWorkflowBusy}
+                        className="px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                      >
+                        <RefreshCw
+                          className={`w-3 h-3 ${isWorkflowBusy ? 'animate-spin' : ''}`}
+                        />
+                        <span>Re-Check Live Listing Removal</span>
+                      </button>
+                    )}
+
+                    {activeWorkflowJob.state !== 'cancelled' &&
+                      activeWorkflowJob.state !== 'removal_verified' && (
+                        <button
+                          type="button"
+                          onClick={handleCancelWorkflow}
+                          disabled={isWorkflowBusy}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-rose-400 inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>Cancel</span>
+                        </button>
+                      )}
+                  </div>
+                </div>
+
+                {/* Blocker / Human Handoff Banner */}
+                {activeWorkflowJob.blocker && (
+                  <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-3">
+                    <div className="flex items-start gap-2 text-amber-200">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="font-bold">
+                          Automation Paused ({activeWorkflowJob.blocker.kind})
+                        </div>
+                        <p className="text-amber-100/90 leading-relaxed">
+                          {activeWorkflowJob.blocker.summary}
+                        </p>
+                      </div>
+                    </div>
+
+                    {activeWorkflowJob.blocker.requiresHumanAction && (
+                      <div className="pt-2 border-t border-amber-500/20 space-y-2.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <a
+                            href={activeWorkflowJob.blocker.handoffUrl || contact.optOutUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <span>Open Handoff Page in Browser</span>
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => markCopied('handoff-script', autoFillScript)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-white font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>
+                              {copiedKey === 'handoff-script'
+                                ? 'Copied Auto-Fill Script'
+                                : 'Copy 1-Click Auto-Fill Script'}
+                            </span>
+                          </button>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                          <input
+                            type="text"
+                            value={handoffTicketInput}
+                            onChange={(e) => setHandoffTicketInput(e.target.value)}
+                            placeholder="Optional confirmation code displayed after completing CAPTCHA"
+                            className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                          />
+                          <label className="inline-flex items-center gap-1.5 text-slate-200 whitespace-nowrap cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={handoffNeedsEmailVerify}
+                              onChange={(e) => setHandoffNeedsEmailVerify(e.target.checked)}
+                              className="rounded border-slate-700 bg-slate-900 text-emerald-500"
+                            />
+                            <span>Check email link next</span>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handleRecordManualHandoff}
+                            disabled={isWorkflowBusy}
+                            className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                          >
+                            Confirm Handoff Completed
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Candidate Record Matches (Homonym Guard) */}
+                {activeWorkflowJob.candidateRecords.length > 0 && (
+                  <div className="space-y-2.5">
+                    <div className="font-bold text-white">
+                      Candidate Person Records Found ({activeWorkflowJob.candidateRecords.length})
+                    </div>
+                    <div className="divide-y divide-slate-800 border border-slate-800 rounded-xl bg-slate-900">
+                      {activeWorkflowJob.candidateRecords.map((cand) => (
+                        <label
+                          key={cand.candidateId}
+                          className={`p-3 flex items-start justify-between gap-3 cursor-pointer ${
+                            cand.disqualifiedHomonym ? 'opacity-65' : 'hover:bg-slate-800/60'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <input
+                              type="radio"
+                              name="workflow-candidate-record"
+                              checked={selectedCandidateId === cand.candidateId}
+                              onChange={() => setSelectedCandidateId(cand.candidateId)}
+                              className="mt-1 text-emerald-500 bg-slate-950 border-slate-700"
+                            />
+                            <div className="space-y-0.5 min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-bold text-white">{cand.fullName}</span>
+                                {cand.age && (
+                                  <span className="font-mono text-slate-400">Age {cand.age}</span>
+                                )}
+                                {cand.locations.length > 0 && (
+                                  <span className="text-slate-300">
+                                    {cand.locations.join(' · ')}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-slate-400 truncate">
+                                {cand.disqualifiedHomonym
+                                  ? `Homonym Disqualified: ${cand.disqualifiedReason}`
+                                  : cand.matchSignals.join(' · ') || cand.rawSnippet}
+                              </div>
+                            </div>
+                          </div>
+                          <span
+                            className={`font-mono text-[11px] shrink-0 ${
+                              cand.disqualifiedHomonym
+                                ? 'text-rose-400'
+                                : cand.confidenceScore >= 0.75
+                                ? 'text-emerald-400'
+                                : 'text-amber-400'
+                            }`}
+                          >
+                            {Math.round(cand.confidenceScore * 100)}% Match
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Live Mapped DOM Form Controls */}
+                {activeWorkflowJob.mappedFields.filter((f) => !f.preserveOriginalHidden).length >
+                  0 && (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-slate-400">
+                      <span>
+                        Live Browser DOM Controls Mapped (
+                        {
+                          activeWorkflowJob.mappedFields.filter((f) => !f.preserveOriginalHidden)
+                            .length
+                        }
+                        )
+                      </span>
+                      <span>
+                        Hidden CSRF Tokens Preserved:{' '}
+                        {activeWorkflowJob.mappedFields.filter((f) => f.preserveOriginalHidden).length}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {activeWorkflowJob.mappedFields
+                        .filter((f) => !f.preserveOriginalHidden)
+                        .map((field) => {
+                          const isSkipped =
+                            !field.disclosureAllowed ||
+                            field.semanticRole === 'honeypot_trap' ||
+                            field.semanticRole === 'sensitive_id_field' ||
+                            field.semanticRole === 'marketing_opt_in';
+                          return (
+                            <div
+                              key={field.fieldKey}
+                              className={`p-2.5 rounded-lg border space-y-1 ${
+                                isSkipped
+                                  ? 'bg-slate-900/40 border-slate-800/80 opacity-75'
+                                  : 'bg-slate-900 border-slate-800'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2 text-[11px]">
+                                <span className="font-semibold text-slate-200 truncate">
+                                  {field.label || field.name || field.fieldKey}
+                                  {field.required ? ' *' : ''}
+                                </span>
+                                <span
+                                  className={`font-mono text-[10px] shrink-0 ${
+                                    field.confidence >= 0.8
+                                      ? 'text-emerald-400'
+                                      : field.confidence >= 0.65
+                                      ? 'text-amber-400'
+                                      : 'text-rose-400'
+                                  }`}
+                                >
+                                  {field.semanticRole} · {Math.round(field.confidence * 100)}%
+                                </span>
+                              </div>
+                              {isSkipped ? (
+                                <div className="text-[11px] font-mono text-amber-300/90">
+                                  Skipped: {field.skipReason || 'Blocked by safety/disclosure policy'}
+                                </div>
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={liveFieldOverrides[field.fieldKey] ?? field.plannedValue}
+                                  onChange={(e) =>
+                                    setLiveFieldOverrides((prev) => ({
+                                      ...prev,
+                                      [field.fieldKey]: e.target.value,
+                                    }))
+                                  }
+                                  className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
+
+                    {(activeWorkflowJob.state === 'ready_to_submit' ||
+                      activeWorkflowJob.state === 'awaiting_user_input' ||
+                      activeWorkflowJob.state === 'failed') && (
+                      <div className="flex justify-end pt-1">
+                        <button
+                          type="button"
+                          onClick={handleApproveAndSubmitWorkflow}
+                          disabled={isWorkflowBusy}
+                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        >
+                          {isWorkflowBusy ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Send className="w-3.5 h-3.5" />
+                          )}
+                          <span>Approve &amp; Submit Live Opt-Out Form</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Inbound Email Confirmation Link Verifier */}
+                {(activeWorkflowJob.state === 'awaiting_email_verification' ||
+                  activeWorkflowJob.state === 'submitted_unconfirmed' ||
+                  activeWorkflowJob.state === 'awaiting_broker_processing') && (
+                  <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl space-y-2">
+                    <div className="font-semibold text-white flex items-center gap-1.5">
+                      <Link2 className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Complete Inbound Email Opt-Out Confirmation Link</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      If {activeBroker.name} emailed a confirmation link, paste it below. synOUT
+                      strips tracking parameters, verifies domain ownership against phishing, and
+                      completes the confirmation step in headless Chromium.
+                    </p>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                      <input
+                        type="url"
+                        value={verificationLinkInput}
+                        onChange={(e) => setVerificationLinkInput(e.target.value)}
+                        placeholder={`https://${activeBroker.domain}/optout/confirm?token=...`}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-sky-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleCompleteEmailVerification}
+                        disabled={isWorkflowBusy || !verificationLinkInput.trim()}
+                        className="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                      >
+                        Verify Confirmation Link
+                      </button>
+                    </div>
+                    {activeWorkflowJob.emailVerification && (
+                      <div className="text-[11px] text-emerald-300 font-mono">
+                        Email Verified ({activeWorkflowJob.emailVerification.httpStatus}):{' '}
+                        {activeWorkflowJob.emailVerification.summary}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Recheck Result */}
+                {activeWorkflowJob.recheckResult && (
+                  <div
+                    className={`p-3 rounded-xl border font-mono text-[11px] ${
+                      activeWorkflowJob.recheckResult.verifiedRemoved
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                        : 'bg-slate-900 border-slate-800 text-slate-300'
+                    }`}
+                  >
+                    Re-Verification ({activeWorkflowJob.recheckResult.checkedAtIso}):{' '}
+                    {activeWorkflowJob.recheckResult.summary}
+                  </div>
+                )}
+
+                {/* Tamper-Evident Submission Evidence Artifact */}
+                {activeWorkflowJob.evidence && (
+                  <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5 font-mono text-[11px]">
+                    <div className="text-emerald-400 font-semibold flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Signed Submission Evidence Artifact</span>
+                    </div>
+                    <div className="text-slate-300">
+                      Outcome: {activeWorkflowJob.evidence.outcomeSummary} (HTTP{' '}
+                      {activeWorkflowJob.evidence.httpStatus})
+                    </div>
+                    <div className="text-slate-400 truncate">
+                      DOM SHA-256: {activeWorkflowJob.evidence.domSnapshotSha256}
+                    </div>
+                    <div className="text-slate-400 truncate">
+                      Manifest SHA-256: {activeWorkflowJob.evidence.evidenceManifestSha256}
+                    </div>
+                    {activeWorkflowJob.evidence.redactedResponseExcerpt && (
+                      <div className="text-slate-500 truncate">
+                        Portal Excerpt: {activeWorkflowJob.evidence.redactedResponseExcerpt}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* SSRF Intercepted Requests Warning */}
+                {activeWorkflowJob.ssrfBlockedRequests.length > 0 && (
+                  <div className="text-[11px] font-mono text-amber-300">
+                    SSRF Guard Intercepted {activeWorkflowJob.ssrfBlockedRequests.length} unsafe
+                    subresource request(s).
+                  </div>
+                )}
+
+                {/* Expandable Action Trace */}
+                {showTraceLog && activeWorkflowJob.steps.length > 0 && (
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-1 font-mono text-[11px] max-h-48 overflow-y-auto">
+                    {activeWorkflowJob.steps.map((st) => (
+                      <div key={st.stepIndex} className="text-slate-300">
+                        <span className="text-emerald-400">#{st.stepIndex}</span> [{st.state}]{' '}
+                        <span className="text-white">{st.action}</span> — {st.details}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1010,16 +1877,16 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             </div>
           )}
 
-          {/* Section 3: Universal Browser Auto-Fill + Mapped Form Inspector */}
+          {/* Section 3: Universal Browser Auto-Fill + Static HTML Form Inspector */}
           <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-bold text-white">
-                  1-Click Web Form Auto-Fill &amp; Field Inspector
+                  Browser Auto-Fill Bookmarklet &amp; Static HTML Form Inspector
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Fills arbitrary input names, React/OneTrust fields, State dropdowns, and statutory
-                  reasons on {activeBroker.name}&apos;s opt-out form.
+                  Client-side fallback for CAPTCHA/WAF-protected portals: fills inputs in your
+                  own browser tab while skipping honeypots, SSN/ID fields, and marketing checkboxes.
                 </p>
               </div>
 
@@ -1040,7 +1907,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             {showHtmlPasteDrawer && (
               <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs">
                 <p className="text-slate-300">
-                  If {activeBroker.domain} blocks automated crawlers with Cloudflare, open the opt-out
+                  If {activeBroker.domain} blocks datacenter crawlers with Cloudflare, open the opt-out
                   page in your browser, press <span className="font-mono text-white">Ctrl+U</span>{' '}
                   (View Source) or Copy Outer HTML, and paste it below to extract and map every form
                   field offline:
@@ -1069,13 +1936,13 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="space-y-1">
                   <div className="font-bold text-white">
-                    Works on Every Form (Even CAPTCHA, Cloudflare, React &amp; OneTrust Portals)
+                    Human-Assisted Browser Auto-Fill (Works on CAPTCHA, Cloudflare &amp; OneTrust)
                   </div>
                   <p className="text-slate-400 leading-relaxed">
                     1. Drag <strong className="text-emerald-400">synOUT Auto-Fill</strong> to your
                     Bookmarks Bar (or copy the script). 2. Open {activeBroker.name}&apos;s opt-out
-                    page. 3. Click the bookmarklet to fill every field in 1 click, check any CAPTCHA,
-                    and submit.
+                    page. 3. Click the bookmarklet to populate safe fields, solve any CAPTCHA, and
+                    submit.
                   </p>
                 </div>
 
@@ -1111,7 +1978,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
               </div>
             </div>
 
-            {/* Live Inspected HTML Form Fields (if page was crawled/inspected) */}
+            {/* Live Inspected HTML Form Fields (if page was statically crawled/inspected) */}
             {activeInspection && (
               <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-4 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
@@ -1149,7 +2016,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                               {field.required ? ' *' : ''}
                             </label>
                             <span className="font-mono text-[10px] text-slate-500">
-                              {field.semanticRole}
+                              {field.semanticRole} · {Math.round(field.confidence * 100)}%
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5">
@@ -1218,7 +2085,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                         <span>
                           {isSubmittingRelay
                             ? 'Transmitting Form Payload...'
-                            : `Submit Mapped Form (${primaryForm.submitButtonLabel})`}
+                            : `Submit via HTTP Relay (${primaryForm.submitButtonLabel})`}
                         </span>
                       </button>
                     </div>
@@ -1227,19 +2094,23 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   <p className="text-slate-400">
                     No static HTML{' '}
                     <span className="font-mono text-slate-200">&lt;form&gt;</span> inputs were
-                    embedded in the initial server response (client-rendered JavaScript portal or
-                    WAF-gated page). Open the opt-out URL above and click the{' '}
-                    <strong className="text-emerald-400">synOUT Auto-Fill Bookmarklet</strong> to
-                    fill the live DOM inputs directly in your browser.
+                    embedded in the raw server response (client-rendered SPA or WAF-gated page).
+                    Click <strong className="text-emerald-400">Inspect &amp; Preview Live Form</strong>{' '}
+                    above to render JavaScript in headless Chromium, or use the{' '}
+                    <strong className="text-emerald-400">synOUT Auto-Fill Bookmarklet</strong>.
                   </p>
                 )}
               </div>
             )}
 
-            {/* Quick Copy Profile Values Grid (Always Available Immediately) */}
+            {/* Quick Copy Profile Values Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 text-xs">
               {[
-                { key: 'fullName', label: 'Full Name', val: `${profile.firstName} ${profile.lastName}`.trim() },
+                {
+                  key: 'fullName',
+                  label: 'Full Name',
+                  val: `${profile.firstName} ${profile.lastName}`.trim(),
+                },
                 { key: 'email', label: 'Email', val: senderEmail || 'Not set' },
                 { key: 'phone', label: 'Phone', val: profile.phoneNumbers[0] || 'Not set' },
                 {
@@ -1273,16 +2144,16 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-base font-bold text-white">
-                  Dual-Channel Completion: Log Form Ticket &amp; Send Statutory Email
+                  Dual-Channel Completion: Log Genuine Broker Ticket &amp; Send Statutory Email
                 </h3>
                 <p className="text-slate-400">
-                  Recording your web-form submission starts the 45-Day Statutory SLA clock while
-                  preserving any verified CCPA email Message-ID receipt.
+                  Leave the ticket box blank if the broker did not display a confirmation code —
+                  synOUT tracks unconfirmed submissions honestly without inventing fake tickets.
                 </p>
               </div>
               <div className="flex items-center gap-2 font-mono text-[11px]">
                 <span className={isFormLogged ? 'text-emerald-400 font-semibold' : 'text-slate-500'}>
-                  {isFormLogged ? 'Web Form Logged' : 'Form Pending'}
+                  {isFormLogged ? 'Web Form Tracked' : 'Form Pending'}
                 </span>
                 <span aria-hidden="true" className="text-slate-600">
                   ·
@@ -1298,7 +2169,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                 type="text"
                 value={manualTicketInput}
                 onChange={(e) => setManualTicketInput(e.target.value)}
-                placeholder="Optional confirmation / ticket # shown on broker page (e.g. OPT-91827)"
+                placeholder="Optional broker confirmation code shown on portal (leave empty if none issued)"
                 className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500"
               />
               <button
@@ -1307,7 +2178,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                 className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <ClipboardCheck className="w-4 h-4" />
-                <span>{isFormLogged ? 'Update Web-Form Receipt' : 'Log Web-Form Submission'}</span>
+                <span>{isFormLogged ? 'Update Web-Form Record' : 'Log Web-Form Submission'}</span>
               </button>
             </div>
 
@@ -1362,7 +2233,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             )}
           </div>
 
-          {/* Section 5: Search-Engine Deep Opt-Out Page Finders (Works Behind Any WAF) */}
+          {/* Section 5: Search-Engine Deep Opt-Out Page Finders */}
           <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-3 text-xs">
             <div>
               <h3 className="text-base font-bold text-white">

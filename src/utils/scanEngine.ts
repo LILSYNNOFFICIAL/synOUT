@@ -172,7 +172,9 @@ export function runBrokerScan(profile: UserProfile): ScanResult[] {
         // People Search & General Directories
         isExposed = true;
         matchConfidence = 'VERIFIED_PUBLIC_RECORD';
-        evidenceBasis = crossStateEvidence || `Verified public directory entry in ${currentStateCode} matching full name, city, and telephone record.`;
+        evidenceBasis =
+          crossStateEvidence ||
+          `Heuristic Broker Exposure Assessment (${Math.round(broker.exposureLikelihood * 100)}% indexing likelihood in ${currentStateCode} for supplied name & location — run Live Portal Probe or Autonomous Form Inspector to verify live listing).`;
       }
     }
 
@@ -187,19 +189,21 @@ export function runBrokerScan(profile: UserProfile): ScanResult[] {
       id: `scan-${broker.id}-${Date.now()}`,
       brokerId: broker.id,
       status: isExposed ? 'exposed' : 'clean',
+      verificationSource: 'heuristic_exposure_estimate',
+      liveProbeStatus: 'unprobed',
       removalStatus: isExposed ? 'found' : undefined,
       disqualifiedReason: isExposed ? undefined : disqualifiedReason,
       mockListingData: {
         fullName: `${profile.firstName} ${profile.lastName}`,
         age: calculatedAge,
         locations: locationsList,
-        phones: profile.phoneNumbers.length > 0 ? profile.phoneNumbers : ['(310) 555-0199'],
-        emails: profile.emails.length > 0 ? profile.emails : ['contact@example.com'],
-        relatives: profile.relatives.length > 0 ? profile.relatives : ['Family Member'],
+        phones: (profile.phoneNumbers || []).filter((p) => Boolean(p && p.trim())),
+        emails: (profile.emails || []).filter((e) => Boolean(e && e.trim())),
+        relatives: (profile.relatives || []).filter((r) => Boolean(r && r.trim())),
         recordsCount,
         riskLevel: broker.risk,
         leakTypes: isExposed ? broker.dataExposedList.slice(0, 4) : [],
-        profiles: [`https://${broker.domain}`],
+        profiles: [getBrokerRecordSearchUrl(broker, profile)],
         matchConfidence,
         evidenceBasis,
         crossStateEvidence,
@@ -311,10 +315,57 @@ export function getBrokerRecordSearchUrl(broker: DataBroker, profile?: UserProfi
   return `https://${broker.domain}/search?q=${fName}+${lName}+${city}+${state}`;
 }
 
-export function saveStateToStorage<T>(key: string, data: T): void {
+export type StoragePersistenceMode = 'session_only' | 'persistent_local';
+
+const PERSISTENCE_POLICY_KEY = 'synout_storage_persistence_policy_v1';
+
+export function getStoragePersistenceMode(): StoragePersistenceMode {
+  if (typeof window === 'undefined') return 'session_only';
+  try {
+    const raw = window.localStorage?.getItem(PERSISTENCE_POLICY_KEY);
+    return raw === 'persistent_local' ? 'persistent_local' : 'session_only';
+  } catch {
+    return 'session_only';
+  }
+}
+
+export function setStoragePersistenceMode(mode: StoragePersistenceMode): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(`synout_${key}`, JSON.stringify(data));
+    if (mode === 'persistent_local') {
+      window.localStorage?.setItem(PERSISTENCE_POLICY_KEY, 'persistent_local');
+    } else {
+      window.localStorage?.removeItem(PERSISTENCE_POLICY_KEY);
+      // Migrate active session keys out of persistent localStorage when switching back to session_only
+      const keysToScrub: string[] = [];
+      for (let i = 0; i < (window.localStorage?.length || 0); i++) {
+        const k = window.localStorage.key(i);
+        if (k && k.startsWith('synout_') && k !== PERSISTENCE_POLICY_KEY) {
+          const val = window.localStorage.getItem(k);
+          if (val !== null) {
+            window.sessionStorage?.setItem(k, val);
+          }
+          keysToScrub.push(k);
+        }
+      }
+      keysToScrub.forEach((k) => window.localStorage?.removeItem(k));
+    }
+  } catch {
+    // Ignore storage quota or sandbox restrictions
+  }
+}
+
+export function saveStateToStorage<T>(key: string, data: T): void {
+  if (typeof window === 'undefined') return;
+  const fullKey = `synout_${key}`;
+  try {
+    const serialized = JSON.stringify(data);
+    window.sessionStorage?.setItem(fullKey, serialized);
+    if (getStoragePersistenceMode() === 'persistent_local') {
+      window.localStorage?.setItem(fullKey, serialized);
+    } else {
+      window.localStorage?.removeItem(fullKey);
+    }
   } catch {
     // Ignore storage restriction or quota errors in sandboxed iframes
   }
@@ -322,10 +373,45 @@ export function saveStateToStorage<T>(key: string, data: T): void {
 
 export function loadStateFromStorage<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') return fallback;
+  const fullKey = `synout_${key}`;
   try {
-    const item = window.localStorage.getItem(`synout_${key}`);
-    return item ? (JSON.parse(item) as T) : fallback;
+    const sessionItem = window.sessionStorage?.getItem(fullKey);
+    if (sessionItem) {
+      return JSON.parse(sessionItem) as T;
+    }
+    const localItem = window.localStorage?.getItem(fullKey);
+    if (localItem) {
+      const parsed = JSON.parse(localItem) as T;
+      // If default session_only mode is active, migrate legacy localStorage data into sessionStorage
+      if (getStoragePersistenceMode() === 'session_only') {
+        window.sessionStorage?.setItem(fullKey, localItem);
+        window.localStorage?.removeItem(fullKey);
+      }
+      return parsed;
+    }
+    return fallback;
   } catch {
     return fallback;
+  }
+}
+
+export function purgeAllClientStorage(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const sessionKeys: string[] = [];
+    for (let i = 0; i < (window.sessionStorage?.length || 0); i++) {
+      const k = window.sessionStorage.key(i);
+      if (k && k.startsWith('synout_')) sessionKeys.push(k);
+    }
+    sessionKeys.forEach((k) => window.sessionStorage?.removeItem(k));
+
+    const localKeys: string[] = [];
+    for (let i = 0; i < (window.localStorage?.length || 0); i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith('synout_')) localKeys.push(k);
+    }
+    localKeys.forEach((k) => window.localStorage?.removeItem(k));
+  } catch {
+    // Ignore storage restriction errors
   }
 }

@@ -5,6 +5,7 @@ import {
   DeindexItem,
   PowerOfAttorneyData,
   PublicRecordChecklistState,
+  RemovalWorkflowState,
   ScanHistorySnapshot,
   ScanResult,
   ScanStats,
@@ -13,9 +14,12 @@ import {
 import {
   computeScanStats,
   loadStateFromStorage,
+  purgeAllClientStorage,
   runBrokerScan,
   saveStateToStorage,
 } from './utils/scanEngine';
+import { rotateClientSessionToken, sessionFetch } from './services/sessionClient';
+import { runLivePortalProbeClient } from './services/optOutDiscoveryClient';
 import {
   findBrokerById,
   hasVerifiedEmailReceipt,
@@ -65,7 +69,6 @@ import {
   restoreBrokerContactOverrides,
 } from './utils/brokerContactResolver';
 import { Navbar, AppTab } from './components/Navbar';
-import { SplashScreen } from './components/SplashScreen';
 import { HeroSection } from './components/HeroSection';
 import { ScanForm } from './components/ScanForm';
 import { LiveScanner } from './components/LiveScanner';
@@ -93,7 +96,12 @@ import { PublicRecordsFirewallCenter } from './components/PublicRecordsFirewallC
 import { BrokerReplyTriageModal } from './components/BrokerReplyTriageModal';
 import { NukeAllModal } from './components/NukeAllModal';
 import { OptOutFormWorkbench } from './components/OptOutFormWorkbench';
+import { AutomatedRemovalNavigator } from './components/AutomatedRemovalNavigator';
+import { InboxHarvesterCenter } from './components/InboxHarvesterCenter';
+import { StateRegistryComplianceCenter } from './components/StateRegistryComplianceCenter';
+import { LiveRelistingProbeDiff } from './utils/relistingMonitorEngine';
 import { Footer } from './components/Footer';
+import { SplashScreen } from './components/SplashScreen';
 import { CheckCircle2 } from 'lucide-react';
 
 const DEFAULT_FALLBACK_PROFILE: UserProfile = {
@@ -109,14 +117,7 @@ const DEFAULT_FALLBACK_PROFILE: UserProfile = {
 };
 
 export default function App() {
-  const [showSplash, setShowSplash] = useState<boolean>(() => {
-    try {
-      return !window.sessionStorage.getItem('synout_splash_shown');
-    } catch {
-      return false;
-    }
-  });
-
+  const [showSplash, setShowSplash] = useState(true);
   const [activeTab, setActiveTab] = useState<AppTab>('home');
 
   // Stored state
@@ -175,6 +176,10 @@ export default function App() {
   const [isNukeAllModalOpen, setIsNukeAllModalOpen] = useState(false);
   const [emailDispatchQueue, setEmailDispatchQueue] = useState<ScanResult[] | null>(null);
   const [webFormTargetBroker, setWebFormTargetBroker] = useState<DataBroker | null>(null);
+  const [activeNavigatorModal, setActiveNavigatorModal] = useState<{
+    broker: DataBroker;
+    result: ScanResult;
+  } | null>(null);
 
   // Toast notifications
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -232,6 +237,9 @@ export default function App() {
     savePublicRecordProgress(publicRecordProgress);
   }, [publicRecordProgress]);
 
+  const hasCompletedScan = scanResults.some(
+    (r) => !r.id.startsWith('dir-') && !r.id.startsWith('webform-')
+  );
   const stats: ScanStats = computeScanStats(scanResults);
   const exposedItems = scanResults.filter((r) => r.status === 'exposed');
   const removedCount = scanResults.filter((r) => r.removalStatus === 'removed').length;
@@ -348,22 +356,37 @@ export default function App() {
     );
   };
 
-  // Records a web-form submission while preserving any verified Email Message-ID receipt (Dual-Channel Tracking)
+  // Records a web-form submission while strictly separating internal audit IDs from genuine broker confirmation codes
   const handleRecordWebFormSubmitted = ({
     broker,
     confirmationCode,
     optOutUrl,
     discoveredTitle,
+    workflowJobId,
+    workflowState,
+    internalSubmissionId,
+    brokerConfirmedReceipt,
+    submissionEvidenceHash,
+    verifiedRemoved,
   }: {
     broker: DataBroker;
     confirmationCode?: string;
     optOutUrl?: string;
     discoveredTitle?: string;
+    workflowJobId?: string;
+    workflowState?: RemovalWorkflowState;
+    internalSubmissionId?: string;
+    brokerConfirmedReceipt?: string | null;
+    submissionEvidenceHash?: string;
+    verifiedRemoved?: boolean;
   }) => {
     const activeProfile = ensureActiveProfile();
-    const cleanedRef = confirmationCode?.trim();
-    const formRef =
-      cleanedRef || `DIY-FORM-${Date.now().toString(36).toUpperCase()}`;
+    const genuineBrokerTicket =
+      (brokerConfirmedReceipt !== undefined ? brokerConfirmedReceipt : confirmationCode?.trim()) ||
+      null;
+    const auditId =
+      internalSubmissionId || `JOB-MANUAL-${Date.now().toString(36).toUpperCase()}`;
+    const trackingRef = genuineBrokerTicket || auditId;
     const nowIso = new Date().toISOString();
     const dateLabel = new Date(nowIso).toLocaleDateString('en-US', {
       month: 'short',
@@ -377,19 +400,37 @@ export default function App() {
         return prev.map((item) => {
           if (item.brokerId !== broker.id) return item;
           const keepVerifiedEmailReceipt = hasVerifiedEmailReceipt(item);
+          const nextRemovalStatus =
+            verifiedRemoved || item.removalStatus === 'removed' ? 'removed' : 'submitted';
           return {
             ...item,
             status: 'exposed',
-            removalStatus: item.removalStatus === 'removed' ? 'removed' : 'submitted',
+            removalStatus: nextRemovalStatus,
+            verifiedRemovedAtIso:
+              verifiedRemoved && !item.verifiedRemovedAtIso
+                ? nowIso
+                : item.verifiedRemovedAtIso,
             optOutConfirmationCode: keepVerifiedEmailReceipt
               ? item.optOutConfirmationCode
-              : formRef,
+              : trackingRef,
             submissionDate: item.submissionDate || dateLabel,
             submittedAtIso: item.submittedAtIso || nowIso,
             webFormSubmittedAtIso: nowIso,
-            webFormConfirmationCode: formRef,
+            webFormConfirmationCode: genuineBrokerTicket || auditId,
             submittedOptOutUrl: optOutUrl || item.submittedOptOutUrl || broker.optOutUrl,
             discoveredOptOutTitle: discoveredTitle || item.discoveredOptOutTitle,
+            workflowJobId: workflowJobId || item.workflowJobId,
+            workflowState:
+              workflowState ||
+              (verifiedRemoved
+                ? 'removal_verified'
+                : genuineBrokerTicket
+                ? 'awaiting_broker_processing'
+                : 'submitted_unconfirmed'),
+            internalSubmissionId: auditId,
+            brokerConfirmedReceipt: genuineBrokerTicket,
+            brokerConfirmationTicket: genuineBrokerTicket || item.brokerConfirmationTicket,
+            submissionEvidenceHash: submissionEvidenceHash || item.submissionEvidenceHash,
             isRegression: false,
           };
         });
@@ -399,20 +440,33 @@ export default function App() {
         id: `webform-${broker.id}-${Date.now()}`,
         brokerId: broker.id,
         status: 'exposed',
-        removalStatus: 'submitted',
-        optOutConfirmationCode: formRef,
+        removalStatus: verifiedRemoved ? 'removed' : 'submitted',
+        verifiedRemovedAtIso: verifiedRemoved ? nowIso : undefined,
+        optOutConfirmationCode: trackingRef,
         submissionDate: dateLabel,
         submittedAtIso: nowIso,
         webFormSubmittedAtIso: nowIso,
-        webFormConfirmationCode: formRef,
+        webFormConfirmationCode: genuineBrokerTicket || auditId,
         submittedOptOutUrl: optOutUrl || broker.optOutUrl,
         discoveredOptOutTitle: discoveredTitle,
+        workflowJobId,
+        workflowState:
+          workflowState ||
+          (verifiedRemoved
+            ? 'removal_verified'
+            : genuineBrokerTicket
+            ? 'awaiting_broker_processing'
+            : 'submitted_unconfirmed'),
+        internalSubmissionId: auditId,
+        brokerConfirmedReceipt: genuineBrokerTicket,
+        brokerConfirmationTicket: genuineBrokerTicket || undefined,
+        submissionEvidenceHash,
         mockListingData: {
           fullName: `${activeProfile.firstName} ${activeProfile.lastName}`.trim(),
           age: 36,
           locations: [`${activeProfile.currentCity}, ${activeProfile.currentState}`],
-          phones: activeProfile.phoneNumbers.length > 0 ? activeProfile.phoneNumbers : ['On file'],
-          emails: activeProfile.emails.length > 0 ? activeProfile.emails : ['On file'],
+          phones: activeProfile.phoneNumbers.filter(Boolean),
+          emails: activeProfile.emails.filter(Boolean),
           relatives: activeProfile.relatives,
           recordsCount: broker.dataExposedList.length || 3,
           riskLevel: broker.risk,
@@ -426,7 +480,13 @@ export default function App() {
       return [created, ...prev];
     });
 
-    showToast(`Logged web-form opt-out submission for ${broker.name} (${formRef}).`);
+    showToast(
+      verifiedRemoved
+        ? `Live listing removal verified on ${broker.name}!`
+        : genuineBrokerTicket
+        ? `Logged web-form opt-out for ${broker.name} (Broker Ticket: ${genuineBrokerTicket}).`
+        : `Logged web-form submission for ${broker.name} (Internal Audit ID: ${auditId}).`
+    );
   };
 
   // Records a manual web-form submission by brokerId (used by DIY Opt-Out Assistant modal)
@@ -447,8 +507,9 @@ export default function App() {
       return;
     }
 
-    const formRef =
-      confirmationCode?.trim() || `DIY-FORM-${Date.now().toString(36).toUpperCase()}`;
+    const genuineTicket = confirmationCode?.trim() || null;
+    const auditId = `JOB-DIY-${Date.now().toString(36).toUpperCase()}`;
+    const formRef = genuineTicket || auditId;
     const nowIso = new Date().toISOString();
     const dateLabel = new Date(nowIso).toLocaleDateString('en-US', {
       month: 'short',
@@ -470,6 +531,8 @@ export default function App() {
           submittedAtIso: item.submittedAtIso || nowIso,
           webFormSubmittedAtIso: nowIso,
           webFormConfirmationCode: formRef,
+          internalSubmissionId: auditId,
+          brokerConfirmedReceipt: genuineTicket,
           submittedOptOutUrl: optOutUrl || item.submittedOptOutUrl,
           discoveredOptOutTitle: discoveredTitle || item.discoveredOptOutTitle,
           isRegression: false,
@@ -478,6 +541,34 @@ export default function App() {
     );
 
     showToast(`Logged manual web-form opt-out submission for ${brokerId}.`);
+  };
+
+  // Opt-In Live Portal Probe for an individual broker card
+  const handleRunLiveProbe = async (broker: DataBroker) => {
+    const activeProfile = ensureActiveProfile();
+    try {
+      const probe = await runLivePortalProbeClient({ broker, profile: activeProfile });
+      const checkedIso = new Date().toISOString();
+      setScanResults((prev) =>
+        prev.map((item) => {
+          if (item.brokerId !== broker.id) return item;
+          return {
+            ...item,
+            status:
+              probe.liveProbeStatus === 'no_listing_found' && item.removalStatus !== 'submitted'
+                ? 'clean'
+                : item.status,
+            verificationSource: probe.verificationSource,
+            liveProbeStatus: probe.liveProbeStatus,
+            liveProbeCheckedAtIso: checkedIso,
+            liveProbeSummary: probe.summary,
+          };
+        })
+      );
+      showToast(probe.summary);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Live portal probe unavailable.');
+    }
   };
 
   const handleOpenWebFormWorkbench = (broker?: DataBroker) => {
@@ -808,7 +899,8 @@ export default function App() {
     await disconnectSmtpAccount();
     await disconnectGoogleOAuthAccount().catch(() => null);
     await purgeAllEmailConnections();
-    await fetch('/api/user/purge-session', { method: 'POST' }).catch(() => null);
+    await sessionFetch('/api/user/purge-session', { method: 'POST' }).catch(() => null);
+    rotateClientSessionToken();
     clearAllSavedSearches();
     clearDeindexQueue();
     clearBureauProgress();
@@ -818,13 +910,7 @@ export default function App() {
     clearBrokerContactOverrides();
     clearClientMxCache();
     clearCustomDiscoveredBrokers();
-    try {
-      localStorage.removeItem('synout_profile');
-      localStorage.removeItem('synout_results');
-      localStorage.removeItem('synout_search_profiles_v2');
-    } catch {
-      // Ignore storage errors
-    }
+    purgeAllClientStorage();
     setUserProfile(null);
     setScanResults([]);
     setDeindexQueue([]);
@@ -833,36 +919,89 @@ export default function App() {
     setCanaryAliases([]);
     setPublicRecordProgress({});
     setEmailDispatchQueue(null);
+    setActiveNavigatorModal(null);
     setActiveTab('home');
-    showToast('All local scan profiles, connected email credentials, vault snapshots, and caches purged.');
+    showToast('All session workflows, connected email credentials, vault snapshots, and storage purged.');
+  };
+
+  const handleApplyRelistingDiffs = (diffs: LiveRelistingProbeDiff[]) => {
+    const resurfacedIds = diffs
+      .filter((d) => d.outcome === 'resurfaced_regression')
+      .map((d) => d.brokerId);
+    const absentIds = diffs
+      .filter((d) => d.outcome === 'confirmed_absent')
+      .map((d) => d.brokerId);
+    const nowIso = new Date().toISOString();
+
+    setScanResults((prev) =>
+      prev.map((item) => {
+        if (resurfacedIds.includes(item.brokerId)) {
+          return {
+            ...item,
+            status: 'exposed',
+            removalStatus: 'found',
+            isRegression: true,
+            liveProbeCheckedAtIso: nowIso,
+          };
+        }
+        if (absentIds.includes(item.brokerId) && item.removalStatus === 'submitted') {
+          return {
+            ...item,
+            removalStatus: 'removed',
+            verifiedRemovedAtIso: item.verifiedRemovedAtIso || nowIso,
+            liveProbeCheckedAtIso: nowIso,
+            isRegression: false,
+          };
+        }
+        if (diffs.some((d) => d.brokerId === item.brokerId)) {
+          return {
+            ...item,
+            liveProbeCheckedAtIso: nowIso,
+          };
+        }
+        return item;
+      })
+    );
+
+    if (resurfacedIds.length > 0) {
+      showToast(
+        `Re-listing alert: ${resurfacedIds.length} previously purged broker(s) resurfaced and queued for re-suppression.`
+      );
+    } else {
+      showToast(
+        `Sweep complete across ${diffs.length} broker(s): ${absentIds.length} confirmed absent.`
+      );
+    }
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-emerald-500/20 selection:text-emerald-300">
-      {/* One-Time Animated Splash Screen */}
+    <div className="min-h-screen synout-mesh-bg text-slate-100 flex flex-col selection:bg-emerald-500/20 selection:text-emerald-300">
       {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
 
       {/* Main Navbar */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        hasScanResults={scanResults.length > 0}
+        hasScanResults={hasCompletedScan}
         exposedCount={exposedItems.length}
         removedCount={removedCount}
         isPoaSigned={userProfile?.powerOfAttorney?.isSigned}
         onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
         onOpenVault={() => setIsVaultModalOpen(true)}
-        onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+        onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
       />
 
       {/* Main Container */}
       <main className="flex-1 pb-16">
         {activeTab === 'home' && (
-          <div className="space-y-12">
+          <div className="space-y-10">
             <HeroSection
               onStartScan={() => setActiveTab('scanner')}
               onExploreBrokers={() => setActiveTab('directory')}
-              onNukeAll={() => setIsNukeAllModalOpen(true)}
+              hasScanResults={hasCompletedScan}
+              onNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
+              onOpenInboxHarvester={() => setActiveTab('inbox')}
+              onOpenStateRegistries={() => setActiveTab('registries')}
             />
             <div className="max-w-7xl mx-auto px-4">
               <ScanForm onScan={handleStartScan} isScanning={isScanning} />
@@ -912,19 +1051,25 @@ export default function App() {
               onOpenReplyTriage={() => setActiveReplyTriageModal({})}
               onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
               onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+              onRunLiveProbe={handleRunLiveProbe}
+              onOpenAutomatedNavigator={(b, r) => setActiveNavigatorModal({ broker: b, result: r })}
+              onOpenInboxHarvester={() => setActiveTab('inbox')}
+              onOpenStateRegistries={() => setActiveTab('registries')}
             />
           ) : (
-            <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
-              <h2 className="text-2xl font-bold text-white">No Exposure Scan Run Yet</h2>
-              <p className="text-slate-400 text-sm">
-                Run an audit scan first to uncover where your personal records are being sold.
-              </p>
-              <button
-                onClick={() => setActiveTab('scanner')}
-                className="px-6 py-3 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer"
-              >
-                Start Free Audit Scan
-              </button>
+            <div className="max-w-xl mx-auto py-16 px-4">
+              <div className="glass-panel rounded-2xl p-10 text-center space-y-4">
+                <h2 className="text-2xl font-bold text-white tracking-tight">No Exposure Scan Run Yet</h2>
+                <p className="text-slate-400 text-sm leading-relaxed">
+                  Run an exposure audit to map commercial broker listings matching your profile.
+                </p>
+                <button
+                  onClick={() => setActiveTab('scanner')}
+                  className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Start Audit Scan
+                </button>
+              </div>
             </div>
           )
         )}
@@ -956,6 +1101,52 @@ export default function App() {
             onBatchOptOut={handleOpenBatchEmailOptOut}
             onSingleOptOut={handleSingleBrokerOptOutRequest}
             onOpenConnectEmail={() => setActiveTab('gmail')}
+            onApplyRelistingDiffs={handleApplyRelistingDiffs}
+            onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+          />
+        )}
+
+        {activeTab === 'inbox' && (
+          <InboxHarvesterCenter
+            results={scanResults}
+            profile={userProfile || DEFAULT_FALLBACK_PROFILE}
+            onVerificationLinkCompleted={({
+              broker,
+              confirmationCode,
+              finalUrl,
+              evidenceSha256,
+            }) => {
+              if (broker) {
+                handleRecordWebFormSubmitted({
+                  broker,
+                  confirmationCode: confirmationCode || undefined,
+                  optOutUrl: finalUrl,
+                  workflowState: 'awaiting_broker_processing',
+                  brokerConfirmedReceipt: confirmationCode,
+                  submissionEvidenceHash: evidenceSha256,
+                });
+              } else {
+                showToast('Completed broker opt-out verification link in headless Chromium.');
+              }
+            }}
+            onBrokerConfirmedRemoved={(brokerId, ticketId, summaryNote) => {
+              handleSaveTicketAndNotes(brokerId, ticketId || undefined, summaryNote, true);
+            }}
+            onBrokerTicketLogged={(brokerId, ticketId, summaryNote) => {
+              handleSaveTicketAndNotes(brokerId, ticketId || undefined, summaryNote, false);
+            }}
+            onOpenConnectEmail={() => setActiveTab('gmail')}
+            onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+            onOpenReplyTriage={(b, r) => setActiveReplyTriageModal({ broker: b, result: r })}
+          />
+        )}
+
+        {activeTab === 'registries' && (
+          <StateRegistryComplianceCenter
+            profile={userProfile || DEFAULT_FALLBACK_PROFILE}
+            results={scanResults}
+            onSendBrokerOptOut={handleDirectBrokerOptOut}
+            onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
           />
         )}
 
@@ -1014,7 +1205,7 @@ export default function App() {
               }
             }}
             onOpenConnectEmail={() => setActiveTab('gmail')}
-            onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+            onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
           />
         )}
 
@@ -1027,7 +1218,8 @@ export default function App() {
             }}
             onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
             onStartScan={() => setActiveTab('scanner')}
-            onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+            onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
+            onOpenInboxHarvester={() => setActiveTab('inbox')}
           />
         )}
 
@@ -1046,19 +1238,23 @@ export default function App() {
               onOpenDiyAssistantModal={(b, r) => setActiveDiyModal({ broker: b, result: r })}
               onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
               onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+              onOpenInboxHarvester={() => setActiveTab('inbox')}
+              onOpenStateRegistries={() => setActiveTab('registries')}
             />
           ) : (
-            <div className="max-w-2xl mx-auto py-16 px-4 text-center space-y-4">
-              <h2 className="text-2xl font-bold text-white">Tracker is Empty</h2>
-              <p className="text-slate-400 text-sm">
-                Run an exposure audit to populate your active removal tracking queue.
-              </p>
-              <button
-                onClick={() => setActiveTab('scanner')}
-                className="px-6 py-3 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer"
-              >
-                Start Free Scan
-              </button>
+            <div className="max-w-xl mx-auto py-16 px-4">
+              <div className="glass-panel rounded-2xl p-10 text-center space-y-4">
+                <h2 className="text-2xl font-bold text-white tracking-tight">Tracker Queue is Empty</h2>
+                <p className="text-slate-400 text-sm leading-relaxed">
+                  Run an exposure audit or dispatch a removal request to track 45-day statutory compliance.
+                </p>
+                <button
+                  onClick={() => setActiveTab('scanner')}
+                  className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Start Audit Scan
+                </button>
+              </div>
             </div>
           )
         )}
@@ -1067,7 +1263,7 @@ export default function App() {
           <BrokerDirectory
             scanResults={scanResults}
             onSendBrokerOptOut={handleDirectBrokerOptOut}
-            onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
+            onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
             onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
           />
         )}
@@ -1077,6 +1273,8 @@ export default function App() {
               setFirewallSubTab(sub);
               setActiveTab('firewall');
             }}
+            onOpenStateRegistries={() => setActiveTab('registries')}
+            onOpenInboxHarvester={() => setActiveTab('inbox')}
           />
         )}
       </main>
@@ -1263,9 +1461,33 @@ export default function App() {
         />
       )}
 
+      {activeNavigatorModal && userProfile && (
+        <AutomatedRemovalNavigator
+          broker={activeNavigatorModal.broker}
+          result={activeNavigatorModal.result}
+          profile={userProfile}
+          onClose={() => setActiveNavigatorModal(null)}
+          onExecutionComplete={(_brokerId, confirmationCode, receiptData) => {
+            handleRecordWebFormSubmitted({
+              broker: activeNavigatorModal.broker,
+              confirmationCode: confirmationCode || undefined,
+              optOutUrl: receiptData.job.currentUrl || activeNavigatorModal.broker.optOutUrl,
+              discoveredTitle: receiptData.job.discoveredTitle,
+              workflowJobId: receiptData.job.jobId,
+              workflowState: receiptData.job.state,
+              internalSubmissionId: receiptData.internalSubmissionId,
+              brokerConfirmedReceipt: receiptData.brokerConfirmationCode,
+              submissionEvidenceHash: receiptData.job.evidence?.evidenceManifestSha256,
+              verifiedRemoved: receiptData.verifiedRemoved,
+            });
+          }}
+          onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
+        />
+      )}
+
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 border border-emerald-500/40 text-white px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-2.5 text-xs">
+        <div className="fixed bottom-6 right-6 z-50 glass-popover text-white px-4 py-3 rounded-2xl flex items-center gap-2.5 text-xs">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>{toastMessage}</span>
         </div>

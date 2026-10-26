@@ -1658,3 +1658,213 @@ test('28. Email Login System: Multi-Port SMTP Failover, App Password Normalizati
   );
 });
 
+test('29. Compartmentalized Glassmorphic Navigation, Inbox Harvester Safety, Multi-Step Playbooks, 30/60/90d Re-Listing Monitor & State Regulator Packets', async () => {
+  const { buildNavCompartments } = await import('../src/components/Navbar');
+  const {
+    base64UrlDecodeUtf8,
+    extractDecodedBodyFromGmailPayload,
+  } = await import('../src/services/gmailApi');
+  const {
+    verifyHarvesterLinkSafety,
+    harvestBrokerEmailPayload,
+  } = await import('../src/utils/inboxHarvesterEngine');
+  const {
+    listAllBrokerPlaybooks,
+    resolveBrokerPlaybook,
+    synthesizeBrokerCandidateProfileUrl,
+  } = await import('../src/utils/brokerAdapterCatalog');
+  const { computeRelistingSchedule } = await import('../src/utils/relistingMonitorEngine');
+  const {
+    REGULATOR_AGENCIES,
+    getSynchronizedStateBrokerRegistry,
+    generateRegulatorComplaintPacket,
+  } = await import('../src/utils/stateRegistryEngine');
+  const { findBrokerById } = await import('../src/services/emailConnectionStore');
+
+  // 1. Categorized Glassmorphic Navigation covers all 16 AppTabs + 3 modal actions across 5 compartments
+  const compartments = buildNavCompartments({
+    exposedCount: 7,
+    removedCount: 3,
+    isPoaSigned: true,
+    activeConnectedEmail: 'alice@gmail.com',
+  });
+  assert.deepStrictEqual(
+    compartments.map((c) => c.id),
+    ['discovery', 'suppression', 'monitoring', 'registries', 'workspace']
+  );
+
+  const allTabIds = compartments.flatMap((c) => c.items.map((i) => i.tab).filter(Boolean));
+  for (const requiredTab of [
+    'home',
+    'scanner',
+    'report',
+    'darkweb',
+    'webforms',
+    'inbox',
+    'gmail',
+    'deindex',
+    'tracker',
+    'monitoring',
+    'directory',
+    'registries',
+    'bureaus',
+    'firewall',
+    'profiles',
+    'guide',
+  ]) {
+    assert(allTabIds.includes(requiredTab as any), `Compartmentalized Navbar must include tab "${requiredTab}"`);
+  }
+  const allActions = compartments.flatMap((c) => c.items.map((i) => i.action).filter(Boolean));
+  assert.deepStrictEqual(allActions.sort(), ['nuke', 'poa', 'vault']);
+
+  const cssSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'index.css'), 'utf8');
+  for (const glassToken of ['glass-nav', 'glass-popover', 'glass-panel', 'glass-card', 'synout-mesh-bg']) {
+    assert(cssSrc.includes(glassToken), `src/index.css must define ${glassToken}`);
+  }
+
+  // 2. Gmail recursive MIME decoding + Harvester link safety & classification
+  const htmlRaw = '<html><body>Please confirm removal: <a href="https://www.spokeo.com/optout/confirm?token=abc999&utm_source=email">Confirm</a></body></html>';
+  const b64UrlHtml = Buffer.from(htmlRaw, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  assert.strictEqual(base64UrlDecodeUtf8(b64UrlHtml), htmlRaw);
+  const extractedMimeBody = extractDecodedBodyFromGmailPayload({
+    mimeType: 'multipart/alternative',
+    parts: [{ mimeType: 'text/html', body: { data: b64UrlHtml } }],
+  });
+  assert(extractedMimeBody.includes('https://www.spokeo.com/optout/confirm?token=abc999&utm_source=email'));
+
+  const spokeo = findBrokerById('spokeo')!;
+  const safeSpokeo = verifyHarvesterLinkSafety(
+    'https://www.spokeo.com/optout/confirm?token=abc999&utm_source=email&fbclid=IwAR1',
+    spokeo,
+    'spokeo.com'
+  );
+  assert(safeSpokeo, 'Valid HTTPS Spokeo confirmation link must pass safety check');
+  assert.strictEqual(safeSpokeo!.sanitizedUrl, 'https://www.spokeo.com/optout/confirm?token=abc999');
+  assert.strictEqual(safeSpokeo!.trustedReason, 'exact_broker_domain');
+
+  const safeOneTrust = verifyHarvesterLinkSafety(
+    'https://privacyportal.onetrust.com/webform/verify?token=ot123',
+    spokeo,
+    'spokeo.com'
+  );
+  assert(safeOneTrust && safeOneTrust.trustedReason === 'trusted_privacy_processor');
+
+  // Reject HTTP, private IP, phishing domain, and marketing unsubscribe traps
+  assert.strictEqual(verifyHarvesterLinkSafety('http://www.spokeo.com/optout/confirm?token=1', spokeo, 'spokeo.com'), null);
+  assert.strictEqual(verifyHarvesterLinkSafety('https://127.0.0.1/optout/confirm?token=1', spokeo, 'spokeo.com'), null);
+  assert.strictEqual(verifyHarvesterLinkSafety('https://evil-phishing.net/optout/confirm?token=1', spokeo, 'spokeo.com'), null);
+  assert.strictEqual(verifyHarvesterLinkSafety('https://www.spokeo.com/newsletter/unsubscribe?id=1', spokeo, 'spokeo.com'), null);
+
+  const harvestedVerify = harvestBrokerEmailPayload({
+    id: 'msg-1',
+    messageId: 'msg-1',
+    from: 'Spokeo Privacy <privacy@spokeo.com>',
+    subject: 'Confirm your opt-out request (Case #SPK-44210)',
+    date: '2026-10-25T10:00:00Z',
+    bodyText: extractedMimeBody,
+  });
+  assert.strictEqual(harvestedVerify.classification, 'verification_link_ready');
+  assert.strictEqual(harvestedVerify.extractedTicketId, 'SPK-44210');
+  assert.strictEqual(harvestedVerify.safeVerificationLinks.length, 1);
+
+  const harvestedConfirmed = harvestBrokerEmailPayload({
+    id: 'msg-2',
+    messageId: 'msg-2',
+    from: 'Whitepages <support@whitepages.com>',
+    subject: 'Your suppression request is complete',
+    date: '2026-10-25T11:00:00Z',
+    bodyText: 'Ticket #WP-99812: Your personal record has been removed and added to our suppression list.',
+  });
+  assert.strictEqual(harvestedConfirmed.classification, 'removal_confirmed');
+  assert.strictEqual(harvestedConfirmed.extractedTicketId, 'WP-99812');
+
+  // 3. Dedicated Multi-Step Broker Playbook Adapters
+  const playbooks = listAllBrokerPlaybooks();
+  assert(playbooks.length >= 10, 'Must expose 10+ deterministic multi-step broker playbooks');
+  assert.strictEqual(resolveBrokerPlaybook('spokeo.com')?.adapterId, 'spokeo-playbook');
+  assert.strictEqual(resolveBrokerPlaybook('truthfinder.com')?.adapterId, 'peopleconnect-hub-playbook');
+  assert.strictEqual(resolveBrokerPlaybook('neighborwho.com')?.adapterId, 'beenverified-network-playbook');
+
+  const testProfile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['jane@example.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+  assert.strictEqual(
+    synthesizeBrokerCandidateProfileUrl('spokeo.com', testProfile),
+    'https://www.spokeo.com/Jane-Doe/CA/Sacramento'
+  );
+  assert.strictEqual(
+    synthesizeBrokerCandidateProfileUrl('whitepages.com', testProfile),
+    'https://www.whitepages.com/name/Jane-Doe/Sacramento-CA'
+  );
+
+  // 4. Automated 30/60/90-Day Re-Listing Surveillance Schedule
+  const nowMs = Date.parse('2026-10-25T12:00:00.000Z');
+  const fortyDaysAgoIso = new Date(nowMs - 40 * 24 * 60 * 60 * 1000).toISOString();
+  const sampleRemoved: ScanResult = {
+    id: 'rel-1',
+    brokerId: 'spokeo',
+    status: 'exposed',
+    removalStatus: 'removed',
+    verifiedRemovedAtIso: fortyDaysAgoIso,
+    mockListingData: {
+      fullName: 'Jane Doe',
+      age: 38,
+      locations: ['Sacramento, CA'],
+      phones: [],
+      emails: [],
+      relatives: [],
+      recordsCount: 1,
+      riskLevel: 'Critical',
+      leakTypes: ['Address'],
+      profiles: [],
+      matchConfidence: 'VERIFIED_PUBLIC_RECORD',
+    },
+  };
+  const sched30 = computeRelistingSchedule([sampleRemoved], 30, nowMs);
+  assert.strictEqual(sched30[0].isDueForSweep, true, '40-day-old removal must be due on 30-day cadence');
+  const sched60 = computeRelistingSchedule([sampleRemoved], 60, nowMs);
+  assert.strictEqual(sched60[0].isDueForSweep, false, '40-day-old removal must not yet be due on 60-day cadence');
+  assert.strictEqual(sched60[0].daysUntilNextSweep, 20);
+
+  // 5. State Data Broker Registry Sync & Regulator Complaint Packet
+  assert.strictEqual(REGULATOR_AGENCIES.length, 5);
+  const stateRegistry = getSynchronizedStateBrokerRegistry();
+  assert(stateRegistry.length >= 25);
+  assert(stateRegistry.some((r) => r.cppaRegistrationCode.startsWith('CPPA-DB-') && r.drop2026Mandated));
+
+  const overdueSubmitted: ScanResult = {
+    ...sampleRemoved,
+    id: 'overdue-wp',
+    brokerId: 'whitepages',
+    removalStatus: 'submitted',
+    submittedAtIso: new Date(nowMs - 55 * 24 * 60 * 60 * 1000).toISOString(),
+    optOutConfirmationCode: '<msg-wp-55@gmail.com>',
+    brokerConfirmationTicket: 'WP-CASE-551',
+  };
+  const packet = await generateRegulatorComplaintPacket({
+    agencyId: 'CPPA',
+    profile: testProfile,
+    results: [overdueSubmitted],
+    senderEmail: 'jane@example.com',
+    selectedBrokerIds: ['whitepages'],
+  });
+  assert(packet.packetId.startsWith('PKT-CPPA-'));
+  assert.strictEqual(packet.manifest.manifestSha256.length, 64);
+  assert.strictEqual(packet.targetBrokers.length, 1);
+  assert(packet.formalComplaintText.includes('Whitepages'));
+  assert(packet.markdownDossier.includes('https://cppa.ca.gov/webapplications/complaint'));
+});
+
+

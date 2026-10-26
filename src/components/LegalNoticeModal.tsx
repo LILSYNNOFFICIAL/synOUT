@@ -274,30 +274,38 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
     : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 sm:p-8 space-y-5 shadow-2xl relative my-8">
-        <div className="flex items-start justify-between pb-4 border-b border-slate-800">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="glass-popover rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-5 relative my-8">
+        <div className="flex items-start justify-between pb-4 border-b border-white/[0.08]">
           <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
-              <span className="text-emerald-400 font-semibold">Statutory Deletion Notice</span>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+              <span className="text-emerald-400 font-medium">Statutory Deletion Notice</span>
               <span aria-hidden="true">·</span>
-              <span>{broker.domain}</span>
+              <span className="font-mono">{broker.domain}</span>
               <span aria-hidden="true">·</span>
               <span>{contact.deliverabilityLabel}</span>
             </div>
-            <h2 className="text-xl font-bold text-white">Custom Deletion Letter: {broker.name}</h2>
+            <h2 className="text-xl font-bold text-white tracking-tight">
+              Custom Deletion Letter: {broker.name}
+            </h2>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 cursor-pointer"
+            aria-label="Close modal"
+            className="text-slate-400 hover:text-white p-1.5 rounded-xl hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Recipient Deliverability & Override Control Bar */}
-        <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5 text-xs">
+        <div className="p-4 glass-subtle rounded-2xl space-y-2.5 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="font-mono flex flex-wrap items-center gap-1.5 min-w-0">
               <span className="text-slate-400">To:</span>
@@ -320,7 +328,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                   type="button"
                   onClick={handleVerifyMx}
                   disabled={isCheckingMx}
-                  className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-emerald-300 font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   {isCheckingMx ? (
                     <RefreshCw className="w-3 h-3 animate-spin" />
@@ -337,7 +345,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                   setDraftRecipient(contact.effectivePrimaryEmail);
                   setIsEditingRecipient((v) => !v);
                 }}
-                className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                className="px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 hover:text-white inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Edit3 className="w-3 h-3" />
                 <span>{isEditingRecipient ? 'Close' : 'Edit Recipient'}</span>
@@ -347,7 +355,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                 href={broker.optOutUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white inline-flex items-center gap-1 whitespace-nowrap"
+                className="px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 hover:text-white inline-flex items-center gap-1 transition-colors whitespace-nowrap"
               >
                 <span>Web Portal</span>
                 <ExternalLink className="w-3 h-3" />
@@ -373,7 +381,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
           )}
 
           {contact.requiresPortalWarning && (
-            <p className="text-[11px] text-amber-300 leading-relaxed">
+            <p className="text-[11px] text-amber-300/90 leading-relaxed">
               Deliverability note: {broker.name} primarily processes removals via its interactive
               web portal. Sending this statutory email establishes a dated legal record, and
               completing the Web Portal ensures immediate directory suppression.
@@ -381,14 +389,14 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
           )}
 
           {isEditingRecipient && (
-            <div className="pt-2 border-t border-slate-800 space-y-2">
+            <div className="pt-2.5 border-t border-white/[0.08] space-y-2">
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 <input
                   type="email"
                   value={draftRecipient}
                   onChange={(e) => setDraftRecipient(e.target.value)}
                   placeholder="privacy@broker.com"
-                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
+                  className="flex-1 glass-input rounded-lg px-3 py-1.5 text-xs text-white font-mono"
                 />
                 <div className="flex items-center gap-1.5">
                   <button
@@ -406,7 +414,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                         setIsEditingRecipient(false);
                         refreshDraftRecipient(broker.privacyEmail);
                       }}
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                      className="px-2.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                     >
                       <RotateCcw className="w-3 h-3" />
                       <span>Reset</span>
@@ -427,7 +435,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                         setIsEditingRecipient(false);
                         refreshDraftRecipient(cand);
                       }}
-                      className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 font-mono text-emerald-300 cursor-pointer"
+                      className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] font-mono text-emerald-300 cursor-pointer"
                     >
                       {cand}
                     </button>
@@ -440,7 +448,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
 
         {/* Statute Switcher + Copy Controls */}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl">
+          <div className="flex flex-wrap items-center gap-1 p-1 glass-subtle rounded-xl">
             {(Object.keys(STATUTE_META) as StatutePreset[]).map((key) => (
               <button
                 key={key}
@@ -460,26 +468,33 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
           <button
             type="button"
             onClick={handleCopy}
-            className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+            className="px-3.5 py-1.5 rounded-xl glass-subtle hover:border-white/20 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
           >
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
+            )}
             <span>{copied ? 'Copied' : 'Copy Notice'}</span>
           </button>
         </div>
 
         {/* Power of Attorney Attachment Bar */}
-        <div className="px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="px-4 py-3 glass-subtle rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
           {profile.powerOfAttorney?.isSigned ? (
             <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
                 checked={includePoa}
                 onChange={(e) => handleTogglePoa(e.target.checked)}
-                className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+                className="rounded border-white/20 bg-slate-950/60 text-emerald-500 focus:ring-0 cursor-pointer"
               />
               <span>
                 Include signed Power of Attorney clause (
-                <span className="font-mono text-emerald-400">{profile.powerOfAttorney.authCode}</span>)
+                <span className="font-mono text-emerald-400">
+                  {profile.powerOfAttorney.authCode}
+                </span>
+                )
               </span>
             </label>
           ) : (
@@ -509,13 +524,13 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
             type="text"
             value={subjectLine}
             onChange={(e) => setSubjectLine(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono focus:outline-none focus:border-emerald-500/50"
+            className="w-full glass-input rounded-xl px-3.5 py-2 text-xs text-white font-mono"
           />
           <textarea
             rows={10}
             value={letterContent}
             onChange={(e) => setLetterContent(e.target.value)}
-            className="w-full p-4 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-emerald-500/50 resize-y"
+            className="w-full p-4 glass-input rounded-xl font-mono text-xs text-slate-200 leading-relaxed resize-y"
           />
         </div>
 
@@ -540,7 +555,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
               href={broker.optOutUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-emerald-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+              className="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-emerald-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0"
             >
               <span>Use Portal</span>
               <ExternalLink className="w-3 h-3" />
@@ -549,7 +564,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
         )}
 
         {confirmStep && isDirectSendConnected && (
-          <div className="p-4 bg-slate-950 border border-emerald-500/40 rounded-xl space-y-3 text-xs">
+          <div className="p-4 glass-subtle border-emerald-500/35 rounded-2xl space-y-3 text-xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <span className="text-slate-200">
                 Confirm sending this statutory demand from{' '}
@@ -561,7 +576,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                   type="button"
                   onClick={() => setConfirmStep(false)}
                   disabled={isSending}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg bg-white/[0.06] text-slate-300 hover:text-white cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -571,20 +586,24 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                   disabled={isSending}
                   className="px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
-                  {isSending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                  {isSending ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Send className="w-3.5 h-3.5" />
+                  )}
                   <span>{isSending ? 'Sending...' : 'Confirm & Send'}</span>
                 </button>
               </div>
             </div>
 
-            <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
+            <div className="space-y-1.5 pt-2.5 border-t border-white/[0.08]">
               {contact.recommendedCcEmails.length > 0 && (
                 <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={ccBackupDpo}
                     onChange={(e) => setCcBackupDpo(e.target.checked)}
-                    className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+                    className="rounded border-white/20 bg-slate-950/60 text-emerald-500 focus:ring-0 cursor-pointer"
                   />
                   <span>
                     Also CC backup compliance desk (
@@ -600,19 +619,21 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                   type="checkbox"
                   checked={bccSelf}
                   onChange={(e) => setBccSelf(e.target.checked)}
-                  className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0 cursor-pointer"
+                  className="rounded border-white/20 bg-slate-950/60 text-emerald-500 focus:ring-0 cursor-pointer"
                 />
                 <span>
-                  Send a BCC copy to my own inbox (<span className="font-mono">{activeConnectedEmail}</span>)
+                  Send a BCC copy to my own inbox (
+                  <span className="font-mono">{activeConnectedEmail}</span>)
                 </span>
               </label>
             </div>
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-white/[0.08]">
           <div className="flex flex-wrap items-center gap-2">
             <button
+              type="button"
               onClick={onClose}
               className="px-3.5 py-2 text-xs font-semibold text-slate-400 hover:text-white cursor-pointer"
             >
@@ -624,7 +645,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                 href={webmailLinks.gmailUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                className="px-3.5 py-2 rounded-xl glass-subtle hover:border-white/20 text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
               >
                 <span>Gmail Web Compose</span>
                 <ExternalLink className="w-3 h-3" />
@@ -638,7 +659,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setConfirmStep(true)}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <Send className="w-3.5 h-3.5" />
                   <span>Send Notice From {activeConnectedEmail}</span>
@@ -652,7 +673,7 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                     onClose();
                     onOpenConnectEmail();
                   }}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <Mail className="w-3.5 h-3.5" />
                   <span>Connect Email &amp; Send Notice</span>

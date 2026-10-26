@@ -161,13 +161,13 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md overflow-y-auto"
       role="dialog"
       aria-modal="true"
     >
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 sm:p-8 space-y-6 shadow-2xl my-8">
+      <div className="glass-popover rounded-2xl max-w-2xl w-full p-6 sm:p-8 space-y-6 my-8">
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-800">
+        <div className="flex items-start justify-between gap-4 pb-4 border-b border-white/[0.08]">
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-xs font-mono text-emerald-400">
               <Lock className="w-3.5 h-3.5" />
@@ -183,14 +183,14 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 cursor-pointer"
+            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/[0.06] cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Navigation Tabs */}
-        <div className="inline-flex p-1 bg-slate-950 border border-slate-800 rounded-xl">
+        <div className="inline-flex p-1 glass-subtle rounded-xl">
           <button
             type="button"
             onClick={() => setActiveSection('export')}
@@ -216,7 +216,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
           <button
             type="button"
             onClick={() => setActiveSection('snapshots')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap tabular-nums ${
               activeSection === 'snapshots'
                 ? 'bg-emerald-500 text-slate-950 font-bold'
                 : 'text-slate-400 hover:text-white'
@@ -228,33 +228,33 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
 
         {activeSection === 'export' && (
           <form onSubmit={handleExportVault} className="space-y-4 text-xs">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 tabular-nums">
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl">
-                <span className="text-[10px] font-mono text-slate-500 block">SCAN RECORDS</span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 glass-subtle rounded-xl divide-y sm:divide-y-0 sm:divide-x divide-white/[0.07] tabular-nums">
+              <div className="p-3.5">
+                <span className="text-[11px] text-slate-400 block">Scan Records</span>
                 <span className="text-lg font-bold text-white font-mono">{scanResults.length}</span>
               </div>
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl">
-                <span className="text-[10px] font-mono text-slate-500 block">SAVED SEARCHES</span>
+              <div className="p-3.5">
+                <span className="text-[11px] text-slate-400 block">Saved Searches</span>
                 <span className="text-lg font-bold text-emerald-400 font-mono">{savedSearches.length}</span>
               </div>
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl">
-                <span className="text-[10px] font-mono text-slate-500 block">DE-INDEX URLS</span>
+              <div className="p-3.5">
+                <span className="text-[11px] text-slate-400 block">De-Index URLs</span>
                 <span className="text-lg font-bold text-sky-400 font-mono">{deindexQueue.length}</span>
               </div>
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl">
-                <span className="text-[10px] font-mono text-slate-500 block">BUREAUS &amp; CANARIES</span>
+              <div className="p-3.5">
+                <span className="text-[11px] text-slate-400 block">Bureaus &amp; Canaries</span>
                 <span className="text-lg font-bold text-amber-400 font-mono">
                   {Object.keys(bureauProgress).length + canaryAliases.length}
                 </span>
               </div>
             </div>
 
-            <label className="flex items-start gap-2.5 p-3.5 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer">
+            <label className="flex items-start gap-2.5 p-3.5 glass-subtle rounded-xl cursor-pointer">
               <input
                 type="checkbox"
                 checked={useEncryption}
                 onChange={(e) => setUseEncryption(e.target.checked)}
-                className="mt-0.5 rounded border-slate-700 bg-slate-900 text-emerald-500"
+                className="mt-0.5 rounded border-white/20 bg-slate-950 text-emerald-500"
               />
               <div>
                 <div className="font-bold text-white">
@@ -278,7 +278,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                   value={exportPassphrase}
                   onChange={(e) => setExportPassphrase(e.target.value)}
                   placeholder="Enter a strong passphrase to lock this backup..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  className="w-full glass-input rounded-xl px-3.5 py-2.5 text-white font-mono placeholder-slate-500"
                 />
               </div>
             )}
@@ -297,7 +297,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-white/[0.08]">
               <button
                 type="button"
                 onClick={onClose}
@@ -325,7 +325,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
 
         {activeSection === 'import' && (
           <form onSubmit={handleRestoreSubmit} className="space-y-4 text-xs">
-            <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+            <div className="p-4 glass-subtle rounded-xl space-y-2">
               <label className="block font-semibold text-white">
                 Select `.enc.json` or `.json` Backup Archive
               </label>
@@ -333,7 +333,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                 type="file"
                 accept=".json,application/json"
                 onChange={handleFileUpload}
-                className="block w-full text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-800 file:text-emerald-400 hover:file:bg-slate-700 cursor-pointer"
+                className="block w-full text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-white/[0.08] file:text-emerald-400 hover:file:bg-white/[0.14] cursor-pointer"
               />
             </div>
 
@@ -346,7 +346,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                 value={rawImportJson}
                 onChange={(e) => setRawImportJson(e.target.value)}
                 placeholder='{"schema": "synOUT-encrypted-vault-v1", ...}'
-                className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-slate-300 focus:outline-none focus:border-emerald-500 resize-y"
+                className="w-full p-3 glass-input rounded-xl font-mono text-xs text-slate-300 resize-y"
               />
             </div>
 
@@ -361,7 +361,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                   value={importPassphrase}
                   onChange={(e) => setImportPassphrase(e.target.value)}
                   placeholder="Enter vault passphrase..."
-                  className="w-full bg-slate-950 border border-amber-500/40 rounded-xl px-3.5 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none"
+                  className="w-full glass-input !border-amber-500/40 rounded-xl px-3.5 py-2.5 text-white font-mono placeholder-slate-500"
                 />
               </div>
             )}
@@ -373,7 +373,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-white/[0.08]">
               <button
                 type="button"
                 onClick={onClose}
@@ -404,7 +404,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                 <button
                   type="button"
                   onClick={onCaptureManualSnapshot}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-400 font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-emerald-400 font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Capture Snapshot Now</span>
@@ -429,19 +429,19 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
             )}
 
             {scanSnapshots.length === 0 ? (
-              <div className="p-8 bg-slate-950 border border-slate-800 rounded-xl text-center text-slate-400">
+              <div className="p-8 glass-subtle rounded-xl text-center text-slate-400">
                 Snapshots are recorded automatically after each audit scan so synOUT can detect brokers that re-list your records after opt-out.
               </div>
             ) : (
-              <div className="space-y-2 max-h-60 overflow-y-auto">
+              <div className="glass-subtle rounded-xl divide-y divide-white/[0.07] max-h-60 overflow-y-auto">
                 {scanSnapshots.map((snap) => (
                   <div
                     key={snap.id}
-                    className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 tabular-nums"
+                    className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 tabular-nums"
                   >
                     <div>
                       <div className="font-bold text-white">{snap.profileName}</div>
-                      <div className="text-[11px] text-slate-500 font-mono">
+                      <div className="text-[11px] text-slate-400 font-mono">
                         {new Date(snap.timestampIso).toLocaleString()}
                       </div>
                     </div>

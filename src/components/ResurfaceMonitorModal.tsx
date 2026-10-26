@@ -49,10 +49,10 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl relative my-8">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/75 backdrop-blur-md overflow-y-auto">
+      <div className="glass-popover rounded-2xl w-full max-w-2xl overflow-hidden relative my-8">
         {/* Header */}
-        <div className="p-6 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/60">
+        <div className="p-6 border-b border-white/[0.08] flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
               <RefreshCw className="w-5 h-5" />
@@ -67,7 +67,7 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
 
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -76,19 +76,19 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
         {/* Content */}
         <div className="p-6 sm:p-8 space-y-6">
           {/* Explanation Banner */}
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs space-y-2">
+          <div className="glass-subtle rounded-xl p-4 text-xs space-y-2">
             <div className="font-semibold text-slate-200 flex items-center gap-1.5">
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
               <span>Why do data brokers resurface deleted records?</span>
             </div>
-            <p className="text-slate-400 leading-relaxed">
+            <p className="text-slate-300/90 leading-relaxed">
               Data brokers constantly purchase updated voter rolls, property deed filings, utility connections, and commercial marketing registries. Even after deleting your profile, their automated crawlers often re-index you every 30 to 90 days.
             </p>
           </div>
 
           {/* Schedule Configuration */}
           <div className="space-y-3">
-            <div className="text-xs font-semibold text-white uppercase tracking-wider flex items-center justify-between gap-2">
+            <div className="text-xs font-semibold text-white flex flex-wrap items-center justify-between gap-2">
               <span className="flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-emerald-400" />
                 <span>Recurring Re-Audit Schedule</span>
@@ -96,7 +96,7 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
               <button
                 type="button"
                 onClick={handleExportReminderIcs}
-                className="text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer normal-case tracking-normal"
+                className="text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Download {scheduleDays}-Day Calendar Reminder (.ics)</span>
@@ -109,14 +109,14 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
                   key={days}
                   type="button"
                   onClick={() => setScheduleDays(days)}
-                  className={`p-3 rounded-xl border text-center transition-all cursor-pointer ${
+                  className={`p-3 rounded-xl text-center transition-all cursor-pointer ${
                     scheduleDays === days
-                      ? 'bg-emerald-500/10 border-emerald-500 text-white font-bold'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                      ? 'bg-emerald-500/15 border border-emerald-400/60 text-white font-bold'
+                      : 'glass-subtle text-slate-400 hover:text-slate-200'
                   }`}
                 >
                   <div className="text-base font-mono">{days} Days</div>
-                  <div className="text-[11px] text-slate-500">
+                  <div className="text-[11px] text-slate-400">
                     {days === '30' ? 'Recommended' : days === '60' ? 'Standard' : 'Extended'}
                   </div>
                 </button>
@@ -125,9 +125,9 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
           </div>
 
           {/* Notification Preferences */}
-          <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between">
+          <div className="p-4 glass-subtle rounded-xl flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
                 <Bell className="w-4 h-4" />
               </div>
               <div>
@@ -139,8 +139,8 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
             <button
               type="button"
               onClick={() => setEmailAlerts(!emailAlerts)}
-              className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer ${
-                emailAlerts ? 'bg-emerald-500' : 'bg-slate-800'
+              className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                emailAlerts ? 'bg-emerald-500' : 'bg-white/15'
               }`}
             >
               <div
@@ -152,14 +152,14 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
           </div>
 
           {/* Simulation Section */}
-          <div className="pt-2 border-t border-slate-800 space-y-3">
-            <div className="flex items-center justify-between">
+          <div className="pt-3 border-t border-white/[0.08] space-y-3">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold text-slate-300">Test Continuous Resurface Engine:</span>
               <button
                 type="button"
                 onClick={handleSimulateResurface}
                 disabled={isSimulating}
-                className="px-3 py-1.5 text-xs font-medium text-amber-300 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                className="px-3 py-1.5 text-xs font-medium text-amber-300 bg-amber-500/10 border border-amber-500/25 hover:bg-amber-500/20 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSimulating ? 'animate-spin' : ''}`} />
                 <span>{isSimulating ? 'Scanning Registries...' : 'Simulate 60-Day Re-Check'}</span>
@@ -168,12 +168,12 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
 
             {simulationComplete && (
               <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs space-y-2">
-                <div className="flex items-center justify-between text-rose-300 font-semibold">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-rose-300 font-semibold tabular-nums">
                   <span className="flex items-center gap-1.5">
-                    <AlertTriangle className="w-4 h-4 text-rose-400" />
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
                     <span>Resurface Detected: {resurfacedList.length} Brokers Re-Indexed You</span>
                   </span>
-                  <span className="text-[11px] font-mono text-rose-400 bg-rose-500/20 px-2 py-0.5 rounded">
+                  <span className="text-[11px] font-mono text-rose-300">
                     Action Required
                   </span>
                 </div>
@@ -190,13 +190,13 @@ export const ResurfaceMonitorModal: React.FC<ResurfaceMonitorModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-slate-800/80 bg-slate-950/60 flex flex-wrap items-center justify-between gap-3">
-          <span className="text-xs text-slate-500 tabular-nums">
+        <div className="p-6 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
+          <span className="text-xs text-slate-400 tabular-nums">
             Next automated sweep scheduled in {scheduleDays} days.
           </span>
           <button
             onClick={onClose}
-            className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer"
+            className="px-5 py-2.5 text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
           >
             Save &amp; Close
           </button>

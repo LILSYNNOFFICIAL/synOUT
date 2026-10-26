@@ -225,10 +225,19 @@ function persistGoogleSession(session: StoredGoogleSession | null): void {
       window.localStorage.removeItem(OAUTH_PERSISTENT_STORAGE_KEY);
       return;
     }
-    const encoded = encodeSession(session);
-    window.sessionStorage.setItem(OAUTH_SESSION_STORAGE_KEY, encoded);
+    // Keep short-lived access token in ephemeral tab sessionStorage only; NEVER in persistent localStorage
+    const encodedEphemeral = encodeSession(session);
+    window.sessionStorage.setItem(OAUTH_SESSION_STORAGE_KEY, encodedEphemeral);
+
     if (session.rememberInBrowser) {
-      window.localStorage.setItem(OAUTH_PERSISTENT_STORAGE_KEY, encoded);
+      // Only persist non-secret profile hint (user email/name) for fast re-auth prompt
+      const hintOnly: StoredGoogleSession = {
+        user: session.user,
+        accessToken: null,
+        expiresAtMs: 0,
+        rememberInBrowser: true,
+      };
+      window.localStorage.setItem(OAUTH_PERSISTENT_STORAGE_KEY, encodeSession(hintOnly));
     } else {
       window.localStorage.removeItem(OAUTH_PERSISTENT_STORAGE_KEY);
     }
@@ -256,9 +265,26 @@ export function loadStoredGoogleSession(): {
   }
 
   try {
-    const raw =
-      window.sessionStorage.getItem(OAUTH_SESSION_STORAGE_KEY) ||
-      window.localStorage.getItem(OAUTH_PERSISTENT_STORAGE_KEY);
+    const sessionRaw = window.sessionStorage.getItem(OAUTH_SESSION_STORAGE_KEY);
+    const persistentRaw = window.localStorage.getItem(OAUTH_PERSISTENT_STORAGE_KEY);
+
+    // Scrub any legacy persistent localStorage entry that contained a raw accessToken
+    if (persistentRaw) {
+      const legacyDecoded = decodeSession(persistentRaw);
+      if (legacyDecoded && legacyDecoded.accessToken) {
+        window.localStorage.setItem(
+          OAUTH_PERSISTENT_STORAGE_KEY,
+          encodeSession({
+            user: legacyDecoded.user,
+            accessToken: null,
+            expiresAtMs: 0,
+            rememberInBrowser: true,
+          })
+        );
+      }
+    }
+
+    const raw = sessionRaw || persistentRaw;
     if (!raw) {
       return { user: null, accessToken: null, expired: false };
     }
@@ -271,10 +297,12 @@ export function loadStoredGoogleSession(): {
     cachedRememberInBrowser = decoded.rememberInBrowser !== false;
     cachedExpiresAtMs = Number(decoded.expiresAtMs || 0);
 
+    // Never trust an accessToken read from persistentRaw
+    const effectiveToken = sessionRaw ? decoded.accessToken : null;
     const isExpired =
-      !decoded.accessToken || (cachedExpiresAtMs > 0 && Date.now() >= cachedExpiresAtMs);
+      !effectiveToken || (cachedExpiresAtMs > 0 && Date.now() >= cachedExpiresAtMs);
 
-    cachedAccessToken = isExpired ? null : decoded.accessToken;
+    cachedAccessToken = isExpired ? null : effectiveToken;
     return {
       user: decoded.user,
       accessToken: cachedAccessToken,

@@ -1,4 +1,4 @@
-import dns from 'node:dns/promises';
+import crypto from 'node:crypto';
 import { DataBroker, UserProfile } from '../types/index.ts';
 import {
   COMMON_OPTOUT_PATHS,
@@ -9,9 +9,16 @@ import {
   extractOptOutLinksFromHtml,
   extractSitemapAndRobotsOptOutUrls,
   inspectRawOptOutHtml,
-  isSafePublicOptOutUrl,
   scoreOptOutLinkCandidate,
 } from '../utils/optOutFormEngine.ts';
+import {
+  assertSafeOutboundUrl,
+  type CustomDnsLookupFn,
+  validatePublicOptOutUrlSyntax,
+} from './urlSafety.ts';
+import {
+  classifyPostSubmitOutcome,
+} from './browserAutomation/VerificationDetector.ts';
 
 const MAX_RESPONSE_BYTES = 512 * 1024;
 const DEFAULT_FETCH_TIMEOUT_MS = 4500;
@@ -20,57 +27,17 @@ const MAX_REDIRECT_HOPS = 4;
 const BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
-function isPrivateResolvedIp(ip: string): boolean {
-  const clean = ip.trim().toLowerCase();
-  if (
-    clean === '::1' ||
-    clean === '0:0:0:0:0:0:0:1' ||
-    clean.startsWith('fc') ||
-    clean.startsWith('fd') ||
-    clean.startsWith('fe80') ||
-    clean.startsWith('::ffff:127.') ||
-    clean.startsWith('::ffff:10.') ||
-    clean.startsWith('::ffff:192.168.') ||
-    clean.startsWith('::ffff:169.254.')
-  ) {
-    return true;
-  }
-
-  const m = clean.match(/^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const [a, b] = [parseInt(m[1], 10), parseInt(m[2], 10)];
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    a >= 224
-  );
-}
-
 /**
  * Resolves DNS A/AAAA records prior to outbound HTTP requests to block DNS-rebinding SSRF.
  */
-export async function assertSafeResolvedHostname(hostname: string): Promise<void> {
-  try {
-    const records = await dns.lookup(hostname, { all: true });
-    if (!records || records.length === 0) {
-      throw new Error(`Hostname ${hostname} did not resolve in public DNS.`);
-    }
-    for (const rec of records) {
-      if (isPrivateResolvedIp(rec.address)) {
-        throw new Error(`Blocked private or loopback DNS resolution for ${hostname}.`);
-      }
-    }
-  } catch (err) {
-    if (err instanceof Error && /Blocked private/i.test(err.message)) {
-      throw err;
-    }
-    throw new Error(`Could not resolve public DNS for ${hostname}.`);
-  }
+export async function assertSafeResolvedHostname(
+  hostname: string,
+  options?: { allowLoopbackForTests?: boolean; dnsLookup?: CustomDnsLookupFn }
+): Promise<void> {
+  await assertSafeOutboundUrl(`https://${hostname}`, {
+    allowLoopbackForTests: options?.allowLoopbackForTests,
+    dnsLookup: options?.dnsLookup,
+  });
 }
 
 export interface SafeHttpFetchResult {
@@ -91,6 +58,8 @@ export async function safePublicFetch(
     headers?: Record<string, string>;
     body?: string;
     timeoutMs?: number;
+    allowLoopbackForTests?: boolean;
+    dnsLookupForTests?: CustomDnsLookupFn;
   }
 ): Promise<SafeHttpFetchResult> {
   let currentUrl = targetUrl;
@@ -98,12 +67,10 @@ export async function safePublicFetch(
   let currentBody = options?.body;
 
   for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
-    const safeCheck = isSafePublicOptOutUrl(currentUrl);
-    if (!safeCheck.valid) {
-      throw new Error(safeCheck.reason || 'Blocked unsafe URL.');
-    }
-
-    await assertSafeResolvedHostname(safeCheck.hostname);
+    const safeCheck = await assertSafeOutboundUrl(currentUrl, {
+      allowLoopbackForTests: options?.allowLoopbackForTests,
+      dnsLookup: options?.dnsLookupForTests,
+    });
 
     const controller = new AbortController();
     const timer = setTimeout(
@@ -201,13 +168,21 @@ export async function inspectSingleOptOutUrl(params: {
   profile?: UserProfile;
   senderEmail?: string;
   broker?: DataBroker;
+  allowLoopbackForTests?: boolean;
+  dnsLookupForTests?: CustomDnsLookupFn;
 }): Promise<OptOutPageInspection> {
-  const safeCheck = isSafePublicOptOutUrl(params.url);
+  const safeCheck = validatePublicOptOutUrlSyntax(params.url, {
+    allowLoopbackForTests: params.allowLoopbackForTests,
+  });
   if (!safeCheck.valid) {
     throw new Error(safeCheck.reason || 'Invalid opt-out URL.');
   }
 
-  const fetched = await safePublicFetch(safeCheck.normalizedUrl, { timeoutMs: 5500 });
+  const fetched = await safePublicFetch(safeCheck.normalizedUrl, {
+    timeoutMs: 5500,
+    allowLoopbackForTests: params.allowLoopbackForTests,
+    dnsLookupForTests: params.dnsLookupForTests,
+  });
   return inspectRawOptOutHtml({
     html: fetched.bodyText,
     pageUrl: safeCheck.normalizedUrl,
@@ -230,8 +205,12 @@ export async function crawlDomainForOptOutPages(params: {
   profile?: UserProfile;
   senderEmail?: string;
   broker?: DataBroker;
+  allowLoopbackForTests?: boolean;
+  dnsLookupForTests?: CustomDnsLookupFn;
 }): Promise<OptOutDiscoveryReport> {
-  const safeStart = isSafePublicOptOutUrl(params.domainOrUrl);
+  const safeStart = validatePublicOptOutUrlSyntax(params.domainOrUrl, {
+    allowLoopbackForTests: params.allowLoopbackForTests,
+  });
   if (!safeStart.valid) {
     throw new Error(safeStart.reason || 'Enter a valid public website domain or URL.');
   }
@@ -254,7 +233,9 @@ export async function crawlDomainForOptOutPages(params: {
 
   // Seed known catalog optOutUrl if valid
   if (params.knownOptOutUrl) {
-    const safeKnown = isSafePublicOptOutUrl(params.knownOptOutUrl);
+    const safeKnown = validatePublicOptOutUrlSyntax(params.knownOptOutUrl, {
+      allowLoopbackForTests: params.allowLoopbackForTests,
+    });
     if (safeKnown.valid) {
       upsertCandidate({
         url: safeKnown.normalizedUrl,
@@ -267,15 +248,23 @@ export async function crawlDomainForOptOutPages(params: {
   }
 
   // Phase 1: Parallel fetch of Homepage + robots.txt + /privacy + knownOptOutUrl (if distinct)
+  const knownNormalized =
+    params.knownOptOutUrl &&
+    validatePublicOptOutUrlSyntax(params.knownOptOutUrl, {
+      allowLoopbackForTests: params.allowLoopbackForTests,
+    }).valid
+      ? validatePublicOptOutUrlSyntax(params.knownOptOutUrl, {
+          allowLoopbackForTests: params.allowLoopbackForTests,
+        }).normalizedUrl
+      : '';
+
   const phase1Seeds = Array.from(
     new Set(
       [
         startOrigin + '/',
         `${startOrigin}/robots.txt`,
         `${startOrigin}/privacy`,
-        params.knownOptOutUrl && isSafePublicOptOutUrl(params.knownOptOutUrl).valid
-          ? isSafePublicOptOutUrl(params.knownOptOutUrl).normalizedUrl
-          : '',
+        knownNormalized,
       ].filter(Boolean)
     )
   );
@@ -283,7 +272,11 @@ export async function crawlDomainForOptOutPages(params: {
   const phase1Results = await Promise.allSettled(
     phase1Seeds.map(async (seedUrl) => {
       probedUrlsCount++;
-      const res = await safePublicFetch(seedUrl, { timeoutMs: 4200 });
+      const res = await safePublicFetch(seedUrl, {
+        timeoutMs: 4200,
+        allowLoopbackForTests: params.allowLoopbackForTests,
+        dnsLookupForTests: params.dnsLookupForTests,
+      });
       return { seedUrl, res };
     })
   );
@@ -299,14 +292,18 @@ export async function crawlDomainForOptOutPages(params: {
 
     if (seedUrl.endsWith('/robots.txt')) {
       if (res.status === 200 && res.bodyText) {
-        const robotsLinks = extractSitemapAndRobotsOptOutUrls(res.bodyText, startOrigin);
+        const robotsLinks = extractSitemapAndRobotsOptOutUrls(res.bodyText, startOrigin, {
+          allowLoopbackForTests: params.allowLoopbackForTests,
+        });
         robotsLinks.forEach(upsertCandidate);
       }
       continue;
     }
 
     if (res.bodyText && (res.status < 400 || res.status === 403)) {
-      const links = extractOptOutLinksFromHtml(res.bodyText, res.finalUrl, safeStart.hostname);
+      const links = extractOptOutLinksFromHtml(res.bodyText, res.finalUrl, safeStart.hostname, {
+        allowLoopbackForTests: params.allowLoopbackForTests,
+      });
       links.forEach(upsertCandidate);
 
       const inspected = inspectRawOptOutHtml({
@@ -317,6 +314,7 @@ export async function crawlDomainForOptOutPages(params: {
         profile: params.profile,
         senderEmail: params.senderEmail,
         broker: params.broker,
+        allowLoopbackForTests: params.allowLoopbackForTests,
       });
       inspectionsByUrl.set(inspected.finalUrl, inspected);
 
@@ -325,6 +323,7 @@ export async function crawlDomainForOptOutPages(params: {
         pageTitle: inspected.pageTitle,
         headingText: inspected.primaryHeading,
         baseDomain: safeStart.hostname,
+        allowLoopbackForTests: params.allowLoopbackForTests,
       });
 
       if (pageScored.score >= 35 || seedUrl === params.knownOptOutUrl) {
@@ -357,7 +356,11 @@ export async function crawlDomainForOptOutPages(params: {
   const heuristicUrls = COMMON_OPTOUT_PATHS.slice(0, 8).map((slug) => `${startOrigin}${slug}`);
   for (const hUrl of heuristicUrls) {
     if (!candidateMap.has(hUrl)) {
-      const s = scoreOptOutLinkCandidate({ url: hUrl, baseDomain: safeStart.hostname });
+      const s = scoreOptOutLinkCandidate({
+        url: hUrl,
+        baseDomain: safeStart.hostname,
+        allowLoopbackForTests: params.allowLoopbackForTests,
+      });
       upsertCandidate({
         url: hUrl,
         anchorText: `Candidate Route (${new URL(hUrl).pathname})`,
@@ -376,7 +379,11 @@ export async function crawlDomainForOptOutPages(params: {
   const phase2Results = await Promise.allSettled(
     unprobedCandidates.map(async (cand) => {
       probedUrlsCount++;
-      const res = await safePublicFetch(cand.url, { timeoutMs: 3800 });
+      const res = await safePublicFetch(cand.url, {
+        timeoutMs: 3800,
+        allowLoopbackForTests: params.allowLoopbackForTests,
+        dnsLookupForTests: params.dnsLookupForTests,
+      });
       return { cand, res };
     })
   );
@@ -403,6 +410,7 @@ export async function crawlDomainForOptOutPages(params: {
       profile: params.profile,
       senderEmail: params.senderEmail,
       broker: params.broker,
+      allowLoopbackForTests: params.allowLoopbackForTests,
     });
     inspectionsByUrl.set(inspected.finalUrl, inspected);
 
@@ -410,7 +418,8 @@ export async function crawlDomainForOptOutPages(params: {
     const deeperLinks = extractOptOutLinksFromHtml(
       res.bodyText,
       inspected.finalUrl,
-      safeStart.hostname
+      safeStart.hostname,
+      { allowLoopbackForTests: params.allowLoopbackForTests }
     );
     for (const dl of deeperLinks.slice(0, 4)) {
       if (dl.score >= 55) {
@@ -424,6 +433,7 @@ export async function crawlDomainForOptOutPages(params: {
       pageTitle: inspected.pageTitle,
       headingText: inspected.primaryHeading,
       baseDomain: safeStart.hostname,
+      allowLoopbackForTests: params.allowLoopbackForTests,
     });
 
     const hasOptOutForm = inspected.forms.some((f) => f.isLikelyOptOutForm);
@@ -491,6 +501,8 @@ export async function crawlDomainForOptOutPages(params: {
           profile: params.profile,
           senderEmail: params.senderEmail,
           broker: params.broker,
+          allowLoopbackForTests: params.allowLoopbackForTests,
+          dnsLookupForTests: params.dnsLookupForTests,
         });
       } catch {
         bestInspection = null;
@@ -516,7 +528,11 @@ export interface WebFormRelaySubmissionResult {
   success: boolean;
   httpStatus: number;
   finalUrl: string;
+  internalSubmissionId: string;
+  brokerConfirmationCode: string | null;
   confirmationTicket: string;
+  outcomeClassification: string;
+  outcomeSummary: string;
   requiresBrowserCaptcha: boolean;
   antiBotGate: string;
   responseExcerpt: string;
@@ -524,15 +540,20 @@ export interface WebFormRelaySubmissionResult {
 
 /**
  * Submits mapped consumer opt-out form fields directly to a public HTML form action URL
- * (when not gated by interactive CAPTCHA), sending Sec-GPC: 1 and extracting any ticket ID.
+ * (when not gated by interactive CAPTCHA), sending Sec-GPC: 1 and strictly separating
+ * synOUT's internalSubmissionId from any genuine brokerConfirmationCode (`null` when none issued).
  */
 export async function submitWebFormViaRelay(params: {
   actionUrl: string;
   method: 'GET' | 'POST';
   fields: Record<string, string>;
   refererUrl?: string;
+  allowLoopbackForTests?: boolean;
+  dnsLookupForTests?: CustomDnsLookupFn;
 }): Promise<WebFormRelaySubmissionResult> {
-  const safeAction = isSafePublicOptOutUrl(params.actionUrl);
+  const safeAction = validatePublicOptOutUrlSyntax(params.actionUrl, {
+    allowLoopbackForTests: params.allowLoopbackForTests,
+  });
   if (!safeAction.valid) {
     throw new Error(safeAction.reason || 'Invalid form action URL.');
   }
@@ -548,9 +569,14 @@ export async function submitWebFormViaRelay(params: {
   let body: string | undefined = undefined;
   const headers: Record<string, string> = {};
 
-  if (params.refererUrl && isSafePublicOptOutUrl(params.refererUrl).valid) {
-    headers.Referer = isSafePublicOptOutUrl(params.refererUrl).normalizedUrl;
-    headers.Origin = new URL(headers.Referer).origin;
+  if (params.refererUrl) {
+    const safeReferer = validatePublicOptOutUrlSyntax(params.refererUrl, {
+      allowLoopbackForTests: params.allowLoopbackForTests,
+    });
+    if (safeReferer.valid) {
+      headers.Referer = safeReferer.normalizedUrl;
+      headers.Origin = new URL(headers.Referer).origin;
+    }
   }
 
   if (params.method === 'GET') {
@@ -567,6 +593,8 @@ export async function submitWebFormViaRelay(params: {
     headers,
     body,
     timeoutMs: 8000,
+    allowLoopbackForTests: params.allowLoopbackForTests,
+    dnsLookupForTests: params.dnsLookupForTests,
   });
 
   const antiBot = detectAntiBotGate(res.bodyText, res.status);
@@ -577,32 +605,49 @@ export async function submitWebFormViaRelay(params: {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Extract any broker ticket / reference number if echoed in HTML response
-  const ticketMatch = plainText.match(
-    /(?:reference|confirmation|request|ticket|case)\s*(?:id|number|code|#)?\s*[:#-]?\s*([A-Z0-9-]{6,28})/i
+  const hasInvalidHtmlAttr = /aria-invalid=["']true["']|class=["'][^"']*(?:field-error|error-message)/i.test(
+    res.bodyText
   );
-  const extractedTicket =
-    ticketMatch?.[1] ||
-    `WEBFORM-${safeAction.hostname.replace(/[^a-z0-9]/gi, '').slice(0, 8).toUpperCase()}-${Date.now()
-      .toString(36)
-      .toUpperCase()}`;
+
+  const classified = classifyPostSubmitOutcome({
+    beforeUrl: safeAction.normalizedUrl,
+    afterUrl: res.finalUrl,
+    httpStatus: res.status,
+    visibleText: plainText,
+    html: res.bodyText,
+    hasValidationInvalidAttributes: hasInvalidHtmlAttr,
+  });
+
+  const internalSubmissionId = `JOB-RELAY-${Date.now().toString(36).toUpperCase()}-${crypto
+    .randomBytes(3)
+    .toString('hex')
+    .toUpperCase()}`;
 
   const requiresBrowserCaptcha =
+    classified.outcome === 'blocked' ||
     res.status === 403 ||
     res.status === 429 ||
     antiBot.gate === 'cloudflare_challenge' ||
     antiBot.gate === 'recaptcha' ||
     antiBot.gate === 'hcaptcha' ||
-    antiBot.gate === 'turnstile' ||
-    /captcha\s+(?:failed|required|invalid)|verify\s+you\s+are\s+human/i.test(plainText);
+    antiBot.gate === 'turnstile';
 
-  const success = !requiresBrowserCaptcha && res.status >= 200 && res.status < 400;
+  const success =
+    !requiresBrowserCaptcha &&
+    classified.outcome !== 'validation_error' &&
+    classified.outcome !== 'rejected' &&
+    res.status >= 200 &&
+    res.status < 400;
 
   return {
     success,
     httpStatus: res.status,
     finalUrl: res.finalUrl,
-    confirmationTicket: extractedTicket,
+    internalSubmissionId,
+    brokerConfirmationCode: classified.brokerConfirmationCode,
+    confirmationTicket: classified.brokerConfirmationCode || '',
+    outcomeClassification: classified.outcome,
+    outcomeSummary: classified.summary,
     requiresBrowserCaptcha,
     antiBotGate: antiBot.gate,
     responseExcerpt: plainText.slice(0, 260),

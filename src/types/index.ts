@@ -14,6 +14,56 @@ export type RemovalMethod = 'Online Form' | 'Email CCPA Demand' | 'Mail-In' | 'P
 
 export type EmailDeliverabilityTier = 'verified_dpo' | 'parent_dpo' | 'portal_primary';
 
+export type RemovalWorkflowState =
+  | 'queued'
+  | 'discovering'
+  | 'inspecting'
+  | 'matching_record'
+  | 'awaiting_user_input'
+  | 'ready_to_submit'
+  | 'submitting'
+  | 'submitted_unconfirmed'
+  | 'awaiting_email_verification'
+  | 'awaiting_broker_processing'
+  | 'removal_verified'
+  | 'rejected'
+  | 'blocked'
+  | 'failed'
+  | 'cancelled';
+
+export type BrokerAdapterId =
+  | 'generic_dom_form'
+  | 'peopleconnect_suppression'
+  | 'beenverified_network'
+  | 'spokeo_url_optout'
+  | 'whitepages_phone_verify'
+  | 'lexisnexis_dsar'
+  | 'acxiom_marketing_optout'
+  | 'cloudflare_captcha_portal'
+  | 'email_statutory_primary';
+
+export type BrokerWorkflowType =
+  | 'direct_web_form'
+  | 'record_search_then_form'
+  | 'profile_url_form'
+  | 'multi_step_dsar'
+  | 'captcha_assisted_handoff'
+  | 'statutory_email_primary'
+  | 'written_or_phone';
+
+export type BrokerProvenanceSource =
+  | 'cpra_data_broker_registry'
+  | 'verified_privacy_portal'
+  | 'parent_network_dpo'
+  | 'user_custom_discovered';
+
+export type VerificationSourceType =
+  | 'heuristic_exposure_estimate'
+  | 'live_portal_probe_reachable'
+  | 'live_listing_match_found'
+  | 'live_listing_not_found'
+  | 'live_probe_blocked_anti_bot';
+
 export interface DataBroker {
   id: string;
   name: string;
@@ -34,6 +84,15 @@ export interface DataBroker {
   exposureLikelihood: number;
   jurisdiction?: string;
   targetStates?: string[];
+  adapterId?: BrokerAdapterId;
+  workflowType?: BrokerWorkflowType;
+  requiresProfileUrl?: boolean;
+  requiresEmailVerification?: boolean;
+  requiresPhoneVerification?: boolean;
+  knownAntiBotGate?: 'none' | 'recaptcha' | 'hcaptcha' | 'turnstile' | 'cloudflare_challenge';
+  provenanceSource?: BrokerProvenanceSource;
+  lastVerifiedDate?: string;
+  expectedSlaDays?: number;
 }
 
 export interface UserProfile {
@@ -99,6 +158,17 @@ export interface ScanResult {
   brokerId: string;
   status: 'exposed' | 'clean' | 'scanning' | 'error';
   mockListingData: MockListingData;
+  verificationSource?: VerificationSourceType;
+  liveProbeStatus?:
+    | 'unprobed'
+    | 'probing'
+    | 'listing_matched'
+    | 'portal_reachable'
+    | 'no_listing_found'
+    | 'anti_bot_gated'
+    | 'unreachable';
+  liveProbeCheckedAtIso?: string;
+  liveProbeSummary?: string;
   removalStatus?: 'found' | 'submitted' | 'removed' | 'failed';
   optOutConfirmationCode?: string;
   submissionDate?: string;
@@ -116,6 +186,11 @@ export interface ScanResult {
   webFormConfirmationCode?: string;
   submittedOptOutUrl?: string;
   discoveredOptOutTitle?: string;
+  workflowJobId?: string;
+  workflowState?: RemovalWorkflowState;
+  internalSubmissionId?: string;
+  submissionEvidenceHash?: string;
+  brokerConfirmedReceipt?: string | null;
 }
 
 export type SearchEngineId = 'google' | 'bing' | 'duckduckgo' | 'yahoo' | 'brave';

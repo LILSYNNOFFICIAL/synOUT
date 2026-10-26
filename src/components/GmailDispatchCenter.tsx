@@ -78,6 +78,7 @@ interface GmailDispatchCenterProps {
   onOpenPowerOfAttorney: () => void;
   onStartScan?: () => void;
   onOpenNukeAll?: () => void;
+  onOpenInboxHarvester?: () => void;
 }
 
 interface PendingSendConfirmation {
@@ -100,6 +101,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   onOpenPowerOfAttorney,
   onStartScan,
   onOpenNukeAll,
+  onOpenInboxHarvester,
 }) => {
   const {
     mode: connectionMode,
@@ -719,7 +721,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
       {/* Header & Connection Panel */}
-      <section className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-6">
+      <section className="p-6 sm:p-8 glass-panel rounded-2xl space-y-6">
         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6">
           <div className="space-y-2 max-w-3xl">
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
@@ -734,16 +736,26 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             </h1>
             <p className="text-sm text-slate-400 leading-relaxed">
               Connect your Gmail, Outlook, Yahoo, iCloud, Proton, or custom email once. Your
-              connection stays active as you move between tabs so clicking <strong>Opt Out of All</strong>{' '}
-              anywhere in synOUT sends real statutory deletion demands directly from your email on
-              your behalf.
+              connection stays active across tabs so clicking <strong>Opt Out of All</strong>{' '}
+              anywhere in synOUT dispatches statutory deletion demands directly from your email.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {onOpenInboxHarvester && (
+              <button
+                type="button"
+                onClick={onOpenInboxHarvester}
+                className="px-4 py-2.5 rounded-xl glass-card text-sky-300 hover:text-white text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+              >
+                <Inbox className="w-4 h-4 text-sky-400" />
+                <span>Inbox Harvester</span>
+              </button>
+            )}
+
             <button
               onClick={onOpenPowerOfAttorney}
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+              className="px-4 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
             >
               <FileText className="w-4 h-4 text-emerald-400" />
               <span>Power of Attorney</span>
@@ -753,7 +765,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               <button
                 type="button"
                 onClick={onOpenNukeAll}
-                className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-extrabold flex items-center gap-2 shadow-lg shadow-red-600/25 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white border border-red-400/30 text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
               >
                 <Flame className="w-4 h-4" />
                 <span>NUKE ALL</span>
@@ -763,15 +775,15 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
         </div>
 
         {/* Connection Mode Switcher */}
-        <div className="pt-4 border-t border-slate-800 space-y-5">
+        <div className="pt-4 border-t border-white/[0.07] space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-950 border border-slate-800 rounded-xl">
+            <div className="inline-flex flex-wrap items-center gap-1 p-1 glass-subtle rounded-xl">
               <button
                 type="button"
                 onClick={() => setEmailConnectionMode('smtp')}
                 className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   connectionMode === 'smtp'
-                    ? 'bg-emerald-500 text-slate-950'
+                    ? 'bg-emerald-400 text-slate-950'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
@@ -782,7 +794,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 onClick={() => setEmailConnectionMode('oauth')}
                 className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   connectionMode === 'oauth'
-                    ? 'bg-emerald-500 text-slate-950'
+                    ? 'bg-emerald-400 text-slate-950'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
@@ -793,7 +805,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 onClick={() => setEmailConnectionMode('webmail')}
                 className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   connectionMode === 'webmail'
-                    ? 'bg-emerald-500 text-slate-950'
+                    ? 'bg-emerald-400 text-slate-950'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >

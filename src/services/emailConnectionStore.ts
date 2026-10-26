@@ -29,6 +29,7 @@ import {
   resolveBrokerContactProfile,
   verifyRecipientDeliverabilityClient,
 } from '../utils/brokerContactResolver';
+import { sessionFetch } from './sessionClient';
 
 export type ConnectionMode = 'smtp' | 'oauth' | 'webmail';
 
@@ -36,7 +37,11 @@ export interface SmtpSessionConnection {
   verified: boolean;
   provider: EmailProviderId;
   userEmail: string;
-  appPassword: string;
+  /**
+   * Server-side AES-256-GCM encrypted session vault token.
+   * Raw or Base64 passwords are NEVER persisted in localStorage or sessionStorage.
+   */
+  credentialId?: string;
   customHost: string;
   customPort: number;
   customSecure: boolean;
@@ -45,6 +50,7 @@ export interface SmtpSessionConnection {
   resolvedSecure?: boolean;
   rememberInBrowser: boolean;
   connectedAt: string;
+  expiresAtIso?: string;
 }
 
 export interface WebmailSenderConnection {
@@ -106,18 +112,25 @@ function decodeBase64Json<T>(raw: string): T | null {
 function loadInitialSmtpConnection(): SmtpSessionConnection | null {
   if (typeof window === 'undefined') return null;
   try {
+    // Always purge any legacy persistent localStorage entry that may have held Base64 passwords
+    const legacyLocal = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (legacyLocal) {
+      window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+    }
+
     const fromSession = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
     if (fromSession) {
-      const parsed = decodeBase64Json<SmtpSessionConnection>(fromSession);
-      if (parsed && parsed.verified && parsed.userEmail && parsed.appPassword) {
-        return parsed;
+      const parsed = decodeBase64Json<SmtpSessionConnection & { appPassword?: string }>(fromSession);
+      if (parsed && 'appPassword' in parsed) {
+        // Scrub legacy plaintext/Base64 password immediately
+        window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
       }
-    }
-    const fromLocal = window.localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (fromLocal) {
-      const parsed = decodeBase64Json<SmtpSessionConnection>(fromLocal);
-      if (parsed && parsed.verified && parsed.userEmail && parsed.appPassword) {
-        window.sessionStorage.setItem(SESSION_STORAGE_KEY, fromLocal);
+      if (parsed && parsed.verified && parsed.userEmail && parsed.credentialId) {
+        if (parsed.expiresAtIso && Date.parse(parsed.expiresAtIso) <= Date.now()) {
+          window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+          return null;
+        }
         return parsed;
       }
     }
@@ -130,18 +143,28 @@ function loadInitialSmtpConnection(): SmtpSessionConnection | null {
 function persistSmtpConnection(conn: SmtpSessionConnection | null): void {
   if (typeof window === 'undefined') return;
   try {
+    // Never write SMTP credentials or tokens to localStorage
+    window.localStorage.removeItem(LOCAL_STORAGE_KEY);
     if (!conn) {
       window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
-      window.localStorage.removeItem(LOCAL_STORAGE_KEY);
       return;
     }
-    const encoded = encodeBase64Json(conn);
-    window.sessionStorage.setItem(SESSION_STORAGE_KEY, encoded);
-    if (conn.rememberInBrowser) {
-      window.localStorage.setItem(LOCAL_STORAGE_KEY, encoded);
-    } else {
-      window.localStorage.removeItem(LOCAL_STORAGE_KEY);
-    }
+    const safeMetadataOnly: SmtpSessionConnection = {
+      verified: conn.verified,
+      provider: conn.provider,
+      userEmail: conn.userEmail,
+      credentialId: conn.credentialId,
+      customHost: conn.customHost,
+      customPort: conn.customPort,
+      customSecure: conn.customSecure,
+      resolvedHost: conn.resolvedHost,
+      resolvedPort: conn.resolvedPort,
+      resolvedSecure: conn.resolvedSecure,
+      rememberInBrowser: false,
+      connectedAt: conn.connectedAt,
+      expiresAtIso: conn.expiresAtIso,
+    };
+    window.sessionStorage.setItem(SESSION_STORAGE_KEY, encodeBase64Json(safeMetadataOnly));
   } catch {
     // Ignore quota/storage errors
   }
@@ -224,7 +247,7 @@ export async function probeEmailBackendAvailability(force = false): Promise<bool
     return backendProbePromise;
   }
 
-  backendProbePromise = fetch('/api/health', { method: 'GET' })
+  backendProbePromise = sessionFetch('/api/health', { method: 'GET' })
     .then(async (res) => {
       if (!res.ok) return false;
       const contentType = res.headers.get('content-type') || '';
@@ -421,7 +444,7 @@ export async function verifyAndConnectSmtpAccount(
 
   let res: Response;
   try {
-    res = await fetch('/api/email/verify-account', {
+    res = await sessionFetch('/api/email/verify-account', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -482,15 +505,16 @@ export async function verifyAndConnectSmtpAccount(
     verified: true,
     provider: params.provider,
     userEmail: cleanEmail,
-    appPassword: normalizedPass,
+    credentialId: typeof data.credentialId === 'string' ? data.credentialId : undefined,
     customHost: (params.customHost || '').trim(),
     customPort: params.customPort || 587,
     customSecure: Boolean(params.customSecure),
     resolvedHost: String(data.host || ''),
     resolvedPort: Number(data.port || 465),
     resolvedSecure: typeof data.secure === 'boolean' ? data.secure : Number(data.port) === 465,
-    rememberInBrowser: remember,
+    rememberInBrowser: false,
     connectedAt: new Date().toISOString(),
+    expiresAtIso: typeof data.expiresAtIso === 'string' ? data.expiresAtIso : undefined,
   };
 
   persistSmtpConnection(connection);
@@ -515,7 +539,7 @@ export async function disconnectSmtpAccount(): Promise<void> {
   emitChange();
 
   if (typeof window !== 'undefined' && state.backendAvailable !== false) {
-    await fetch('/api/email/disconnect', { method: 'POST' }).catch(() => null);
+    await sessionFetch('/api/email/disconnect', { method: 'POST' }).catch(() => null);
   }
 }
 
@@ -673,6 +697,10 @@ export function hasVerifiedEmailReceipt(result: ScanResult): boolean {
     code.startsWith('SYN-') ||
     code.startsWith('DIY-FORM-') ||
     code.startsWith('WEB-') ||
+    code.startsWith('WEBFORM-') ||
+    code.startsWith('SUBMIT-') ||
+    code.startsWith('JOB-') ||
+    code.startsWith('AUDIT-') ||
     code.startsWith('MAILTO-')
   ) {
     return false;
@@ -793,14 +821,14 @@ export async function sendEmailViaConnectedAccount(
     const smtp = state.smtp;
     let res: Response;
     try {
-      res = await fetch('/api/email/dispatch-on-behalf', {
+      res = await sessionFetch('/api/email/dispatch-on-behalf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider: smtp.provider,
           userEmail: smtp.userEmail,
           senderName: input.senderName,
-          appPassword: smtp.appPassword,
+          credentialId: smtp.credentialId,
           customHost: smtp.provider === 'custom' ? smtp.customHost : undefined,
           customPort: smtp.provider === 'custom' ? smtp.customPort : undefined,
           customSecure: smtp.provider === 'custom' ? smtp.customSecure : undefined,

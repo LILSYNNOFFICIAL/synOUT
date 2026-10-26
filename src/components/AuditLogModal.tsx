@@ -130,10 +130,10 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
   const damages = manifest?.damagesEstimate;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl overflow-hidden shadow-2xl relative my-8">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/75 backdrop-blur-md overflow-y-auto">
+      <div className="glass-popover rounded-2xl w-full max-w-4xl overflow-hidden relative my-8">
         {/* Header */}
-        <div className="p-6 border-b border-slate-800/80 flex items-center justify-between bg-slate-950/60">
+        <div className="p-6 border-b border-white/[0.08] flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
               <FileText className="w-5 h-5" />
@@ -150,7 +150,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
 
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -158,26 +158,26 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
 
         {/* Content */}
         <div className="p-6 sm:p-8 space-y-6 max-h-[75vh] overflow-y-auto">
-          {/* Metadata bar */}
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs font-mono tabular-nums">
-            <div>
-              <span className="text-slate-500 block text-[10px]">SUBJECT</span>
+          {/* Metadata strip */}
+          <div className="glass-subtle rounded-xl grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-white/[0.07] text-xs font-mono tabular-nums">
+            <div className="p-3.5">
+              <span className="text-slate-400 block text-[11px] font-sans">Subject</span>
               <span className="text-white font-medium">
                 {profile.firstName} {profile.lastName}
               </span>
             </div>
-            <div>
-              <span className="text-slate-500 block text-[10px]">VERIFIED EMAILS</span>
+            <div className="p-3.5">
+              <span className="text-slate-400 block text-[11px] font-sans">Verified Emails</span>
               <span className="text-emerald-400 font-bold">{verifiedEmailCount} Sent</span>
             </div>
-            <div>
-              <span className="text-slate-500 block text-[10px]">TOTAL ACTIONED</span>
+            <div className="p-3.5">
+              <span className="text-slate-400 block text-[11px] font-sans">Total Actioned</span>
               <span className="text-sky-400 font-bold">
                 {submitted.length} / {exposed.length}
               </span>
             </div>
-            <div>
-              <span className="text-slate-500 block text-[10px]">CONNECTED SENDER</span>
+            <div className="p-3.5">
+              <span className="text-slate-400 block text-[11px] font-sans">Connected Sender</span>
               <span className="text-slate-200 font-medium truncate block">
                 {activeConnectedEmail || 'Not Connected'}
               </span>
@@ -186,11 +186,11 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
 
           {/* Master SHA-256 Chain-of-Custody Root */}
           {manifest && (
-            <div className="p-4 bg-slate-950 border border-emerald-500/25 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="p-4 glass-subtle !border-emerald-500/25 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
               <div className="space-y-1 min-w-0">
-                <div className="flex items-center gap-1.5 text-emerald-400 font-mono font-bold text-[11px]">
+                <div className="flex items-center gap-1.5 text-emerald-400 font-semibold text-xs">
                   <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span>MASTER MANIFEST SHA-256 INTEGRITY DIGEST</span>
+                  <span>Master Manifest SHA-256 Integrity Digest</span>
                 </div>
                 <div className="font-mono text-slate-200 text-[11px] break-all">
                   {manifest.manifestSha256}
@@ -199,7 +199,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
               <button
                 type="button"
                 onClick={handleCopyRootHash}
-                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
+                className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.09] text-slate-200 font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
               >
                 {hashCopied ? (
                   <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -213,7 +213,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
 
           {/* Statutory Civil Penalty & Delete Act Calculator */}
           {damages && (
-            <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs tabular-nums">
+            <div className="p-4 glass-subtle rounded-xl space-y-3 text-xs tabular-nums">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div className="flex items-center gap-2 font-bold text-white">
                   <Scale className="w-4 h-4 text-amber-400" />
@@ -226,11 +226,11 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
               </div>
               <p className="text-[11px] text-slate-400">{damages.applicableStatuteLabel}</p>
               {damages.lineItems.length > 0 ? (
-                <div className="space-y-1.5 pt-1">
+                <div className="divide-y divide-white/[0.07] border-t border-white/[0.07] pt-1">
                   {damages.lineItems.map((li) => (
                     <div
                       key={li.brokerId}
-                      className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px]"
+                      className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px]"
                     >
                       <div>
                         <span className="font-bold text-white">{li.brokerName}</span>{' '}
@@ -244,7 +244,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
                   ))}
                 </div>
               ) : (
-                <div className="text-[11px] text-slate-500">
+                <div className="text-[11px] text-slate-400">
                   No brokers have breached their 45-day statutory deadline or unlawfully re-listed records yet. Penalty exposure accrues automatically if a broker exceeds 45 days or re-indexes scrubbed PII.
                 </div>
               )}
@@ -253,17 +253,17 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
 
           {/* Actioned Events Table */}
           <div className="space-y-3">
-            <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+            <div className="text-xs font-semibold text-slate-300 flex items-center justify-between">
               <span>Timestamped Dispatch Records &amp; Per-Record Hashes</span>
-              <span className="text-[11px] font-mono text-slate-500">45-Day Statutory Clock</span>
+              <span className="text-[11px] font-mono text-slate-400">45-Day Statutory Clock</span>
             </div>
 
             {submitted.length === 0 ? (
-              <div className="p-8 text-center text-xs text-slate-400 bg-slate-950 rounded-xl border border-slate-800">
+              <div className="p-8 text-center text-xs text-slate-400 glass-subtle rounded-xl">
                 No opt-outs dispatched yet. Use Opt Out of All to send statutory deletion demands from your connected email.
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="glass-subtle rounded-xl divide-y divide-white/[0.07]">
                 {submitted.map((item) => {
                   const broker = findBrokerById(item.brokerId);
                   const isVerifiedEmail = hasVerifiedEmailReceipt(item);
@@ -273,7 +273,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
                   return (
                     <div
                       key={item.id}
-                      className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl text-xs space-y-1.5"
+                      className="p-3.5 text-xs space-y-1.5"
                     >
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                         <div className="flex items-center gap-2">
@@ -281,7 +281,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
                           <span className="font-bold text-white">
                             {broker?.name || item.brokerId}
                           </span>
-                          <span className="font-mono text-slate-500 text-[11px]">
+                          <span className="font-mono text-slate-400 text-[11px]">
                             ({broker?.domain || 'broker'})
                           </span>
                         </div>
@@ -291,7 +291,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 pt-1 border-t border-slate-800/60 font-mono">
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 font-mono">
                         <span>Date: {item.submissionDate || 'Today'}</span>
                         <span aria-hidden="true">·</span>
                         <span>
@@ -310,7 +310,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
                         {entryHash && (
                           <>
                             <span aria-hidden="true">·</span>
-                            <span className="text-slate-500">
+                            <span className="text-slate-400">
                               SHA256: {entryHash.slice(0, 14)}…
                             </span>
                           </>
@@ -325,7 +325,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-slate-800/80 bg-slate-950/60 flex flex-wrap items-center justify-between gap-3">
+        <div className="p-6 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
           <button
             onClick={onClose}
             className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -336,7 +336,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => exportExposureReportCsv(profile, results)}
-              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.09] rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
               <span>Export CSV</span>
@@ -345,7 +345,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
             <button
               type="button"
               onClick={handleDownloadEnforcementMarkdown}
-              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.09] rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <Download className="w-4 h-4 text-sky-400" />
               <span>Enforcement Manifest (.md)</span>
@@ -354,7 +354,7 @@ export const AuditLogModal: React.FC<AuditLogModalProps> = ({
             <button
               type="button"
               onClick={handleDownloadSignedJsonManifest}
-              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              className="px-3.5 py-2.5 text-xs font-semibold text-slate-200 bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.09] rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
             >
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
               <span>Signed Chain (.json)</span>

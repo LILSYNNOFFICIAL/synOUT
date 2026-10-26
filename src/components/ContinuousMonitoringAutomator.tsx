@@ -1,19 +1,32 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { DataBroker, UserProfile, ScanResult } from '../types';
-import { triggerAutonomousRegistryExpansion } from '../utils/dynamicBrokerRegistry';
+import {
+  getExhaustiveBrokerRegistry,
+  triggerAutonomousRegistryExpansion,
+} from '../utils/dynamicBrokerRegistry';
 import {
   useEmailConnection,
   findBrokerById,
   hasVerifiedEmailReceipt,
 } from '../services/emailConnectionStore';
+import { sessionFetch } from '../services/sessionClient';
+import {
+  LiveRelistingProbeDiff,
+  RelistingCadenceDays,
+  computeRelistingSchedule,
+  loadRelistingMonitorConfig,
+  saveRelistingMonitorConfig,
+} from '../utils/relistingMonitorEngine';
 import {
   RotateCcw,
-  Clock,
   Play,
   Pause,
   Mail,
   Send,
+  RefreshCw,
+  AlertTriangle,
   CheckCircle2,
+  FileCode2,
 } from 'lucide-react';
 
 interface ContinuousMonitoringAutomatorProps {
@@ -23,6 +36,8 @@ interface ContinuousMonitoringAutomatorProps {
   onBatchOptOut?: () => void;
   onSingleOptOut?: (brokerId: string) => void;
   onOpenConnectEmail?: () => void;
+  onApplyRelistingDiffs?: (diffs: LiveRelistingProbeDiff[]) => void;
+  onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
 }
 
 interface CrawledBrokerNotice {
@@ -41,13 +56,22 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
   onBatchOptOut,
   onSingleOptOut,
   onOpenConnectEmail,
+  onApplyRelistingDiffs,
+  onOpenWebFormWorkbench,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const [monitorConfig, setMonitorConfig] = useState(() => loadRelistingMonitorConfig());
+  const [isSweeping, setIsSweeping] = useState(false);
+  const [sweepError, setSweepError] = useState<string | null>(null);
+
   const [isAutomatorActive, setIsAutomatorActive] = useState<boolean>(true);
   const [autoRemoveEnabled, setAutoRemoveEnabled] = useState<boolean>(true);
-  const [checkIntervalHours, setCheckIntervalHours] = useState<number>(24);
   const [crawledNotices, setCrawledNotices] = useState<CrawledBrokerNotice[]>([]);
   const [isExpanding, setIsExpanding] = useState(false);
+
+  useEffect(() => {
+    saveRelistingMonitorConfig(monitorConfig);
+  }, [monitorConfig]);
 
   const exposedResults = useMemo(
     () => scanResults.filter((r) => r.status === 'exposed'),
@@ -59,10 +83,78 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
     [exposedResults]
   );
 
-  const verifiedSentResults = useMemo(
-    () => exposedResults.filter((r) => hasVerifiedEmailReceipt(r)),
-    [exposedResults]
+  const scheduleItems = useMemo(
+    () => computeRelistingSchedule(scanResults, monitorConfig.cadenceDays),
+    [scanResults, monitorConfig.cadenceDays]
   );
+
+  const resurfacedBrokers = useMemo(
+    () => scanResults.filter((r) => Boolean(r.isRegression)),
+    [scanResults]
+  );
+
+  const handleSetCadence = (days: RelistingCadenceDays) => {
+    setMonitorConfig((prev) => ({ ...prev, cadenceDays: days }));
+  };
+
+  const handleRunRelistingSweep = async () => {
+    setSweepError(null);
+    setIsSweeping(true);
+    try {
+      const registry = getExhaustiveBrokerRegistry();
+      const targetEntries =
+        scheduleItems.length > 0
+          ? scheduleItems.slice(0, 12).map((s) => ({
+              broker: findBrokerById(s.brokerId) || registry.find((b) => b.id === s.brokerId),
+              baselineStatus: s.baselineStatus,
+            }))
+          : exposedResults.slice(0, 10).map((r) => ({
+              broker: findBrokerById(r.brokerId),
+              baselineStatus: r.removalStatus === 'removed' ? 'removed' : 'submitted',
+            }));
+
+      const validTargets = targetEntries.filter((t) => Boolean(t.broker));
+      if (validTargets.length === 0) {
+        throw new Error('Run an exposure scan first so synOUT has broker records to monitor.');
+      }
+
+      const res = await sessionFetch('/api/monitoring/batch-recheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brokers: validTargets,
+          profile,
+          previousHashes: monitorConfig.snapshotHashesByBroker,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || `Sweep failed (HTTP ${res.status})`);
+      }
+
+      const diffs: LiveRelistingProbeDiff[] = Array.isArray(data.diffs) ? data.diffs : [];
+      const updatedHashes = { ...monitorConfig.snapshotHashesByBroker };
+      for (const d of diffs) {
+        updatedHashes[d.brokerId] = d.snapshotSha256;
+      }
+
+      setMonitorConfig((prev) => ({
+        ...prev,
+        lastSweepIso: new Date().toISOString(),
+        snapshotHashesByBroker: updatedHashes,
+        recentDiffs: [...diffs, ...prev.recentDiffs].slice(0, 30),
+      }));
+
+      if (onApplyRelistingDiffs) {
+        onApplyRelistingDiffs(diffs);
+      }
+    } catch (err) {
+      setSweepError(err instanceof Error ? err.message : 'Batch re-listing sweep failed.');
+    } finally {
+      setIsSweeping(false);
+    }
+  };
 
   const handleTriggerExpansion = () => {
     setIsExpanding(true);
@@ -85,241 +177,247 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
         ]);
         onBrokerDiscovered(newBroker, autoRemoveEnabled);
       }
-    }, 600);
+    }, 500);
   };
 
   return (
-    <div className="max-w-7xl mx-auto py-8 px-4 space-y-8">
-      {/* Header Banner */}
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1.5">
+    <div className="max-w-7xl mx-auto py-8 px-4 space-y-6">
+      {/* Section 01: 30 / 60 / 90-Day Re-Listing Diff Monitor */}
+      <div className="glass-panel rounded-2xl p-6 sm:p-8 space-y-6">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+          <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
-              <span className="text-emerald-400 font-semibold">Continuous Monitoring &amp; Auto-Removal</span>
+              <span className="text-emerald-400 font-medium">Re-Listing Diff Monitor</span>
               <span aria-hidden="true">·</span>
-              <span>{exposedResults.length} Exposed Brokers</span>
+              <span>{monitorConfig.cadenceDays}-Day Sweep Cadence</span>
               <span aria-hidden="true">·</span>
-              <span>{verifiedSentResults.length} Verified Sent</span>
+              <span>{scheduleItems.length} Actioned Brokers Tracked</span>
+              {resurfacedBrokers.length > 0 && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-rose-400 font-semibold">
+                    {resurfacedBrokers.length} Resurfaced
+                  </span>
+                </>
+              )}
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-              Continuous Broker Surveillance &amp; Email Dispatch
+            <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight [text-wrap:balance]">
+              01. Automated 30 / 60 / 90-Day Re-Listing Surveillance
             </h1>
             <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
-              Audits newly indexed data broker syndicates and routes statutory CCPA, CPRA, and TDPSA deletion notices directly through your connected email account upon confirmation.
+              Re-probes actioned and purged data brokers against live search endpoints, compares SHA-256
+              page snapshots, flags resurrected profiles when brokers buy fresh credit-header or utility
+              feeds, and triggers repeat suppression.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            {isDirectSendConnected && activeConnectedEmail ? (
-              pendingResults.length > 0 && onBatchOptOut ? (
+            {/* Segmented Cadence Control */}
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-950/60 border border-white/[0.07] tabular-nums">
+              {([30, 60, 90] as RelistingCadenceDays[]).map((d) => (
                 <button
+                  key={d}
                   type="button"
-                  onClick={onBatchOptOut}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
+                  onClick={() => handleSetCadence(d)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                    monitorConfig.cadenceDays === d
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
                 >
-                  <Send className="w-4 h-4" />
-                  <span>Opt Out of All {pendingResults.length} Pending ({activeConnectedEmail})</span>
+                  {d}d
                 </button>
-              ) : null
-            ) : (
-              onOpenConnectEmail && (
-                <button
-                  type="button"
-                  onClick={onOpenConnectEmail}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  <Mail className="w-4 h-4" />
-                  <span>Connect Email for Auto-Dispatch</span>
-                </button>
-              )
-            )}
+              ))}
+            </div>
 
             <button
               type="button"
-              onClick={() => setIsAutomatorActive(!isAutomatorActive)}
-              className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-2 cursor-pointer whitespace-nowrap ${
-                isAutomatorActive
-                  ? 'bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/30'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
-              }`}
+              onClick={handleRunRelistingSweep}
+              disabled={isSweeping}
+              className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-semibold inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
             >
-              {isAutomatorActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-              <span>{isAutomatorActive ? 'Monitoring Active' : 'Resume Monitoring'}</span>
+              <RefreshCw className={`w-3.5 h-3.5 ${isSweeping ? 'animate-spin' : ''}`} />
+              <span>{isSweeping ? 'Probing Portals...' : 'Run Live Re-Listing Sweep'}</span>
             </button>
-          </div>
-        </div>
-      </div>
 
-      {/* Control Panels */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Toggle 1: Auto-Queue Opt-Out Dispatch */}
-        <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400">
-              Immediate Email Opt-Out Prompt
-            </span>
-            <button
-              type="button"
-              onClick={() => setAutoRemoveEnabled(!autoRemoveEnabled)}
-              className={`w-12 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
-                autoRemoveEnabled ? 'bg-emerald-500' : 'bg-slate-800'
-              }`}
-              aria-label="Toggle Immediate Email Opt-Out Prompt"
-            >
-              <div
-                className={`bg-white w-4 h-4 rounded-full transition-transform ${
-                  autoRemoveEnabled ? 'translate-x-6' : 'translate-x-0'
-                }`}
-              />
-            </button>
-          </div>
-          <h3 className="text-lg font-bold text-white">
-            {autoRemoveEnabled ? 'Prompt Email Opt-Out: ON' : 'Manual Queue Mode'}
-          </h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            {autoRemoveEnabled
-              ? `When a new broker record is detected, synOUT immediately opens the opt-out dispatch confirmation using ${
-                  activeConnectedEmail || 'your connected email'
-                }.`
-              : 'Newly discovered broker listings are added to your Exposure Report for manual review.'}
-          </p>
-        </div>
-
-        {/* Setting 2: Monitoring Interval */}
-        <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-3">
-          <span className="text-xs font-semibold text-slate-400 block">
-            Re-Audit Cadence
-          </span>
-          <h3 className="text-lg font-bold text-white flex items-center gap-2 tabular-nums">
-            <Clock className="w-5 h-5 text-sky-400" />
-            <span>Every {checkIntervalHours} Hours</span>
-          </h3>
-          <div className="flex items-center gap-2 pt-1">
-            {[6, 12, 24, 72].map((hrs) => (
+            {pendingResults.length > 0 && isDirectSendConnected && activeConnectedEmail && onBatchOptOut && (
               <button
-                key={hrs}
                 type="button"
-                onClick={() => setCheckIntervalHours(hrs)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold transition-colors cursor-pointer ${
-                  checkIntervalHours === hrs
-                    ? 'bg-sky-500 text-slate-950 font-bold'
-                    : 'bg-slate-950 text-slate-400 hover:text-white'
-                }`}
+                onClick={onBatchOptOut}
+                className="px-4 py-2.5 rounded-xl glass-subtle hover:border-emerald-400/40 text-emerald-300 text-xs font-semibold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap tabular-nums"
               >
-                {hrs}h
+                <Send className="w-3.5 h-3.5" />
+                <span>Re-Purge Pending ({pendingResults.length})</span>
               </button>
-            ))}
+            )}
           </div>
-          <p className="text-xs text-slate-400">
-            Active subject:{' '}
-            <strong className="text-white">
-              {profile ? `${profile.firstName} ${profile.lastName}` : 'Run scan to set identity'}
-            </strong>
-          </p>
         </div>
 
-        {/* Feature 3: Self-Growing Exhaustive Registry */}
-        <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-3">
-          <span className="text-xs font-semibold text-slate-400 block">
-            Dynamic Registry Discovery
-          </span>
-          <h3 className="text-lg font-bold text-white">
-            Self-Expanding Broker Pool
-          </h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Scans for newly launched people-search mirrors and affiliate directories so you can send statutory opt-out notices immediately.
-          </p>
-          <button
-            type="button"
-            onClick={handleTriggerExpansion}
-            disabled={isExpanding}
-            className="w-full px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-semibold text-emerald-400 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <RotateCcw className={`w-3.5 h-3.5 ${isExpanding ? 'animate-spin' : ''}`} />
-            <span>{isExpanding ? 'Scanning Emerging Syndicates...' : 'Trigger Crawler Sweep Now'}</span>
-          </button>
-        </div>
+        {sweepError && (
+          <div className="glass-subtle rounded-xl p-4 border border-amber-400/25 flex items-center gap-2.5 text-xs text-amber-200">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{sweepError}</span>
+          </div>
+        )}
+
+        {/* Recent Live Snapshot Diffs */}
+        {monitorConfig.recentDiffs.length > 0 && (
+          <div className="overflow-x-auto rounded-xl border border-white/[0.07]">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-white/[0.07] text-slate-400 bg-slate-950/40">
+                  <th className="py-3 px-4">Broker</th>
+                  <th className="py-3 px-4">Outcome</th>
+                  <th className="py-3 px-4">Snapshot SHA-256</th>
+                  <th className="py-3 px-4">Findings</th>
+                  <th className="py-3 px-4 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.05]">
+                {monitorConfig.recentDiffs.slice(0, 12).map((diff, idx) => {
+                  const broker = findBrokerById(diff.brokerId);
+                  return (
+                    <tr key={`${diff.brokerId}-${idx}`} className="hover:bg-white/[0.02]">
+                      <td className="py-3 px-4">
+                        <div className="font-semibold text-white">{diff.brokerName}</div>
+                        <div className="text-[11px] text-slate-500 font-mono">{diff.brokerDomain}</div>
+                      </td>
+                      <td className="py-3 px-4 font-medium">
+                        {diff.outcome === 'confirmed_absent' ? (
+                          <span className="text-emerald-400 inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Confirmed Absent</span>
+                          </span>
+                        ) : diff.outcome === 'resurfaced_regression' ? (
+                          <span className="text-rose-400 inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span>Resurfaced</span>
+                          </span>
+                        ) : diff.outcome === 'still_present_within_sla' ? (
+                          <span className="text-amber-300">Processing Within SLA</span>
+                        ) : (
+                          <span className="text-slate-400">Anti-Bot / Spot Check</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 font-mono text-[11px] text-slate-400 tabular-nums">
+                        {diff.snapshotSha256.slice(0, 14)}…
+                      </td>
+                      <td className="py-3 px-4 text-slate-300 max-w-md">{diff.summary}</td>
+                      <td className="py-3 px-4 text-right">
+                        <div className="inline-flex items-center gap-1.5">
+                          {broker && onOpenWebFormWorkbench && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenWebFormWorkbench(broker)}
+                              className="px-2.5 py-1.5 rounded-lg glass-subtle hover:border-emerald-400/30 text-emerald-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                            >
+                              <FileCode2 className="w-3 h-3" />
+                              <span>Re-Run Form</span>
+                            </button>
+                          )}
+                          {onSingleOptOut && (
+                            <button
+                              type="button"
+                              onClick={() => onSingleOptOut(diff.brokerId)}
+                              className="px-2.5 py-1.5 rounded-lg glass-subtle hover:border-white/20 text-slate-200 cursor-pointer whitespace-nowrap"
+                            >
+                              Re-Email
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* Live Queue & Verified Dispatch Ledger */}
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800">
-          <h2 className="text-sm font-bold text-white">
-            Verified Email Dispatches &amp; Newly Detected Syndicates
-          </h2>
-          <span className="text-xs font-mono text-slate-400 tabular-nums">
-            {verifiedSentResults.length} Sent · {pendingResults.length} Pending
-          </span>
+      {/* Section 02: Autonomous Clearinghouse Discovery */}
+      <div className="glass-panel rounded-2xl p-6 sm:p-8 space-y-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-lg font-bold text-white">
+              02. Autonomous Broker Registry Expansion &amp; Queueing
+            </h2>
+            <p className="text-xs text-slate-400 max-w-2xl">
+              Indexes newly registered people-search clearinghouses and queues statutory suppression
+              notices through your connected sender ({activeConnectedEmail || 'connect email to enable'}).
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setAutoRemoveEnabled((v) => !v)}
+              className={`px-3.5 py-2 rounded-xl text-xs font-medium glass-subtle cursor-pointer whitespace-nowrap ${
+                autoRemoveEnabled ? 'text-emerald-300 border-emerald-400/30' : 'text-slate-400'
+              }`}
+            >
+              Auto-Prompt Email: {autoRemoveEnabled ? 'On' : 'Off'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsAutomatorActive((v) => !v)}
+              className="px-3.5 py-2 rounded-xl text-xs font-medium glass-subtle text-slate-200 inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              {isAutomatorActive ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              <span>{isAutomatorActive ? 'Active' : 'Paused'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleTriggerExpansion}
+              disabled={isExpanding}
+              className="px-4 py-2 rounded-xl glass-subtle hover:border-emerald-400/40 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${isExpanding ? 'animate-spin' : ''}`} />
+              <span>{isExpanding ? 'Indexing...' : 'Discover Clearinghouse'}</span>
+            </button>
+
+            {!isDirectSendConnected && onOpenConnectEmail && (
+              <button
+                type="button"
+                onClick={onOpenConnectEmail}
+                className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Mail className="w-3.5 h-3.5" />
+                <span>Connect Email</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="space-y-2.5">
-          {crawledNotices.map((cn) => {
-            const matchedResult = scanResults.find((r) => r.brokerId === cn.brokerId);
-            const sent = matchedResult ? hasVerifiedEmailReceipt(matchedResult) : false;
-            return (
+        {crawledNotices.length > 0 && (
+          <div className="space-y-2 pt-2 border-t border-white/[0.06]">
+            {crawledNotices.map((notice) => (
               <div
-                key={cn.id}
-                className="p-4 bg-slate-950 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                key={notice.id}
+                className="glass-subtle rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
               >
-                <div className="space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <strong className="text-white">{cn.brokerName}</strong>
-                    <span className="text-slate-500 font-mono">({cn.brokerDomain})</span>
-                    <span className="text-slate-600">·</span>
-                    <span className={sent ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'}>
-                      {sent ? 'Opt-Out Email Sent' : 'Newly Discovered'}
-                    </span>
-                  </div>
-                  <p className="text-slate-400 font-mono text-[11px]">
-                    Compliance Inbox: {cn.privacyEmail} · Discovered at {cn.timestamp}
-                  </p>
+                <div className="flex flex-wrap items-center gap-2 text-slate-300 tabular-nums">
+                  <span className="font-mono text-slate-500">{notice.timestamp}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-semibold text-white">{notice.brokerName}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono text-slate-400">{notice.brokerDomain}</span>
                 </div>
-
-                {!sent && onSingleOptOut && (
+                {onSingleOptOut && (
                   <button
                     type="button"
-                    onClick={() => onSingleOptOut(cn.brokerId)}
-                    className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                    onClick={() => onSingleOptOut(notice.brokerId)}
+                    className="text-emerald-400 hover:text-emerald-300 font-medium cursor-pointer whitespace-nowrap"
                   >
-                    <Mail className="w-3.5 h-3.5" />
-                    <span>Send Opt-Out Email</span>
+                    Queue Statutory Demand →
                   </button>
                 )}
               </div>
-            );
-          })}
-
-          {verifiedSentResults.map((res) => {
-            const broker = findBrokerById(res.brokerId);
-            if (!broker) return null;
-            return (
-              <div
-                key={res.id}
-                className="p-4 bg-slate-950 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-              >
-                <div className="space-y-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <strong className="text-white">{broker.name}</strong>
-                    <span className="text-slate-500 font-mono">({broker.privacyEmail})</span>
-                  </div>
-                  <p className="text-slate-400 font-mono text-[11px] truncate">
-                    SMTP Receipt: {res.optOutConfirmationCode} · Sent {res.submissionDate || 'Today'}
-                  </p>
-                </div>
-                <span className="text-emerald-400 font-medium shrink-0">Verified Sent</span>
-              </div>
-            );
-          })}
-
-          {crawledNotices.length === 0 && verifiedSentResults.length === 0 && (
-            <div className="p-6 bg-slate-950 rounded-xl border border-slate-800 text-center text-xs text-slate-400">
-              {exposedResults.length > 0
-                ? `${pendingResults.length} exposed broker(s) are ready for opt-out email dispatch. Click "Opt Out of All" above or trigger a crawler sweep.`
-                : 'Run an Exposure Audit Scan first or click "Trigger Crawler Sweep Now" to index emerging broker syndicates.'}
-            </div>
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

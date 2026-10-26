@@ -511,35 +511,35 @@ export const PublicRecordsFirewallCenter: React.FC<PublicRecordsFirewallCenterPr
   return (
     <div className="max-w-7xl mx-auto py-8 px-4 space-y-8 text-xs">
       {/* Top Header */}
-      <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-3xl space-y-6">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div className="glass-panel rounded-2xl p-6 sm:p-8 space-y-6">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="space-y-1.5">
-            <div className="font-mono text-emerald-400 font-semibold">
+            <div className="font-mono text-emerald-400 font-medium">
               Upstream Source Suppression · Canary Leak Attribution · Local EXIF/ID Shield
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
+            <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
               Public Records &amp; Identity Firewall Hub
             </h1>
-            <p className="text-sm text-slate-400 max-w-3xl">
+            <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
               Cut off the county deed, voter roll, and DMV feeds that re-populate data brokers, deploy cryptographic canary aliases to catch companies selling your PII, and strip EXIF/GPS metadata locally.
             </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-3 shrink-0 tabular-nums">
-            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] font-mono text-slate-500 block">RECORDS HARDENED</span>
+          <div className="grid grid-cols-3 divide-x divide-white/[0.08] shrink-0 tabular-nums">
+            <div className="pr-5">
+              <span className="text-[11px] text-slate-400 block">Records Hardened</span>
               <span className="text-xl font-bold text-emerald-400 font-mono">
                 {completedGuidesCount}/{UPSTREAM_PUBLIC_RECORD_GUIDES.length}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] font-mono text-slate-500 block">ACTIVE CANARIES</span>
+            <div className="px-5">
+              <span className="text-[11px] text-slate-400 block">Active Canaries</span>
               <span className="text-xl font-bold text-sky-400 font-mono">
                 {canaryAliases.length}
               </span>
             </div>
-            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl">
-              <span className="text-[10px] font-mono text-slate-500 block">LEAKS CAUGHT</span>
+            <div className="pl-5">
+              <span className="text-[11px] text-slate-400 block">Leaks Caught</span>
               <span className="text-xl font-bold text-rose-400 font-mono">
                 {canaryAliases.filter((c) => c.status === 'leak_detected').length}
               </span>
@@ -611,19 +611,11 @@ export const PublicRecordsFirewallCenter: React.FC<PublicRecordsFirewallCenterPr
                       : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400">
-                      {guide.category}
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
+                    <span className="text-emerald-400">{guide.category}</span>
+                    <span className={isDone ? 'text-emerald-300 font-semibold' : 'text-slate-500'}>
+                      {isDone ? 'Hardened' : 'Pending'}
                     </span>
-                    {isDone ? (
-                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-mono text-[10px] font-bold">
-                        HARDENED
-                      </span>
-                    ) : (
-                      <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-400 font-mono text-[10px]">
-                        PENDING
-                      </span>
-                    )}
                   </div>
                   <div className="font-bold text-white text-sm">{guide.title}</div>
                   <p className="text-slate-400 text-[11px] line-clamp-2">{guide.riskSummary}</p>
@@ -991,7 +983,7 @@ export const PublicRecordsFirewallCenter: React.FC<PublicRecordsFirewallCenterPr
                         : 'No Tracked Canary Matched'}
                     </span>
                     {leakAnalysis.inferredVendorTag && (
-                      <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 font-mono text-[11px]">
+                      <span className="text-rose-300 font-mono text-[11px]">
                         Tag: {leakAnalysis.inferredVendorTag}
                       </span>
                     )}
@@ -1152,13 +1144,13 @@ export const PublicRecordsFirewallCenter: React.FC<PublicRecordsFirewallCenterPr
                         <td className="py-3 px-3 text-slate-300">{rec.category}</td>
                         <td className="py-3 px-3">
                           <span
-                            className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
+                            className={`font-mono text-[11px] font-medium ${
                               rec.status === 'leak_detected'
-                                ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
-                                : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                ? 'text-rose-400'
+                                : 'text-emerald-400'
                             }`}
                           >
-                            {rec.status === 'leak_detected' ? 'LEAK DETECTED' : 'CLEAN / ACTIVE'}
+                            {rec.status === 'leak_detected' ? 'Leak Detected' : 'Clean · Active'}
                           </span>
                         </td>
                         <td className="py-3 px-3 text-right">

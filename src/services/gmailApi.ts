@@ -5,7 +5,16 @@ export interface GmailMessageSummary {
   subject?: string;
   from?: string;
   date?: string;
+  bodyText?: string;
   verificationLinks: string[];
+}
+
+interface GmailMimePart {
+  mimeType?: string;
+  body?: {
+    data?: string;
+  };
+  parts?: GmailMimePart[];
 }
 
 function utf8ToBase64(str: string): string {
@@ -22,6 +31,68 @@ function base64UrlEncode(str: string): string {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+}
+
+export function base64UrlDecodeUtf8(encoded: string): string {
+  try {
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const padLen = (4 - (normalized.length % 4)) % 4;
+    const padded = normalized + '='.repeat(padLen);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  } catch {
+    return '';
+  }
+}
+
+function stripHtmlPreservingLinks(html: string): string {
+  const hrefs: string[] = [];
+  const hrefRegex = /href\s*=\s*["'](https?:\/\/[^"']+)["']/gi;
+  let match: RegExpExecArray | null = null;
+  while ((match = hrefRegex.exec(html)) !== null) {
+    if (match[1]) hrefs.push(match[1]);
+  }
+
+  const text = html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return hrefs.length > 0 ? `${text}\n\n${hrefs.join('\n')}` : text;
+}
+
+export function extractDecodedBodyFromGmailPayload(payload?: GmailMimePart): string {
+  if (!payload) return '';
+  const chunks: string[] = [];
+
+  function walk(part: GmailMimePart): void {
+    const mime = (part.mimeType || '').toLowerCase();
+    if (part.body?.data && (mime === 'text/plain' || mime === 'text/html' || !part.parts)) {
+      const decoded = base64UrlDecodeUtf8(part.body.data);
+      if (decoded) {
+        chunks.push(mime === 'text/html' ? stripHtmlPreservingLinks(decoded) : decoded);
+      }
+    }
+    if (Array.isArray(part.parts)) {
+      for (const child of part.parts) {
+        walk(child);
+      }
+    }
+  }
+
+  walk(payload);
+  return chunks.join('\n').slice(0, 24000);
 }
 
 export async function sendGmailMessage(
@@ -63,15 +134,32 @@ export async function sendGmailMessage(
   return response.json();
 }
 
-export async function searchBrokerVerificationEmails(
+export async function scanBrokerInboxForHarvester(
   accessToken: string,
-  brokerDomain?: string
+  brokerDomains: string[],
+  maxResults = 12
 ): Promise<GmailMessageSummary[]> {
-  const query = brokerDomain
-    ? `(from:${brokerDomain} OR "${brokerDomain}") (confirm OR verify OR opt-out OR removal OR "Address not found" OR "Delivery Status Notification")`
-    : '(optout OR "opt out" OR removal OR "data deletion" OR verify) (confirm OR verified OR expunged OR "Delivery Status Notification")';
+  const cleanedDomains = Array.from(
+    new Set(
+      (brokerDomains || [])
+        .map((d) => d.trim().toLowerCase().replace(/^www\./, ''))
+        .filter(Boolean)
+    )
+  ).slice(0, 18);
 
-  const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=${encodeURIComponent(query)}`;
+  const domainClause =
+    cleanedDomains.length > 0
+      ? `(${cleanedDomains.map((d) => `from:${d}`).join(' OR ')} OR ${cleanedDomains
+          .slice(0, 6)
+          .map((d) => `"${d}"`)
+          .join(' OR ')})`
+      : '(opt-out OR optout OR "data deletion" OR "suppression" OR "remove my" OR "privacy request")';
+
+  const query = `${domainClause} (confirm OR verify OR opt-out OR optout OR removal OR suppress OR delete OR ticket OR request OR "Address not found" OR "Delivery Status Notification")`;
+  const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${Math.min(
+    maxResults,
+    20
+  )}&q=${encodeURIComponent(query)}`;
 
   const res = await fetch(searchUrl, {
     headers: {
@@ -79,14 +167,20 @@ export async function searchBrokerVerificationEmails(
     },
   });
 
-  if (!res.ok) return [];
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        'Gmail read authorization expired or missing gmail.readonly scope. Re-authenticate in Connect Email.'
+      );
+    }
+    return [];
+  }
 
   const data = await res.json();
   const messages: { id: string; threadId: string }[] = data.messages || [];
-
   const summaries: GmailMessageSummary[] = [];
 
-  for (const msg of messages.slice(0, 5)) {
+  for (const msg of messages.slice(0, maxResults)) {
     try {
       const msgRes = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
@@ -109,8 +203,11 @@ export async function searchBrokerVerificationEmails(
         headers.find((h) => h.name.toLowerCase() === 'date')?.value || '';
 
       const snippet = full.snippet || '';
-      const urlRegex = /(https?:\/\/[^\s"'<>]+)/gi;
-      const matches: string[] = snippet.match(urlRegex) || [];
+      const decodedBody = extractDecodedBodyFromGmailPayload(full.payload) || snippet;
+      const combined = `${snippet}\n${decodedBody}`;
+
+      const urlRegex = /(https?:\/\/[^\s"'<>)\]]+)/gi;
+      const matches: string[] = combined.match(urlRegex) || [];
       const links: string[] = Array.from(new Set(matches)).filter(
         (u: string) =>
           !u.includes('google.com') &&
@@ -118,6 +215,8 @@ export async function searchBrokerVerificationEmails(
             u.includes('confirm') ||
             u.includes('verify') ||
             u.includes('token') ||
+            u.includes('suppress') ||
+            u.includes('delete') ||
             u.includes('remove'))
       );
 
@@ -128,6 +227,7 @@ export async function searchBrokerVerificationEmails(
         subject: subjectHeader,
         from: fromHeader,
         date: dateHeader,
+        bodyText: combined,
         verificationLinks: links,
       });
     } catch {
@@ -136,4 +236,15 @@ export async function searchBrokerVerificationEmails(
   }
 
   return summaries;
+}
+
+export async function searchBrokerVerificationEmails(
+  accessToken: string,
+  brokerDomain?: string
+): Promise<GmailMessageSummary[]> {
+  return scanBrokerInboxForHarvester(
+    accessToken,
+    brokerDomain ? [brokerDomain] : [],
+    6
+  ).catch(() => []);
 }

@@ -92,6 +92,23 @@ const SAMPLE_BROKER_REPLIES: {
   },
 ];
 
+function formatTriageStatusProse(category: string): string {
+  switch (category) {
+    case 'DELETION_CONFIRMED':
+      return 'Deletion Confirmed';
+    case 'DELIVERY_BOUNCE_NDR':
+      return 'Undeliverable Bounce';
+    case 'EXCESSIVE_ID_DEMAND':
+      return 'Unlawful ID Demand';
+    case 'EXEMPTION_CLAIM_OR_REFUSAL':
+      return 'Exemption Claim';
+    case 'CONFIRMATION_LINK_REQUIRED':
+      return 'Confirmation Link Required';
+    default:
+      return 'Review Required';
+  }
+}
+
 export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
   initialBroker,
   results,
@@ -113,7 +130,11 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
       seen.add(initialBroker.id);
     }
     for (const r of results) {
-      if (r.status === 'exposed' || r.removalStatus === 'submitted' || r.removalStatus === 'removed') {
+      if (
+        r.status === 'exposed' ||
+        r.removalStatus === 'submitted' ||
+        r.removalStatus === 'removed'
+      ) {
         const b = findBrokerById(r.brokerId);
         if (b && !seen.has(b.id)) {
           list.push(b);
@@ -194,7 +215,14 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
     setBody(built.body);
     setSendError(null);
     setSendSuccess(null);
-  }, [activeBroker, profile, activeConnectedEmail, counterMode, activeTicketId, contact?.effectivePrimaryEmail]);
+  }, [
+    activeBroker,
+    profile,
+    activeConnectedEmail,
+    counterMode,
+    activeTicketId,
+    contact?.effectivePrimaryEmail,
+  ]);
 
   const handleCopy = async (key: string, text: string) => {
     await copyTextToClipboard(text);
@@ -280,29 +308,34 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md overflow-y-auto"
       role="dialog"
       aria-modal="true"
     >
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-4xl w-full p-6 sm:p-8 space-y-6 shadow-2xl my-8 text-xs">
+      <div className="glass-popover rounded-3xl max-w-4xl w-full p-6 sm:p-8 space-y-6 my-8 text-xs">
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-800">
+        <div className="flex items-start justify-between gap-4 pb-4 border-b border-white/[0.08]">
           <div className="space-y-1">
-            <div className="flex items-center gap-2 font-mono text-emerald-400">
-              <Inbox className="w-4 h-4" />
-              <span>Inbound Broker Reply &amp; Bounce Triage · 11 CCR § 7060 Verification Shield</span>
+            <div className="flex flex-wrap items-center gap-2 text-slate-400">
+              <Inbox className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-emerald-400 font-medium">Inbound Broker Reply &amp; Bounce Triage</span>
+              <span aria-hidden="true">·</span>
+              <span>11 CCR § 7060 Verification Shield</span>
             </div>
-            <h2 className="text-xl font-bold text-white">
+            <h2 className="text-xl font-bold text-white tracking-tight">
               Broker Response Parser, Bounce Remediator &amp; Statutory Rebuttal
             </h2>
-            <p className="text-slate-400">
-              Paste any broker email reply or Mailer-Daemon bounce message to blacklist dead addresses, switch to verified backup DPO contacts, sanitize links, or counter unlawful ID demands.
+            <p className="text-slate-400 leading-relaxed">
+              Paste any broker email reply or Mailer-Daemon bounce message to blacklist dead
+              addresses, switch to verified backup DPO contacts, sanitize links, or counter
+              unlawful ID demands.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 cursor-pointer"
+            aria-label="Close modal"
+            className="text-slate-400 hover:text-white p-1.5 rounded-xl hover:bg-white/[0.06] transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -311,19 +344,17 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
         {/* Broker Selector + Quick Test Samples */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="block font-semibold text-slate-300">
-              Target Data Broker
-            </label>
+            <label className="block font-semibold text-slate-300">Target Data Broker</label>
             <select
               value={selectedBrokerId}
               onChange={(e) => {
                 setSelectedBrokerId(e.target.value);
                 setTicketSavedBanner(null);
               }}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500"
+              className="w-full glass-input rounded-xl px-3.5 py-2.5 text-white"
             >
               {availableBrokers.map((b) => (
-                <option key={b.id} value={b.id}>
+                <option key={b.id} value={b.id} className="bg-slate-900">
                   {b.name} ({b.domain})
                 </option>
               ))}
@@ -353,7 +384,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                     setManualTicketOverride('');
                     setTicketSavedBanner(null);
                   }}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
+                  className="px-2.5 py-1.5 rounded-lg glass-subtle hover:border-white/20 text-slate-300 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
                 >
                   {s.label}
                 </button>
@@ -372,14 +403,14 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
             value={rawReplyText}
             onChange={(e) => setRawReplyText(e.target.value)}
             placeholder="Paste the email text or 550 bounce notification received from your mail server or the data broker..."
-            className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 resize-y"
+            className="w-full p-3.5 glass-input rounded-xl font-mono text-xs text-slate-200 placeholder-slate-500 resize-y"
           />
         </div>
 
         {/* Analysis Output */}
         {analysis && (
-          <div className="p-5 bg-slate-950 border border-slate-800 rounded-2xl space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+          <div className="p-5 glass-subtle rounded-2xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-white/[0.08]">
               <div className="flex items-center gap-2">
                 {analysis.category === 'DELETION_CONFIRMED' ? (
                   <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
@@ -393,7 +424,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 <span className="text-sm font-bold text-white">{analysis.categoryLabel}</span>
               </div>
               <span
-                className={`font-mono text-[11px] font-semibold shrink-0 whitespace-nowrap ${
+                className={`text-[11px] font-medium shrink-0 whitespace-nowrap ${
                   analysis.category === 'DELETION_CONFIRMED'
                     ? 'text-emerald-400'
                     : analysis.category === 'DELIVERY_BOUNCE_NDR' ||
@@ -403,22 +434,22 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                     : 'text-amber-300'
                 }`}
               >
-                {analysis.category}
+                {formatTriageStatusProse(analysis.category)}
               </span>
             </div>
 
             <p className="text-slate-300 leading-relaxed">{analysis.summary}</p>
 
-            <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl text-slate-300">
+            <div className="pt-3 border-t border-white/[0.07] text-slate-300 leading-relaxed">
               <strong className="text-emerald-400">Recommended Next Step: </strong>
               {analysis.recommendedAction}
             </div>
 
             {/* Dedicated Bounce / NDR Remediation Workflow */}
             {analysis.category === 'DELIVERY_BOUNCE_NDR' && activeBroker && (
-              <div className="p-4 bg-slate-900 border border-amber-500/30 rounded-xl space-y-3">
+              <div className="pt-4 border-t border-white/[0.08] space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="font-bold text-white">
+                  <div className="font-bold text-amber-300">
                     Undeliverable Address Mitigation ({activeBroker.name})
                   </div>
                   <a
@@ -457,12 +488,12 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                       value={customRecipientInput}
                       onChange={(e) => setCustomRecipientInput(e.target.value)}
                       placeholder="Or enter custom verified DPO email..."
-                      className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                      className="flex-1 glass-input rounded-lg px-3 py-1.5 text-white font-mono"
                     />
                     <button
                       type="button"
                       onClick={() => handleBlacklistBouncedAndSwitch(customRecipientInput)}
-                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-semibold cursor-pointer whitespace-nowrap"
+                      className="px-3 py-1.5 rounded-lg bg-white/[0.07] hover:bg-white/[0.12] border border-white/[0.1] text-white font-semibold cursor-pointer whitespace-nowrap"
                     >
                       Apply DPO
                     </button>
@@ -473,8 +504,8 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
 
             {/* Extracted Sanitized Confirmation Links */}
             {analysis.extractedLinks.length > 0 && (
-              <div className="space-y-2">
-                <div className="font-bold text-white flex items-center gap-1.5">
+              <div className="pt-4 border-t border-white/[0.08] space-y-2.5">
+                <div className="font-bold text-white flex items-center gap-1.5 tabular-nums">
                   <Link2 className="w-3.5 h-3.5 text-sky-400" />
                   <span>Sanitized Verification Links ({analysis.extractedLinks.length})</span>
                 </div>
@@ -484,66 +515,72 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                     <FileWarning className="w-4 h-4 text-rose-400 shrink-0" />
                     <span>
                       Domain Mismatch Warning: At least one link points outside{' '}
-                      <code className="font-mono">{activeBroker?.domain}</code>. Inspect carefully before opening.
+                      <code className="font-mono">{activeBroker?.domain}</code>. Inspect carefully
+                      before opening.
                     </span>
                   </div>
                 )}
 
-                {analysis.extractedLinks.map((lnk, idx) => (
-                  <div
-                    key={idx}
-                    className="p-3 bg-slate-900 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0 space-y-1">
-                      <div className="font-mono text-sky-300 break-all text-[11px]">
-                        {lnk.sanitizedUrl}
+                <div className="divide-y divide-white/[0.07] rounded-xl border border-white/[0.08] bg-slate-950/40 overflow-hidden">
+                  {analysis.extractedLinks.map((lnk, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <div className="font-mono text-sky-300 break-all text-[11px]">
+                          {lnk.sanitizedUrl}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-400">
+                          <span>Host: {lnk.host || 'unknown'}</span>
+                          {lnk.matchesBrokerDomain === true && (
+                            <span className="text-emerald-400">
+                              · Matches {activeBroker?.domain}
+                            </span>
+                          )}
+                          {lnk.matchesBrokerDomain === false && (
+                            <span className="text-rose-400">· External Host Mismatch</span>
+                          )}
+                          {lnk.strippedParams.length > 0 && (
+                            <span className="text-amber-300">
+                              · Stripped {lnk.strippedParams.length} tracker(s):{' '}
+                              {lnk.strippedParams.join(', ')}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-400">
-                        <span>Host: {lnk.host || 'unknown'}</span>
-                        {lnk.matchesBrokerDomain === true && (
-                          <span className="text-emerald-400">Matches {activeBroker?.domain}</span>
-                        )}
-                        {lnk.matchesBrokerDomain === false && (
-                          <span className="text-rose-400">External Host Mismatch</span>
-                        )}
-                        {lnk.strippedParams.length > 0 && (
-                          <span className="text-amber-300">
-                            Stripped {lnk.strippedParams.length} tracker(s): {lnk.strippedParams.join(', ')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => handleCopy(`link-${idx}`, lnk.sanitizedUrl)}
-                        className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                      >
-                        {copiedItem === `link-${idx}` ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                        <span>Copy Clean URL</span>
-                      </button>
-                      <a
-                        href={lnk.sanitizedUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-3 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
-                      >
-                        <span>Open Link</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(`link-${idx}`, lnk.sanitizedUrl)}
+                          className="px-2.5 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                        >
+                          {copiedItem === `link-${idx}` ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                          <span>Copy Clean URL</span>
+                        </button>
+                        <a
+                          href={lnk.sanitizedUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <span>Open Link</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
 
             {/* Ticket Recording & Verified Scrubbed Action */}
-            <div className="pt-2 border-t border-slate-800 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+            <div className="pt-3 border-t border-white/[0.08] flex flex-col sm:flex-row sm:items-end justify-between gap-3">
               <div className="space-y-1 flex-1">
                 <label className="block font-semibold text-slate-300">
                   Broker Confirmation / Case Ticket ID
@@ -553,7 +590,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                   value={activeTicketId}
                   onChange={(e) => setManualTicketOverride(e.target.value)}
                   placeholder="e.g. REQ-884920 or DEL-774102"
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  className="w-full glass-input rounded-xl px-3 py-2 text-white font-mono placeholder-slate-500"
                 />
               </div>
 
@@ -565,7 +602,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                       onClose();
                       onOpenIdRedactor();
                     }}
-                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    className="px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-amber-300 font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                   >
                     <Lock className="w-3.5 h-3.5" />
                     <span>Open Redacted ID &amp; EXIF Lab</span>
@@ -575,7 +612,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 <button
                   type="button"
                   onClick={() => handleRecordTriageOutcome(false)}
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-semibold cursor-pointer whitespace-nowrap"
+                  className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-white font-semibold cursor-pointer whitespace-nowrap"
                 >
                   Save Ticket to SLA Tracker
                 </button>
@@ -601,18 +638,19 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
         )}
 
         {/* Statutory Counter-Notice, Bounce Re-Dispatch & Exemption Rebuttal Composer */}
-        <div className="p-5 bg-slate-950 border border-slate-800 rounded-2xl space-y-4">
+        <div className="p-5 glass-subtle rounded-2xl space-y-4">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold text-white">
                 Statutory Counter-Notice &amp; Verified Backup DPO Re-Dispatch
               </h3>
               <p className="text-[11px] text-slate-400">
-                Re-send bounced deletion notices to a verified backup DPO, or counter unlawful ID and exemption claims.
+                Re-send bounced deletion notices to a verified backup DPO, or counter unlawful ID
+                and exemption claims.
               </p>
             </div>
 
-            <div className="inline-flex flex-wrap p-1 bg-slate-900 border border-slate-800 rounded-xl shrink-0 gap-1">
+            <div className="inline-flex flex-wrap p-1 bg-slate-950/60 border border-white/[0.08] rounded-xl shrink-0 gap-1">
               <button
                 type="button"
                 onClick={() => setCounterMode('resend_initial_demand')}
@@ -654,13 +692,13 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
               type="text"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
+              className="w-full glass-input rounded-xl px-3.5 py-2 text-white font-mono text-xs"
             />
             <textarea
               rows={7}
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              className="w-full p-3.5 bg-slate-900 border border-slate-800 rounded-xl font-mono text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500 resize-y"
+              className="w-full p-3.5 glass-input rounded-xl font-mono text-[11px] text-slate-200 resize-y"
             />
           </div>
 
@@ -678,12 +716,12 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
             </div>
           )}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-white/[0.08]">
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => handleCopy('counter-body', `${subject}\n\n${body}`)}
-                className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="px-3 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-200 font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 {copiedItem === 'counter-body' ? (
                   <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -702,7 +740,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                     'text/plain;charset=utf-8'
                   )
                 }
-                className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="px-3 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-200 font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Download className="w-3.5 h-3.5 text-emerald-400" />
                 <span>Download .txt</span>
@@ -712,7 +750,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 href={webmailUrls.gmailUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                className="px-3 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 hover:text-white font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap"
               >
                 <span>Gmail Web</span>
                 <ExternalLink className="w-3 h-3" />
@@ -724,7 +762,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 type="button"
                 disabled={isSending}
                 onClick={handleSendCounterNotice}
-                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
               >
                 {isSending ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
@@ -744,7 +782,7 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                   onClose();
                   onOpenConnectEmail();
                 }}
-                className="px-4 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold cursor-pointer whitespace-nowrap"
+                className="px-4 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold transition-colors cursor-pointer whitespace-nowrap"
               >
                 Connect Email for Direct Send
               </button>

@@ -37,7 +37,28 @@ export type SemanticConsumerFieldRole =
   | 'consent_checkbox'
   | 'authorized_agent'
   | 'csrf_or_hidden'
+  | 'sensitive_id_field'
+  | 'marketing_opt_in'
+  | 'honeypot_trap'
   | 'unknown';
+
+export interface ConsumerDisclosurePolicy {
+  allowPhone: boolean;
+  allowStreetAddress: boolean;
+  allowZip: boolean;
+  allowBirthYearOrAge: boolean;
+  allowAuthorizedAgent: boolean;
+  minimumRequiredFieldConfidence: number;
+}
+
+export const DEFAULT_DISCLOSURE_POLICY: ConsumerDisclosurePolicy = {
+  allowPhone: true,
+  allowStreetAddress: true,
+  allowZip: true,
+  allowBirthYearOrAge: true,
+  allowAuthorizedAgent: true,
+  minimumRequiredFieldConfidence: 0.72,
+};
 
 export interface DiscoveredOptOutCandidate {
   url: string;
@@ -71,8 +92,21 @@ export interface ParsedOptOutFormField {
   required: boolean;
   options: ParsedFormFieldOption[];
   semanticRole: SemanticConsumerFieldRole;
+  confidence: number;
+  confidenceSignals: string[];
+  disclosureAllowed: boolean;
+  skipReason?: string;
   suggestedValue: string;
   defaultRawValue: string;
+}
+
+export interface FormSafetyEvaluation {
+  safeForAutoSubmit: boolean;
+  blockingReasons: string[];
+  ambiguousRequiredFields: string[];
+  missingRequiredProfileFields: string[];
+  sensitiveFieldsDetected: string[];
+  honeypotsSkipped: string[];
 }
 
 export interface ParsedOptOutForm {
@@ -86,6 +120,7 @@ export interface ParsedOptOutForm {
   isLikelyOptOutForm: boolean;
   relevanceScore: number;
   fields: ParsedOptOutFormField[];
+  safetyEvaluation?: FormSafetyEvaluation;
 }
 
 export interface OptOutPageInspection {
@@ -224,7 +259,10 @@ export const COMMON_OPTOUT_PATHS: string[] = [
  * SSRF guard for any URL crawled or submitted by server or client helpers.
  * Rejects loopback, private RFC1918 subnets, link-local / cloud metadata IPs, and non-HTTP(S) schemes.
  */
-export function isSafePublicOptOutUrl(rawUrl: string): {
+export function isSafePublicOptOutUrl(
+  rawUrl: string,
+  options?: { allowLoopbackForTests?: boolean }
+): {
   valid: boolean;
   normalizedUrl: string;
   hostname: string;
@@ -233,6 +271,15 @@ export function isSafePublicOptOutUrl(rawUrl: string): {
   const trimmed = (rawUrl || '').trim();
   if (!trimmed) {
     return { valid: false, normalizedUrl: '', hostname: '', reason: 'URL cannot be empty.' };
+  }
+
+  if (/^(javascript|data|file|ftp|blob|ws|wss|gopher|dict|ldap|mailto|tel|about|chrome):/i.test(trimmed)) {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      hostname: '',
+      reason: 'Only http:// and https:// URLs are permitted.',
+    };
   }
 
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
@@ -261,14 +308,75 @@ export function isSafePublicOptOutUrl(rawUrl: string): {
     };
   }
 
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
+  if (!host) {
+    return { valid: false, normalizedUrl: '', hostname: '', reason: 'Missing hostname.' };
+  }
+
   if (
-    !host ||
+    options?.allowLoopbackForTests &&
+    (host === '127.0.0.1' || host === 'localhost' || host === '::1')
+  ) {
+    parsed.hash = '';
+    return {
+      valid: true,
+      normalizedUrl: parsed.toString(),
+      hostname: host,
+    };
+  }
+
+  if (parsed.port) {
+    const portNum = parseInt(parsed.port, 10);
+    if (![80, 443, 8080, 8443].includes(portNum)) {
+      return {
+        valid: false,
+        normalizedUrl: '',
+        hostname: '',
+        reason: `Port ${parsed.port} is blocked for outbound privacy requests.`,
+      };
+    }
+  }
+
+  // Block integer, hex, octal, and shorthand (<4-part) IPv4 encodings (e.g. 2130706433, 0x7f000001, 0177.0.0.1, 127.1)
+  if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      hostname: host,
+      reason: 'Alternate integer/hexadecimal IP encodings are blocked for SSRF protection.',
+    };
+  }
+
+  const hostParts = host.split('.');
+  const allNumericOrHex = hostParts.every(
+    (part) => part.length > 0 && (/^\d+$/.test(part) || /^0x[0-9a-f]+$/i.test(part))
+  );
+  if (allNumericOrHex) {
+    if (
+      hostParts.some((part) => /^0x/i.test(part)) ||
+      hostParts.some((part) => part.length > 1 && part.startsWith('0')) ||
+      hostParts.length !== 4
+    ) {
+      return {
+        valid: false,
+        normalizedUrl: '',
+        hostname: host,
+        reason: 'Non-canonical octal, hex, or shorthand IPv4 literals are blocked.',
+      };
+    }
+  }
+
+  if (
     host === 'localhost' ||
+    host === 'metadata.google.internal' ||
+    host === 'metadata.goog' ||
+    host === 'instance-data' ||
     host.endsWith('.localhost') ||
     host.endsWith('.local') ||
     host.endsWith('.internal') ||
     host.endsWith('.arpa') ||
+    host.endsWith('.corp') ||
+    host.endsWith('.lan') ||
     !host.includes('.')
   ) {
     return {
@@ -279,15 +387,8 @@ export function isSafePublicOptOutUrl(rawUrl: string): {
     };
   }
 
-  // IPv6 loopback / unique-local / link-local block
-  if (
-    host === '::1' ||
-    host === '0:0:0:0:0:0:0:1' ||
-    host.startsWith('fc') ||
-    host.startsWith('fd') ||
-    host.startsWith('fe80') ||
-    host.includes(':')
-  ) {
+  // IPv6 literal block (prevents ::1, ::ffff:127.0.0.1, 64:ff9b::, fd00:ec2::254, fe80::)
+  if (host.includes(':')) {
     return {
       valid: false,
       normalizedUrl: '',
@@ -296,14 +397,14 @@ export function isSafePublicOptOutUrl(rawUrl: string): {
     };
   }
 
-  // IPv4 literal check
+  // Canonical IPv4 literal check
   const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (ipv4Match) {
     const octets = ipv4Match.slice(1).map((n) => parseInt(n, 10));
     if (octets.some((n) => n > 255)) {
       return { valid: false, normalizedUrl: '', hostname: host, reason: 'Invalid IPv4 address.' };
     }
-    const [a, b] = octets;
+    const [a, b, c] = octets;
     if (
       a === 0 ||
       a === 10 ||
@@ -311,6 +412,9 @@ export function isSafePublicOptOutUrl(rawUrl: string): {
       (a === 169 && b === 254) ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 168) ||
+      (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+      (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+      (a === 203 && b === 0 && c === 113) ||
       (a === 100 && b >= 64 && b <= 127) ||
       a >= 224
     ) {
@@ -318,7 +422,7 @@ export function isSafePublicOptOutUrl(rawUrl: string): {
         valid: false,
         normalizedUrl: '',
         hostname: host,
-        reason: 'Private, loopback, multicast, or cloud-metadata IPv4 ranges are blocked.',
+        reason: 'Private, loopback, CGNAT, documentation, or cloud-metadata IPv4 ranges are blocked.',
       };
     }
   }
@@ -394,13 +498,16 @@ export function scoreOptOutLinkCandidate(params: {
   pageTitle?: string;
   headingText?: string;
   baseDomain?: string;
+  allowLoopbackForTests?: boolean;
 }): {
   score: number;
   signals: string[];
   isThirdPartyPortal: boolean;
   thirdPartyVendor?: string;
 } {
-  const check = isSafePublicOptOutUrl(params.url);
+  const check = isSafePublicOptOutUrl(params.url, {
+    allowLoopbackForTests: params.allowLoopbackForTests,
+  });
   if (!check.valid) {
     return { score: -100, signals: [], isThirdPartyPortal: false };
   }
@@ -525,9 +632,10 @@ export function scoreOptOutLinkCandidate(params: {
 export function extractOptOutLinksFromHtml(
   html: string,
   pageBaseUrl: string,
-  targetBrokerDomain?: string
+  targetBrokerDomain?: string,
+  options?: { allowLoopbackForTests?: boolean }
 ): DiscoveredOptOutCandidate[] {
-  const baseCheck = isSafePublicOptOutUrl(pageBaseUrl);
+  const baseCheck = isSafePublicOptOutUrl(pageBaseUrl, options);
   if (!baseCheck.valid || !html) return [];
 
   const effectiveDomain = targetBrokerDomain || baseCheck.hostname;
@@ -550,7 +658,7 @@ export function extractOptOutLinksFromHtml(
       continue;
     }
 
-    const safeResolved = isSafePublicOptOutUrl(resolvedUrl);
+    const safeResolved = isSafePublicOptOutUrl(resolvedUrl, options);
     if (!safeResolved.valid) continue;
 
     const visibleText = stripHtmlTags(match[2]);
@@ -561,6 +669,7 @@ export function extractOptOutLinksFromHtml(
       url: safeResolved.normalizedUrl,
       anchorText: `${visibleText} ${ariaOrTitle}`.trim(),
       baseDomain: effectiveDomain,
+      allowLoopbackForTests: options?.allowLoopbackForTests,
     });
 
     if (scored.score < 20) continue;
@@ -591,13 +700,14 @@ export function extractOptOutLinksFromHtml(
     } catch {
       continue;
     }
-    const safeSrc = isSafePublicOptOutUrl(resolvedSrc);
+    const safeSrc = isSafePublicOptOutUrl(resolvedSrc, options);
     if (!safeSrc.valid) continue;
 
     const scored = scoreOptOutLinkCandidate({
       url: safeSrc.normalizedUrl,
       anchorText: `${attrs.title || ''} ${attrs['aria-label'] || ''}`,
       baseDomain: effectiveDomain,
+      allowLoopbackForTests: options?.allowLoopbackForTests,
     });
 
     if (scored.score >= 45 && !byUrl.has(safeSrc.normalizedUrl)) {
@@ -621,9 +731,10 @@ export function extractOptOutLinksFromHtml(
  */
 export function extractSitemapAndRobotsOptOutUrls(
   rawText: string,
-  baseDomainUrl: string
+  baseDomainUrl: string,
+  options?: { allowLoopbackForTests?: boolean }
 ): DiscoveredOptOutCandidate[] {
-  const baseCheck = isSafePublicOptOutUrl(baseDomainUrl);
+  const baseCheck = isSafePublicOptOutUrl(baseDomainUrl, options);
   if (!baseCheck.valid || !rawText) return [];
 
   const found = new Map<string, DiscoveredOptOutCandidate>();
@@ -632,11 +743,12 @@ export function extractSitemapAndRobotsOptOutUrls(
   const locRegex = /<loc>\s*([^<\s]+)\s*<\/loc>/gi;
   let m: RegExpExecArray | null;
   while ((m = locRegex.exec(rawText)) !== null) {
-    const candidateCheck = isSafePublicOptOutUrl(decodeHtmlEntities(m[1]));
+    const candidateCheck = isSafePublicOptOutUrl(decodeHtmlEntities(m[1]), options);
     if (!candidateCheck.valid) continue;
     const scored = scoreOptOutLinkCandidate({
       url: candidateCheck.normalizedUrl,
       baseDomain: baseCheck.hostname,
+      allowLoopbackForTests: options?.allowLoopbackForTests,
     });
     if (scored.score >= 35 && !found.has(candidateCheck.normalizedUrl)) {
       found.set(candidateCheck.normalizedUrl, {
@@ -664,11 +776,12 @@ export function extractSitemapAndRobotsOptOutUrls(
       } catch {
         continue;
       }
-      const safe = isSafePublicOptOutUrl(resolved);
+      const safe = isSafePublicOptOutUrl(resolved, options);
       if (!safe.valid) continue;
       const scored = scoreOptOutLinkCandidate({
         url: safe.normalizedUrl,
         baseDomain: baseCheck.hostname,
+        allowLoopbackForTests: options?.allowLoopbackForTests,
       });
       if (scored.score >= 45 && !found.has(safe.normalizedUrl)) {
         found.set(safe.normalizedUrl, {
@@ -686,6 +799,265 @@ export function extractSitemapAndRobotsOptOutUrls(
 }
 
 /**
+ * Scores and infers semantic consumer role for any HTML input/select/textarea control,
+ * returning explicit confidence (0.0–1.0) and signal trace, plus detecting honeypots,
+ * marketing opt-ins, and unlawful sensitive ID demands (SSN, Driver's License, passport).
+ */
+export function scoreSemanticFieldMapping(params: {
+  name: string;
+  id: string;
+  inputType: string;
+  label: string;
+  placeholder: string;
+  autocomplete?: string;
+  ariaLabel?: string;
+  tag: 'input' | 'select' | 'textarea';
+  isHiddenOrOffscreen?: boolean;
+  tabIndex?: number;
+}): {
+  role: SemanticConsumerFieldRole;
+  confidence: number;
+  signals: string[];
+} {
+  const inputType = (params.inputType || 'text').toLowerCase();
+  if (inputType === 'hidden') {
+    return { role: 'csrf_or_hidden', confidence: 0.99, signals: ['type=hidden token'] };
+  }
+
+  const labelAndAria = `${params.label || ''} ${params.ariaLabel || ''}`.toLowerCase().replace(/[_-]+/g, ' ');
+  const attrTokens = `${params.name || ''} ${params.id || ''} ${params.autocomplete || ''}`
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+  const haystack = `${attrTokens} ${labelAndAria} ${(params.placeholder || '').toLowerCase()}`
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // 1. Detect invisible anti-bot honeypot traps (never populate!)
+  if (
+    params.isHiddenOrOffscreen ||
+    /\b(honeypot|hp[\s]?field|website[\s]?url[\s]?trap|leave[\s]?blank|do[\s]?not[\s]?fill|fax[\s]?number[\s]?trap|b_name_trap)\b/i.test(
+      haystack
+    ) ||
+    (params.tabIndex === -1 && /^(website|company_url|fax|middle_initial_hp)$/i.test(params.name || ''))
+  ) {
+    return {
+      role: 'honeypot_trap',
+      confidence: 0.96,
+      signals: ['Anti-bot honeypot trap detected — excluded from fill'],
+    };
+  }
+
+  // 2. Detect excessive / sensitive government ID or financial fields (never auto-fill!)
+  if (
+    inputType === 'file' ||
+    /\b(ssn|social[\s-]?security|driver'?s?[\s-]?licen[sc]e|dl[\s-]?number|passport|tax[\s-]?id|itin|routing[\s-]?number|credit[\s-]?card|government[\s-]?id|photo[\s-]?id|upload[\s-]?id)\b/i.test(
+      haystack
+    )
+  ) {
+    return {
+      role: 'sensitive_id_field',
+      confidence: 0.97,
+      signals: ['Sensitive government ID / SSN / file upload — blocked by data minimization policy'],
+    };
+  }
+
+  if (inputType === 'checkbox') {
+    if (/\b(newsletter|marketing|promotional|subscribe|special[\s-]?offers|partner[\s-]?emails|opt[\s-]?in)\b/i.test(haystack)) {
+      return {
+        role: 'marketing_opt_in',
+        confidence: 0.95,
+        signals: ['Marketing/newsletter opt-in checkbox — left unchecked'],
+      };
+    }
+    if (/\b(agent|attorney|authorized[\s-]?representative|on[\s-]?behalf)\b/i.test(haystack)) {
+      return {
+        role: 'authorized_agent',
+        confidence: 0.91,
+        signals: ['Authorized agent declaration checkbox'],
+      };
+    }
+    if (/\b(confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|opt[\s-]?out|terms|acknowledge)\b/i.test(haystack)) {
+      return {
+        role: 'consent_checkbox',
+        confidence: 0.9,
+        signals: ['Statutory attestation / opt-out consent checkbox'],
+      };
+    }
+    return {
+      role: 'unknown',
+      confidence: 0.35,
+      signals: ['Unclassified checkbox — requires manual review'],
+    };
+  }
+
+  const signals: string[] = [];
+  const boost = (hasLabel: boolean, hasAttr: boolean, hasType: boolean): number => {
+    let c = 0.65;
+    if (hasType) {
+      c += 0.16;
+      signals.push(`input[type=${inputType}]`);
+    }
+    if (hasLabel) {
+      c += 0.14;
+      signals.push('matched visible label/ARIA');
+    }
+    if (hasAttr) {
+      c += 0.1;
+      signals.push('matched name/id/autocomplete');
+    }
+    return Math.min(0.99, Number(c.toFixed(2)));
+  };
+
+  if (inputType === 'email' || /\b(e[\s-]?mail|reply[\s-]?to|consumer[\s-]?email)\b/i.test(haystack)) {
+    const isConfirm = /\b(confirm|verify|repeat|retype)\b/i.test(haystack);
+    return {
+      role: isConfirm ? 'confirm_email' : 'email',
+      confidence: boost(
+        /\b(e[\s-]?mail)\b/i.test(labelAndAria),
+        /\b(e[\s-]?mail)\b/i.test(attrTokens),
+        inputType === 'email'
+      ),
+      signals,
+    };
+  }
+
+  if (
+    inputType === 'url' ||
+    /\b(profile[\s-]?url|record[\s-]?url|listing[\s-]?url|page[\s-]?url|link[\s-]?to[\s-]?profile|optout[\s-]?url|listing[\s-]?link|\burl\b)\b/i.test(
+      haystack
+    )
+  ) {
+    return {
+      role: 'record_url',
+      confidence: boost(
+        /\b(url|link|listing|profile)\b/i.test(labelAndAria),
+        /\b(url|link|listing|profile)\b/i.test(attrTokens),
+        inputType === 'url'
+      ),
+      signals,
+    };
+  }
+
+  if (inputType === 'tel' || /\b(phone|telephone|mobile|cell|tel)\b/i.test(haystack)) {
+    return {
+      role: 'phone',
+      confidence: boost(
+        /\b(phone|telephone|mobile|cell)\b/i.test(labelAndAria),
+        /\b(phone|tel|mobile)\b/i.test(attrTokens),
+        inputType === 'tel'
+      ),
+      signals,
+    };
+  }
+
+  if (/\b(first[\s-]?name|fname|given[\s-]?name|forename)\b/i.test(haystack)) {
+    return {
+      role: 'first_name',
+      confidence: boost(/\bfirst|given\b/i.test(labelAndAria), /\bfirst|fname|given\b/i.test(attrTokens), false),
+      signals,
+    };
+  }
+  if (/\b(last[\s-]?name|lname|surname|family[\s-]?name)\b/i.test(haystack)) {
+    return {
+      role: 'last_name',
+      confidence: boost(/\blast|surname|family\b/i.test(labelAndAria), /\blast|lname|family\b/i.test(attrTokens), false),
+      signals,
+    };
+  }
+  if (/\b(middle[\s-]?name|mname|middle[\s-]?initial)\b/i.test(haystack)) {
+    return {
+      role: 'middle_name',
+      confidence: boost(/\bmiddle\b/i.test(labelAndAria), /\bmiddle|mname\b/i.test(attrTokens), false),
+      signals,
+    };
+  }
+  if (/\b(full[\s-]?name|your[\s-]?name|consumer[\s-]?name|legal[\s-]?name|\bname\b)\b/i.test(haystack)) {
+    const exactFull = /\b(full[\s-]?name|legal[\s-]?name|consumer[\s-]?name|your[\s-]?name)\b/i.test(haystack);
+    return {
+      role: 'full_name',
+      confidence: exactFull ? 0.92 : 0.78,
+      signals: [exactFull ? 'explicit full-name label' : 'generic name control'],
+    };
+  }
+
+  if (/\b(zip|postal|postcode|zip[\s-]?code)\b/i.test(haystack)) {
+    return {
+      role: 'zip',
+      confidence: boost(/\bzip|postal\b/i.test(labelAndAria), /\bzip|postal\b/i.test(attrTokens), false),
+      signals,
+    };
+  }
+  if (/\b(street|address[\s-]?1|address[\s-]?line|mailing[\s-]?address|home[\s-]?address|residential[\s-]?address)\b/i.test(haystack)) {
+    return {
+      role: 'street_address',
+      confidence: boost(/\bstreet|address\b/i.test(labelAndAria), /\bstreet|addr\b/i.test(attrTokens), false),
+      signals,
+    };
+  }
+  if (/\b(city|town|municipality)\b/i.test(haystack)) {
+    return {
+      role: 'city',
+      confidence: boost(/\bcity|town\b/i.test(labelAndAria), /\bcity\b/i.test(attrTokens), false),
+      signals,
+    };
+  }
+  if (/\b(state|province|region|jurisdiction)\b/i.test(haystack)) {
+    return {
+      role: 'state',
+      confidence: boost(/\bstate|region|jurisdiction\b/i.test(labelAndAria), /\bstate|region\b/i.test(attrTokens), params.tag === 'select'),
+      signals,
+    };
+  }
+
+  if (/\b(birth[\s-]?year|year[\s-]?of[\s-]?birth|dob[\s-]?year|yob|dob|birth[\s-]?date)\b/i.test(haystack)) {
+    return {
+      role: 'birth_year',
+      confidence: /\b(dob|birth[\s-]?date)\b/i.test(haystack) && !/\byear\b/i.test(haystack) ? 0.74 : 0.88,
+      signals: ['birth year / DOB control'],
+    };
+  }
+  if (/\b(age|approx[\s-]?age)\b/i.test(haystack)) {
+    return {
+      role: 'age',
+      confidence: 0.86,
+      signals: ['age field'],
+    };
+  }
+
+  if (/\b(request[\s-]?type|right[\s-]?type|action[\s-]?type|privacy[\s-]?choice|opt[\s-]?out[\s-]?type)\b/i.test(haystack)) {
+    return {
+      role: 'request_type',
+      confidence: 0.9,
+      signals: ['privacy request type selector'],
+    };
+  }
+  if (/\b(statute|law|regulation)\b/i.test(haystack)) {
+    return {
+      role: 'statute',
+      confidence: 0.88,
+      signals: ['statutory authority selector'],
+    };
+  }
+
+  if (
+    params.tag === 'textarea' ||
+    /\b(reason|message|details|comments|additional[\s-]?info|description|statement)\b/i.test(haystack)
+  ) {
+    return {
+      role: 'reason_message',
+      confidence: params.tag === 'textarea' ? 0.87 : 0.78,
+      signals: ['statutory reason / message field'],
+    };
+  }
+
+  return {
+    role: 'unknown',
+    confidence: 0.2,
+    signals: ['Unrecognized field semantics'],
+  };
+}
+
+/**
  * Infers semantic consumer role for any arbitrary HTML input/select/textarea field.
  */
 export function inferSemanticFieldRole(params: {
@@ -696,88 +1068,102 @@ export function inferSemanticFieldRole(params: {
   placeholder: string;
   tag: 'input' | 'select' | 'textarea';
 }): SemanticConsumerFieldRole {
-  const inputType = (params.inputType || 'text').toLowerCase();
-  if (inputType === 'hidden') return 'csrf_or_hidden';
+  return scoreSemanticFieldMapping(params).role;
+}
 
-  const haystack = `${params.name} ${params.id} ${params.label} ${params.placeholder}`
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ');
+export function isRolePermittedByDisclosurePolicy(
+  role: SemanticConsumerFieldRole,
+  policy: ConsumerDisclosurePolicy = DEFAULT_DISCLOSURE_POLICY
+): { allowed: boolean; reason?: string } {
+  if (role === 'honeypot_trap') {
+    return { allowed: false, reason: 'Anti-bot honeypot trap skipped.' };
+  }
+  if (role === 'sensitive_id_field') {
+    return {
+      allowed: false,
+      reason: 'Sensitive ID / SSN / government document upload blocked by data minimization policy (11 CCR § 7060).',
+    };
+  }
+  if (role === 'marketing_opt_in') {
+    return { allowed: false, reason: 'Marketing/promotional checkbox blocked.' };
+  }
+  if (role === 'phone' && !policy.allowPhone) {
+    return { allowed: false, reason: 'Phone disclosure disabled by user policy.' };
+  }
+  if (role === 'street_address' && !policy.allowStreetAddress) {
+    return { allowed: false, reason: 'Street address disclosure disabled by user policy.' };
+  }
+  if (role === 'zip' && !policy.allowZip) {
+    return { allowed: false, reason: 'ZIP code disclosure disabled by user policy.' };
+  }
+  if ((role === 'birth_year' || role === 'age') && !policy.allowBirthYearOrAge) {
+    return { allowed: false, reason: 'Birth year / age disclosure disabled by user policy.' };
+  }
+  if (role === 'authorized_agent' && !policy.allowAuthorizedAgent) {
+    return { allowed: false, reason: 'Authorized agent assertion disabled by user policy.' };
+  }
+  return { allowed: true };
+}
 
-  if (inputType === 'checkbox') {
-    if (/agent|attorney|authorized|behalf/i.test(haystack)) {
-      return 'authorized_agent';
+/**
+ * Evaluates whether a parsed opt-out form is safe for autonomous submission without guessing
+ * ambiguous required fields, leaking restricted PII, or submitting empty required values.
+ */
+export function evaluateFormSubmissionSafety(
+  fields: ParsedOptOutFormField[],
+  policy: ConsumerDisclosurePolicy = DEFAULT_DISCLOSURE_POLICY
+): FormSafetyEvaluation {
+  const blockingReasons: string[] = [];
+  const ambiguousRequiredFields: string[] = [];
+  const missingRequiredProfileFields: string[] = [];
+  const sensitiveFieldsDetected: string[] = [];
+  const honeypotsSkipped: string[] = [];
+
+  for (const f of fields) {
+    if (f.semanticRole === 'csrf_or_hidden') continue;
+    if (f.semanticRole === 'honeypot_trap') {
+      honeypotsSkipped.push(f.name || f.label);
+      continue;
     }
-    return 'consent_checkbox';
-  }
-
-  if (inputType === 'email' || /\b(e[\s-]?mail|reply[\s-]?to|consumer[\s-]?email)\b/i.test(haystack)) {
-    if (/\b(confirm|verify|repeat|retype)\b/i.test(haystack)) {
-      return 'confirm_email';
+    if (f.semanticRole === 'sensitive_id_field') {
+      sensitiveFieldsDetected.push(f.label || f.name);
+      if (f.required) {
+        blockingReasons.push(
+          `Form demands a required sensitive identifier ("${f.label || f.name}"). Paused for 11 CCR § 7060 review.`
+        );
+      }
+      continue;
     }
-    return 'email';
+
+    if (f.required) {
+      if (f.semanticRole === 'unknown' || f.confidence < policy.minimumRequiredFieldConfidence) {
+        ambiguousRequiredFields.push(f.label || f.name);
+        blockingReasons.push(
+          `Required field "${f.label || f.name}" has low semantic mapping confidence (${Math.round(
+            f.confidence * 100
+          )}%).`
+        );
+      } else if (!f.disclosureAllowed) {
+        blockingReasons.push(
+          `Required field "${f.label || f.name}" is blocked by your disclosure policy (${f.skipReason || 'restricted'}).`
+        );
+      } else if (!f.suggestedValue || !f.suggestedValue.trim()) {
+        missingRequiredProfileFields.push(f.label || f.name);
+        blockingReasons.push(
+          `Required field "${f.label || f.name}" (${f.semanticRole}) has no value in your profile.`
+        );
+      }
+    }
   }
 
-  if (
-    inputType === 'url' ||
-    /\b(profile[\s-]?url|record[\s-]?url|listing[\s-]?url|page[\s-]?url|link[\s-]?to[\s-]?profile|optout[\s-]?url|url)\b/i.test(
-      haystack
-    )
-  ) {
-    return 'record_url';
-  }
-
-  if (inputType === 'tel' || /\b(phone|telephone|mobile|cell|tel)\b/i.test(haystack)) {
-    return 'phone';
-  }
-
-  if (/\b(first[\s-]?name|fname|given[\s-]?name|forename)\b/i.test(haystack)) {
-    return 'first_name';
-  }
-  if (/\b(last[\s-]?name|lname|surname|family[\s-]?name)\b/i.test(haystack)) {
-    return 'last_name';
-  }
-  if (/\b(middle[\s-]?name|mname|middle[\s-]?initial)\b/i.test(haystack)) {
-    return 'middle_name';
-  }
-  if (/\b(full[\s-]?name|your[\s-]?name|consumer[\s-]?name|legal[\s-]?name|\bname\b)\b/i.test(haystack)) {
-    return 'full_name';
-  }
-
-  if (/\b(zip|postal|postcode|zip[\s-]?code)\b/i.test(haystack)) {
-    return 'zip';
-  }
-  if (/\b(street|address[\s-]?1|address[\s-]?line|mailing[\s-]?address|home[\s-]?address)\b/i.test(haystack)) {
-    return 'street_address';
-  }
-  if (/\b(city|town|municipality)\b/i.test(haystack)) {
-    return 'city';
-  }
-  if (/\b(state|province|region|jurisdiction)\b/i.test(haystack)) {
-    return 'state';
-  }
-
-  if (/\b(birth[\s-]?year|year[\s-]?of[\s-]?birth|dob[\s-]?year|yob|dob|birth[\s-]?date)\b/i.test(haystack)) {
-    return 'birth_year';
-  }
-  if (/\b(age|approx[\s-]?age)\b/i.test(haystack)) {
-    return 'age';
-  }
-
-  if (/\b(request[\s-]?type|right[\s-]?type|action[\s-]?type|privacy[\s-]?choice|opt[\s-]?out[\s-]?type)\b/i.test(haystack)) {
-    return 'request_type';
-  }
-  if (/\b(statute|law|regulation)\b/i.test(haystack)) {
-    return 'statute';
-  }
-
-  if (
-    params.tag === 'textarea' ||
-    /\b(reason|message|details|comments|additional[\s-]?info|description|statement)\b/i.test(haystack)
-  ) {
-    return 'reason_message';
-  }
-
-  return 'unknown';
+  return {
+    safeForAutoSubmit: blockingReasons.length === 0,
+    blockingReasons,
+    ambiguousRequiredFields,
+    missingRequiredProfileFields,
+    sensitiveFieldsDetected,
+    honeypotsSkipped,
+  };
 }
 
 /**
@@ -1052,25 +1438,42 @@ function parseFieldsInsideFragment(
     const defaultRawValue =
       tag === 'textarea' ? stripHtmlTags(innerHtml) : attrs.value || '';
 
-    const semanticRole = inferSemanticFieldRole({
+    const inlineStyle = (attrs.style || '').toLowerCase();
+    const isHiddenStyle =
+      attrs['aria-hidden'] === 'true' ||
+      'hidden' in attrs ||
+      /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0\b/.test(inlineStyle);
+    const parsedTabIdx = attrs.tabindex !== undefined ? parseInt(attrs.tabindex, 10) : undefined;
+
+    const scored = scoreSemanticFieldMapping({
       name,
       id,
       inputType,
       label,
       placeholder,
+      autocomplete: attrs.autocomplete,
+      ariaLabel: attrs['aria-label'],
       tag,
+      isHiddenOrOffscreen: isHiddenStyle,
+      tabIndex: Number.isFinite(parsedTabIdx) ? parsedTabIdx : undefined,
     });
 
-    const suggestedValue = profile
-      ? resolveProfileValueForField(
-          semanticRole,
-          options,
-          defaultRawValue,
-          profile,
-          senderEmail,
-          broker
-        )
-      : defaultRawValue;
+    const semanticRole = scored.role;
+    const disclosureCheck = isRolePermittedByDisclosurePolicy(semanticRole);
+
+    const suggestedValue =
+      !disclosureCheck.allowed || semanticRole === 'unknown'
+        ? ''
+        : profile
+        ? resolveProfileValueForField(
+            semanticRole,
+            options,
+            defaultRawValue,
+            profile,
+            senderEmail,
+            broker
+          )
+        : defaultRawValue;
 
     fields.push({
       key: `${name || id || 'field'}_${idx}`,
@@ -1083,6 +1486,10 @@ function parseFieldsInsideFragment(
       required,
       options,
       semanticRole,
+      confidence: scored.confidence,
+      confidenceSignals: scored.signals,
+      disclosureAllowed: disclosureCheck.allowed,
+      skipReason: disclosureCheck.reason,
       suggestedValue,
       defaultRawValue,
     });
@@ -1105,8 +1512,11 @@ export function inspectRawOptOutHtml(params: {
   profile?: UserProfile;
   senderEmail?: string;
   broker?: DataBroker;
+  allowLoopbackForTests?: boolean;
 }): OptOutPageInspection {
-  const safeBase = isSafePublicOptOutUrl(params.finalUrl || params.pageUrl);
+  const safeBase = isSafePublicOptOutUrl(params.finalUrl || params.pageUrl, {
+    allowLoopbackForTests: params.allowLoopbackForTests,
+  });
   const resolvedPageUrl = safeBase.valid ? safeBase.normalizedUrl : params.pageUrl;
   const html = params.html || '';
   const httpStatus = params.httpStatus ?? 200;
@@ -1154,7 +1564,10 @@ export function inspectRawOptOutHtml(params: {
     if (fields.length === 0) continue;
 
     const visibleConsumerFields = fields.filter(
-      (f) => f.semanticRole !== 'csrf_or_hidden' && f.semanticRole !== 'unknown'
+      (f) =>
+        f.semanticRole !== 'csrf_or_hidden' &&
+        f.semanticRole !== 'honeypot_trap' &&
+        f.semanticRole !== 'unknown'
     );
     const formContextText = `${attrs.id || ''} ${attrs.name || ''} ${attrs.action || ''} ${submitButtonLabel} ${stripHtmlTags(innerHtml).slice(0, 500)}`;
 
@@ -1165,6 +1578,8 @@ export function inspectRawOptOutHtml(params: {
     if (/login|signin|newsletter|subscribe/i.test(`${attrs.id || ''} ${attrs.action || ''} ${submitButtonLabel}`)) {
       relevanceScore -= 35;
     }
+
+    const safetyEvaluation = evaluateFormSubmissionSafety(fields);
 
     forms.push({
       formIndex,
@@ -1177,6 +1592,7 @@ export function inspectRawOptOutHtml(params: {
       isLikelyOptOutForm: relevanceScore >= 25 || visibleConsumerFields.length >= 2,
       relevanceScore: Math.max(0, Math.min(100, relevanceScore)),
       fields,
+      safetyEvaluation,
     });
 
     formIndex++;
@@ -1191,7 +1607,9 @@ export function inspectRawOptOutHtml(params: {
       params.senderEmail,
       params.broker
     );
-    const visibleFields = spaParsed.fields.filter((f) => f.semanticRole !== 'csrf_or_hidden');
+    const visibleFields = spaParsed.fields.filter(
+      (f) => f.semanticRole !== 'csrf_or_hidden' && f.semanticRole !== 'honeypot_trap'
+    );
     if (visibleFields.length > 0) {
       forms.push({
         formIndex: 0,
@@ -1202,6 +1620,7 @@ export function inspectRawOptOutHtml(params: {
         isLikelyOptOutForm: true,
         relevanceScore: Math.min(95, visibleFields.length * 18 + 25),
         fields: spaParsed.fields,
+        safetyEvaluation: evaluateFormSubmissionSafety(spaParsed.fields),
       });
     }
   }
@@ -1211,7 +1630,8 @@ export function inspectRawOptOutHtml(params: {
   const embeddedLinks = extractOptOutLinksFromHtml(
     html,
     resolvedPageUrl,
-    params.broker?.domain
+    params.broker?.domain,
+    { allowLoopbackForTests: params.allowLoopbackForTests }
   );
 
   const primaryForm = forms[0];
@@ -1220,7 +1640,9 @@ export function inspectRawOptOutHtml(params: {
       httpStatus < 400 &&
       primaryForm &&
       primaryForm.isLikelyOptOutForm &&
-      isSafePublicOptOutUrl(primaryForm.actionUrl).valid &&
+      isSafePublicOptOutUrl(primaryForm.actionUrl, {
+        allowLoopbackForTests: params.allowLoopbackForTests,
+      }).valid &&
       (antiBot.gate === 'none' || antiBot.gate === 'email_verification')
   );
 
@@ -1366,10 +1788,11 @@ export function buildDisguisedOptOutSearchQueries(domainOrUrl: string): Disguise
 export function buildUniversalAutoFillScript(
   profile: UserProfile,
   senderEmail?: string,
-  broker?: DataBroker
+  broker?: DataBroker,
+  disclosurePolicy: ConsumerDisclosurePolicy = DEFAULT_DISCLOSURE_POLICY
 ): string {
   const email = (senderEmail || profile.emails[0] || '').trim();
-  const phone = (profile.phoneNumbers[0] || '').trim();
+  const phone = disclosurePolicy.allowPhone ? (profile.phoneNumbers[0] || '').trim() : '';
   const firstName = (profile.firstName || '').trim();
   const lastName = (profile.lastName || '').trim();
   const middleName = (profile.middleName || '').trim();
@@ -1377,13 +1800,13 @@ export function buildUniversalAutoFillScript(
   const city = (profile.currentCity || '').trim();
   const stateCode = (profile.currentState || 'CA').trim().toUpperCase();
   const stateName = US_STATE_NAMES[stateCode] || stateCode;
-  const zip = (profile.currentZip || '').trim();
-  const street =
-    (profile.currentStreet || '').trim() ||
-    [city, stateCode, zip].filter(Boolean).join(', ');
-  const birthYear = (profile.birthYear || '').trim();
+  const zip = disclosurePolicy.allowZip ? (profile.currentZip || '').trim() : '';
+  const street = disclosurePolicy.allowStreetAddress
+    ? (profile.currentStreet || '').trim() || [city, stateCode, zip].filter(Boolean).join(', ')
+    : '';
+  const birthYear = disclosurePolicy.allowBirthYearOrAge ? (profile.birthYear || '').trim() : '';
   const age =
-    birthYear && /^\d{4}$/.test(birthYear)
+    disclosurePolicy.allowBirthYearOrAge && birthYear && /^\d{4}$/.test(birthYear)
       ? String(Math.max(18, new Date().getFullYear() - parseInt(birthYear, 10)))
       : '';
   const recordUrl = broker ? getBrokerRecordSearchUrl(broker, profile) : '';
@@ -1407,9 +1830,16 @@ export function buildUniversalAutoFillScript(
     reason,
   });
 
-  // Clean, compact, dependency-free DOM + React native-value-setter auto-filler
+  // Clean, compact, dependency-free DOM + React native-value-setter auto-filler (never fills honeypots, SSN/ID, or marketing boxes; never auto-submits)
   return `(function(){
   const d = ${payloadJson};
+  const isVisible = (el) => {
+    if (!el || el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+    const st = window.getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 2 && r.height > 2;
+  };
   const setVal = (el, val) => {
     if (!val && val !== '') return false;
     const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
@@ -1422,19 +1852,31 @@ export function buildUniversalAutoFillScript(
     return true;
   };
   const labelFor = (el) => {
+    const parts = [];
     if (el.id) {
       const lb = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-      if (lb) return lb.innerText || '';
+      if (lb) parts.push(lb.innerText || '');
+    }
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      labelledBy.split(/\\s+/).forEach(id => {
+        const ref = document.getElementById(id);
+        if (ref) parts.push(ref.innerText || '');
+      });
     }
     const parentLb = el.closest('label');
-    return parentLb ? (parentLb.innerText || '') : '';
+    if (parentLb) parts.push(parentLb.innerText || '');
+    return parts.join(' ');
   };
   let filled = 0;
+  let skippedSensitive = 0;
   document.querySelectorAll('input, textarea, select').forEach((el) => {
-    if (el.disabled || el.readOnly) return;
+    if (el.disabled || el.readOnly || !isVisible(el)) return;
     const t = (el.type || '').toLowerCase();
-    if (['hidden','submit','button','reset','file','image','search'].includes(t)) return;
-    const h = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), labelFor(el)].filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g,' ');
+    if (['hidden','submit','button','reset','file','image','search','password'].includes(t)) return;
+    const h = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('autocomplete'), labelFor(el)].filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g,' ');
+    if (/\\b(honeypot|leave\\s*blank|do\\s*not\\s*fill)\\b/.test(h)) return;
+    if (/\\b(ssn|social\\s*security|driver'?s?\\s*licen[sc]e|passport|tax\\s*id|government\\s*id)\\b/.test(h)) { skippedSensitive++; return; }
     if (el.tagName === 'SELECT') {
       const opts = Array.from(el.options || []);
       let pick = null;
@@ -1452,7 +1894,7 @@ export function buildUniversalAutoFillScript(
       return;
     }
     if (t === 'checkbox') {
-      if (/confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|opt[\\s-]?out/i.test(h) && !/subscribe|marketing|newsletter|promo/i.test(h)) {
+      if (/confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|opt[\\s-]?out/i.test(h) && !/subscribe|marketing|newsletter|promo|opt[\\s-]?in/i.test(h)) {
         if (!el.checked) { el.click(); el.style.outline = '2px solid #10b981'; filled++; }
       }
       return;
@@ -1479,7 +1921,7 @@ export function buildUniversalAutoFillScript(
     if (el.tagName === 'TEXTAREA' || /\\b(reason|message|details|comment|request)\\b/.test(h)) { if (setVal(el, d.reason)) filled++; return; }
   });
   const badge = document.createElement('div');
-  badge.textContent = 'synOUT Auto-Filled ' + filled + ' Opt-Out Field(s) — Review & Submit';
+  badge.textContent = 'synOUT Auto-Filled ' + filled + ' Field(s)' + (skippedSensitive ? ' (' + skippedSensitive + ' sensitive ID skipped)' : '') + ' — Review & Submit Manually';
   badge.style.cssText = 'position:fixed;bottom:18px;right:18px;z-index:2147483647;background:#022c22;color:#6ee7b7;border:1px solid #10b981;padding:10px 16px;border-radius:10px;font:600 13px/1.4 monospace;box-shadow:0 10px 25px rgba(0,0,0,.45)';
   document.body.appendChild(badge);
   setTimeout(() => badge.remove(), 6500);
@@ -1489,9 +1931,10 @@ export function buildUniversalAutoFillScript(
 export function buildAutoFillBookmarkletHref(
   profile: UserProfile,
   senderEmail?: string,
-  broker?: DataBroker
+  broker?: DataBroker,
+  disclosurePolicy: ConsumerDisclosurePolicy = DEFAULT_DISCLOSURE_POLICY
 ): string {
-  const script = buildUniversalAutoFillScript(profile, senderEmail, broker)
+  const script = buildUniversalAutoFillScript(profile, senderEmail, broker, disclosurePolicy)
     .replace(/\r?\n\s*/g, ' ')
     .trim();
   return `javascript:${encodeURIComponent(script)}`;

@@ -21,15 +21,39 @@ import {
 import {
   crawlDomainForOptOutPages,
   inspectSingleOptOutUrl,
+  safePublicFetch,
   submitWebFormViaRelay,
 } from './src/server/optOutCrawler.ts';
+import {
+  clearSessionSmtpCredentials,
+  getRequestSessionId,
+  resolveSessionSmtpCredential,
+  sessionIsolationMiddleware,
+  storeSessionSmtpCredential,
+} from './src/server/sessionSecurity.ts';
+import { getAutomationCapabilities } from './src/server/browserAutomation/BrowserAutomationService.ts';
+import {
+  approveAndSubmitWorkflow,
+  cancelSessionWorkflowJob,
+  completeWorkflowEmailVerification,
+  executeStandaloneVerificationLink,
+  getSessionWorkflowJob,
+  listSessionWorkflowJobs,
+  purgeSessionWorkflows,
+  recheckWorkflowListingRemoval,
+  recordManualHandoffCompletion,
+  startOptOutWorkflow,
+} from './src/server/browserAutomation/WorkflowRunner.ts';
+import { listAllBrokerPlaybooks } from './src/server/browserAutomation/BrokerAdapters.ts';
+import { detectAntiBotGate } from './src/utils/optOutFormEngine.ts';
+import { getBrokerRecordSearchUrl } from './src/utils/scanEngine.ts';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
+export const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json({ limit: '1mb' }));
@@ -43,6 +67,9 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
   next();
 });
+
+// Per-client cryptographic session isolation for jobs, events, and encrypted SMTP tokens
+app.use('/api', sessionIsolationMiddleware);
 
 // In-memory Rate Limiting
 interface RateLimitRecord {
@@ -90,7 +117,7 @@ function scrubSensitivePII(text: string): string {
     .replace(/\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g, '[REDACTED_CARD]');
 }
 
-// In-memory realtime event log
+// Session-partitioned in-memory realtime event log (zero fake seeded events; zero cross-user leakage)
 interface RealtimeProtectionEvent {
   id: string;
   timestamp: string;
@@ -103,38 +130,27 @@ interface RealtimeProtectionEvent {
   externalStatusCode: number;
 }
 
-const realtimeProtectionEvents: RealtimeProtectionEvent[] = [
-  {
-    id: 'ev-1',
-    timestamp: new Date(Date.now() - 3600000).toISOString(),
-    brokerId: 'whitepages',
-    brokerName: 'Whitepages',
-    brokerDomain: 'whitepages.com',
-    action: 'DISPATCHING_REMOVAL',
-    externalConfirmationToken: 'SYN-9281-WP',
-    statusText: 'Statutory CCPA deletion notice transmitted to legal compliance desk.',
-    externalStatusCode: 202,
-  },
-  {
-    id: 'ev-2',
-    timestamp: new Date(Date.now() - 7200000).toISOString(),
-    brokerId: 'spokeo',
-    brokerName: 'Spokeo',
-    brokerDomain: 'spokeo.com',
-    action: 'INTERCEPTED',
-    externalConfirmationToken: 'SYN-4412-SPK',
-    statusText: 'New syndication listing intercepted and queued for automated opt-out.',
-    externalStatusCode: 200,
-  },
-];
+const sessionProtectionEvents = new Map<string, RealtimeProtectionEvent[]>();
 
-// Endpoint: Purge Session & In-Memory Logs
+function pushSessionEvent(sessionId: string, ev: RealtimeProtectionEvent): void {
+  const existing = sessionProtectionEvents.get(sessionId) || [];
+  existing.unshift(ev);
+  if (existing.length > 100) existing.length = 100;
+  sessionProtectionEvents.set(sessionId, existing);
+}
+
+function getSessionEvents(sessionId: string): RealtimeProtectionEvent[] {
+  return sessionProtectionEvents.get(sessionId) || [];
+}
+
+// Endpoint: Purge Current Session & Ephemeral Credentials (without wiping other active sessions)
 app.post('/api/user/purge-session', (req, res) => {
-  realtimeProtectionEvents.length = 0;
-  rateLimitMap.clear();
-  clearAllPooledTransporters();
+  const sessionId = getRequestSessionId(req);
+  sessionProtectionEvents.delete(sessionId);
+  clearSessionSmtpCredentials(sessionId);
+  purgeSessionWorkflows(sessionId);
   clearDnsMxCache();
-  res.json({ success: true, message: 'All in-memory session events and audit traces expunged.' });
+  res.json({ success: true, message: 'All session events, workflows, and ephemeral credentials expunged.' });
 });
 
 // Endpoint: Generate customized statutory legal notice (synOUT Legal Engine)
@@ -202,12 +218,13 @@ Notice requirement: Demand permanent deletion of phone, address, and online reco
 
 // Endpoint: Send or log notice dispatch
 app.post('/api/legal/send-gmail-notice', apiRateLimiter, (req, res) => {
+  const sessionId = getRequestSessionId(req);
   const safeBrokerName = sanitizeString(req.body.brokerName || 'Data Broker', 100);
   const safeBrokerDomain = sanitizeString(req.body.brokerDomain || 'broker.com', 100);
   const messageId = `<synout-${Date.now()}-${Math.random().toString(36).substr(2, 8)}@mail.synout.privacy>`;
   const nowIso = new Date().toISOString();
 
-  realtimeProtectionEvents.unshift({
+  pushSessionEvent(sessionId, {
     id: `ev-mail-${Date.now()}`,
     timestamp: nowIso,
     brokerId: sanitizeString(req.body.brokerId || 'broker', 80),
@@ -230,13 +247,14 @@ app.post('/api/legal/send-gmail-notice', apiRateLimiter, (req, res) => {
 
 // Endpoint: Dark Web / Deep Web Takedown Dispatch Audit
 app.post('/api/darkweb/dispatch-takedown', apiRateLimiter, (req, res) => {
+  const sessionId = getRequestSessionId(req);
   const sourceTitle = sanitizeString(req.body.sourceTitle || 'Dark Web Leak Host', 120);
   const hostContact = sanitizeString(req.body.hostContact || 'abuse@network', 120);
   const sourceCategory = sanitizeString(req.body.sourceCategory || 'Dark Web Archive', 80);
   const referenceId = `DW-TK-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
   const nowIso = new Date().toISOString();
 
-  realtimeProtectionEvents.unshift({
+  pushSessionEvent(sessionId, {
     id: `ev-dw-${Date.now()}`,
     timestamp: nowIso,
     brokerId: `darkweb-${sourceCategory.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
@@ -354,15 +372,17 @@ function getOrCreatePooledTransporter(
   return { key, transporter };
 }
 
-// Endpoint: Disconnect & immediately close any warm pooled SMTP sockets
-app.post('/api/email/disconnect', (_req, res) => {
+// Endpoint: Disconnect & immediately close warm SMTP sockets + wipe session vault secret
+app.post('/api/email/disconnect', (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  clearSessionSmtpCredentials(sessionId);
   clearAllPooledTransporters();
   res.json({ disconnected: true });
 });
 
-// Endpoint: Stateless verification of user-connected email account (Zero persistent storage)
-// Automatically fails over between Port 465 (SSL) and Port 587 (STARTTLS) if network filters one port
+// Endpoint: Verification of user-connected email account (stores AES-256-GCM encrypted token in RAM; zero password echoed to browser)
 app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
   const provider = sanitizeString(req.body.provider || 'gmail', 20) as EmailProviderId;
   const userEmail = sanitizeString(req.body.userEmail, 160).toLowerCase();
   const appPassword = typeof req.body.appPassword === 'string' ? req.body.appPassword.trim() : '';
@@ -403,8 +423,22 @@ app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
 
     try {
       await transporter.verify();
+      const stored = storeSessionSmtpCredential(sessionId, {
+        provider: candidate.provider,
+        userEmail,
+        normalizedAuthPass,
+        customHost: customHost || undefined,
+        customPort,
+        customSecure,
+        resolvedHost: candidate.host,
+        resolvedPort: candidate.port,
+        resolvedSecure: candidate.secure,
+      });
+
       return res.json({
         verified: true,
+        credentialId: stored.credentialId,
+        expiresAtIso: stored.expiresAtIso,
         provider: candidate.provider,
         host: candidate.host,
         port: candidate.port,
@@ -414,7 +448,6 @@ app.post('/api/email/verify-account', apiRateLimiter, async (req, res) => {
     } catch (err) {
       evictPooledTransporter(key);
       lastVerifyError = err;
-      // Only try alternate port/host when socket/network failed (do not double-attempt wrong passwords)
       if (!isNetworkOrSocketSmtpError(err)) {
         break;
       }
@@ -452,13 +485,27 @@ app.post('/api/email/verify-recipient', apiRateLimiter, async (req, res) => {
 // Endpoint: Send statutory opt-out email directly from user's own email on their behalf
 // Includes live DNS MX pre-flight verification + automatic fallback DPO failover
 app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
-  const provider = sanitizeString(req.body.provider || 'gmail', 20) as EmailProviderId;
-  const userEmail = sanitizeString(req.body.userEmail, 160);
+  const sessionId = getRequestSessionId(req);
+  const credentialId = sanitizeString(req.body.credentialId, 120);
+  const vaultSecret = credentialId
+    ? resolveSessionSmtpCredential(sessionId, credentialId)
+    : null;
+
+  const provider = (vaultSecret?.provider ||
+    sanitizeString(req.body.provider || 'gmail', 20)) as EmailProviderId;
+  const userEmail = vaultSecret?.userEmail || sanitizeString(req.body.userEmail, 160);
   const senderName = sanitizeString(req.body.senderName || 'Authorized Consumer', 100).replace(/["<>]/g, '');
-  const appPassword = typeof req.body.appPassword === 'string' ? req.body.appPassword.trim() : '';
-  const customHost = sanitizeString(req.body.customHost, 160);
-  const customPort = Number(req.body.customPort || 587);
-  const customSecure = typeof req.body.customSecure === 'boolean' ? req.body.customSecure : undefined;
+  const rawAppPassword =
+    vaultSecret?.normalizedAuthPass ||
+    (typeof req.body.appPassword === 'string' ? req.body.appPassword.trim() : '');
+  const customHost = vaultSecret?.customHost || sanitizeString(req.body.customHost, 160);
+  const customPort = Number(vaultSecret?.customPort || req.body.customPort || 587);
+  const customSecure =
+    typeof vaultSecret?.customSecure === 'boolean'
+      ? vaultSecret.customSecure
+      : typeof req.body.customSecure === 'boolean'
+      ? req.body.customSecure
+      : undefined;
   const bccSelf = Boolean(req.body.bccSelf);
 
   const recipientEmail = sanitizeString(req.body.recipientEmail, 160).toLowerCase();
@@ -480,14 +527,21 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
   const safeBrokerName = sanitizeString(req.body.brokerName || 'Data Broker', 100);
   const safeBrokerDomain = sanitizeString(req.body.brokerDomain || 'broker.com', 100);
 
+  if (credentialId && !vaultSecret && !req.body.appPassword) {
+    return res.status(401).json({
+      success: false,
+      errorCode: 'SESSION_CREDENTIAL_EXPIRED',
+      error: 'Your ephemeral SMTP session expired after server restart or inactivity. Reconnect your email account to continue sending.',
+    });
+  }
   if (!isValidEmailAddress(userEmail)) {
     return res.status(400).json({ error: 'Valid connected sender email is required.' });
   }
   if (!isValidEmailAddress(recipientEmail)) {
     return res.status(400).json({ error: 'Valid broker privacy email address is required.' });
   }
-  if (!appPassword || appPassword.length < 4 || appPassword.length > 256) {
-    return res.status(400).json({ error: 'Valid App Password or SMTP token is required.' });
+  if (!rawAppPassword || rawAppPassword.length < 4 || rawAppPassword.length > 256) {
+    return res.status(400).json({ error: 'Valid App Password or connected SMTP session is required.' });
   }
   if (!subject || !rawBody) {
     return res.status(400).json({ error: 'Subject line and legal notice body cannot be empty.' });
@@ -529,7 +583,9 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
   }
 
   const userEmailNormalized = userEmail.toLowerCase();
-  const normalizedAuthPass = normalizeAppPassword(provider, appPassword);
+  const normalizedAuthPass = vaultSecret
+    ? vaultSecret.normalizedAuthPass
+    : normalizeAppPassword(provider, rawAppPassword);
   if (!normalizedAuthPass || normalizedAuthPass.length < 4 || normalizedAuthPass.length > 256) {
     return res.status(400).json({ error: 'Valid App Password or SMTP token is required.' });
   }
@@ -547,8 +603,8 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
     return res.status(400).json({ error: msg });
   }
 
-  // Prefer the exact port that previously verified if provided by client
-  const preferredPort = Number(req.body.resolvedPort || 0);
+  // Prefer the exact port that previously verified if provided by client or session vault
+  const preferredPort = Number(vaultSecret?.resolvedPort || req.body.resolvedPort || 0);
   if (preferredPort === 465 || preferredPort === 587) {
     smtpCandidates.sort((a, b) => (a.port === preferredPort ? -1 : b.port === preferredPort ? 1 : 0));
   }
@@ -587,7 +643,6 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
           throw firstErr;
         }
         evictPooledTransporter(key);
-        // If socket/port failed and an alternate submission port exists, switch to it
         if (isNetworkOrSocketSmtpError(firstErr) && smtpCandidates.length > 1) {
           smtp = smtpCandidates[1];
         }
@@ -605,7 +660,7 @@ app.post('/api/email/dispatch-on-behalf', apiRateLimiter, async (req, res) => {
       const messageId = info.messageId || `<synout-${Date.now()}@${smtp.host}>`;
       const usedFallback = activeRecipient.toLowerCase() !== recipientEmail.toLowerCase();
 
-      realtimeProtectionEvents.unshift({
+      pushSessionEvent(sessionId, {
         id: `ev-smtp-${Date.now()}`,
         timestamp: nowIso,
         brokerId: safeBrokerId,
@@ -719,6 +774,7 @@ app.post('/api/optout/inspect-form', apiRateLimiter, async (req, res) => {
 
 // Endpoint: Relay mapped consumer opt-out form fields directly (with Sec-GPC: 1) when not CAPTCHA-gated
 app.post('/api/optout/submit-web-form', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
   const actionUrl = sanitizeString(req.body.actionUrl, 380);
   const method = String(req.body.method || 'POST').toUpperCase() === 'GET' ? 'GET' : 'POST';
   const refererUrl = sanitizeString(req.body.refererUrl, 380);
@@ -743,15 +799,18 @@ app.post('/api/optout/submit-web-form', apiRateLimiter, async (req, res) => {
     });
 
     if (relayRes.success) {
-      realtimeProtectionEvents.unshift({
+      pushSessionEvent(sessionId, {
         id: `ev-webform-${Date.now()}`,
         timestamp: new Date().toISOString(),
         brokerId: safeBrokerId,
         brokerName: safeBrokerName,
         brokerDomain: safeBrokerDomain,
         action: 'SUBMITTED_AWAITING_EXTERNAL_CACHE_PURGE',
-        externalConfirmationToken: relayRes.confirmationTicket,
-        statusText: `Web opt-out form submitted (${method} -> HTTP ${relayRes.httpStatus}) with Sec-GPC: 1 to ${safeBrokerName}.`,
+        externalConfirmationToken:
+          relayRes.brokerConfirmationCode || relayRes.internalSubmissionId,
+        statusText: relayRes.brokerConfirmationCode
+          ? `Web opt-out form accepted by ${safeBrokerName} (Broker Confirmation: ${relayRes.brokerConfirmationCode}).`
+          : `Web opt-out form POST completed (${method} -> HTTP ${relayRes.httpStatus}); no confirmation code issued by ${safeBrokerName}.`,
         externalStatusCode: relayRes.httpStatus,
       });
     }
@@ -763,71 +822,672 @@ app.post('/api/optout/submit-web-form', apiRateLimiter, async (req, res) => {
   }
 });
 
-// Endpoint: Automated Web Form Navigator execution & live portal handshake
+// Endpoint: Opt-In Live Broker Portal & Listing Verification Probe
+app.post('/api/scan/live-probe', apiRateLimiter, async (req, res) => {
+  const broker = req.body.broker;
+  const profile = req.body.profile;
+  if (!broker || typeof broker.domain !== 'string') {
+    return res.status(400).json({ error: 'Target broker definition is required.' });
+  }
+
+  const probeUrl = getBrokerRecordSearchUrl(broker, profile || null);
+  try {
+    const fetched = await safePublicFetch(probeUrl, { timeoutMs: 5500 });
+    const antiBot = detectAntiBotGate(fetched.bodyText, fetched.status);
+    const plainText = fetched.bodyText
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (
+      fetched.status === 403 ||
+      fetched.status === 429 ||
+      antiBot.gate === 'cloudflare_challenge'
+    ) {
+      return res.json({
+        probeUrl,
+        finalUrl: fetched.finalUrl,
+        httpStatus: fetched.status,
+        liveProbeStatus: 'anti_bot_gated',
+        verificationSource: 'live_probe_blocked_anti_bot',
+        summary: `Portal ${broker.domain} blocked automated datacenter probe (${antiBot.gate}). Open search URL directly in browser to inspect listing.`,
+      });
+    }
+
+    if (fetched.status === 404 || fetched.status === 410) {
+      return res.json({
+        probeUrl,
+        finalUrl: fetched.finalUrl,
+        httpStatus: fetched.status,
+        liveProbeStatus: 'no_listing_found',
+        verificationSource: 'live_listing_not_found',
+        summary: `Live probe returned HTTP ${fetched.status}; no matching public profile found at ${fetched.finalUrl}.`,
+      });
+    }
+
+    const fullName = profile
+      ? `${profile.firstName || ''} ${profile.lastName || ''}`.trim().toLowerCase()
+      : '';
+    const city = (profile?.currentCity || '').trim().toLowerCase();
+    const noResults =
+      /\b(no\s+records?\s+found|0\s+results|could\s+not\s+find\s+any\s+records|no\s+matching\s+people)\b/i.test(
+        plainText
+      );
+    const hasNameAndCity =
+      !noResults &&
+      fullName.length > 3 &&
+      plainText.toLowerCase().includes(fullName) &&
+      (!city || plainText.toLowerCase().includes(city));
+
+    if (noResults) {
+      return res.json({
+        probeUrl,
+        finalUrl: fetched.finalUrl,
+        httpStatus: fetched.status,
+        liveProbeStatus: 'no_listing_found',
+        verificationSource: 'live_listing_not_found',
+        summary: `Live probe on ${broker.domain} explicitly reported 0 matching records.`,
+      });
+    }
+
+    if (hasNameAndCity) {
+      return res.json({
+        probeUrl,
+        finalUrl: fetched.finalUrl,
+        httpStatus: fetched.status,
+        liveProbeStatus: 'listing_matched',
+        verificationSource: 'live_listing_match_found',
+        summary: `Live probe detected matching name & city tokens on ${fetched.finalUrl} (HTTP ${fetched.status}).`,
+      });
+    }
+
+    return res.json({
+      probeUrl,
+      finalUrl: fetched.finalUrl,
+      httpStatus: fetched.status,
+      liveProbeStatus: 'portal_reachable',
+      verificationSource: 'live_portal_probe_reachable',
+      summary: `Portal ${broker.domain} is live (HTTP ${fetched.status}); interactive JS search required to confirm individual listing.`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unreachable portal.';
+    return res.json({
+      probeUrl,
+      finalUrl: probeUrl,
+      httpStatus: 0,
+      liveProbeStatus: 'unreachable',
+      verificationSource: 'heuristic_exposure_estimate',
+      summary: `Could not reach ${broker.domain} directly (${msg}).`,
+    });
+  }
+});
+
+// ============================================================================
+// Autonomous Headless Browser Opt-Out Workflow Engine Endpoints
+// ============================================================================
+
+app.get('/api/workflows/capabilities', apiRateLimiter, (_req, res) => {
+  res.json(getAutomationCapabilities());
+});
+
+app.get('/api/workflows/adapters', apiRateLimiter, (_req, res) => {
+  res.json({ adapters: listAllBrokerPlaybooks() });
+});
+
+app.get('/api/workflows', apiRateLimiter, (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  res.json({ jobs: listSessionWorkflowJobs(sessionId) });
+});
+
+app.post('/api/workflows/start', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const profile = req.body.profile;
+  if (!profile || typeof profile.firstName !== 'string' || typeof profile.lastName !== 'string') {
+    return res.status(400).json({ error: 'Valid consumer UserProfile is required to start a workflow.' });
+  }
+
+  const mode =
+    req.body.mode === 'autonomous_auto_submit'
+      ? 'autonomous_auto_submit'
+      : 'inspect_and_preview';
+
+  const allowLoopback =
+    process.env.SYNOUT_TEST_ALLOW_LOOPBACK === '1' && Boolean(req.body.allowLoopbackForTests);
+
+  try {
+    const job = await startOptOutWorkflow({
+      sessionId,
+      broker: req.body.broker || undefined,
+      brokerId: sanitizeString(req.body.brokerId, 80) || undefined,
+      brokerName: sanitizeString(req.body.brokerName, 100) || undefined,
+      brokerDomain: sanitizeString(req.body.brokerDomain, 140) || undefined,
+      targetUrl: sanitizeString(req.body.targetUrl, 380) || undefined,
+      profile,
+      senderEmail: sanitizeString(req.body.senderEmail, 160) || undefined,
+      mode,
+      disclosurePolicy: req.body.disclosurePolicy || undefined,
+      fieldOverrides: req.body.fieldOverrides || undefined,
+      selectedCandidateId: sanitizeString(req.body.selectedCandidateId, 80) || undefined,
+      idempotencyKey: sanitizeString(req.body.idempotencyKey, 120) || undefined,
+      allowLoopbackForTests: allowLoopback,
+    });
+
+    if (
+      job.state === 'awaiting_broker_processing' ||
+      job.state === 'awaiting_email_verification' ||
+      job.state === 'submitted_unconfirmed'
+    ) {
+      pushSessionEvent(sessionId, {
+        id: `ev-wf-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        brokerId: job.brokerId,
+        brokerName: job.brokerName,
+        brokerDomain: job.brokerDomain,
+        action: 'SUBMITTED_AWAITING_EXTERNAL_CACHE_PURGE',
+        externalConfirmationToken: job.brokerConfirmationCode || job.internalSubmissionId,
+        statusText:
+          job.evidence?.outcomeSummary ||
+          `Headless workflow (${job.state}) completed for ${job.brokerName}.`,
+        externalStatusCode: job.evidence?.httpStatus || 200,
+      });
+    }
+
+    return res.json({ job });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed starting opt-out workflow.';
+    return res.status(400).json({ error: msg });
+  }
+});
+
+app.get('/api/workflows/:jobId', apiRateLimiter, (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const jobId = sanitizeString(req.params.jobId, 80);
+  const job = getSessionWorkflowJob(sessionId, jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Workflow job not found in active session.' });
+  }
+  return res.json({ job });
+});
+
+app.post('/api/workflows/:jobId/approve-and-submit', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const jobId = sanitizeString(req.params.jobId, 80);
+  try {
+    const job = await approveAndSubmitWorkflow({
+      sessionId,
+      jobId,
+      fieldOverrides: req.body.fieldOverrides || undefined,
+      disclosurePolicy: req.body.disclosurePolicy || undefined,
+      selectedCandidateId: sanitizeString(req.body.selectedCandidateId, 80) || undefined,
+    });
+
+    if (
+      job.state === 'awaiting_broker_processing' ||
+      job.state === 'awaiting_email_verification' ||
+      job.state === 'submitted_unconfirmed'
+    ) {
+      pushSessionEvent(sessionId, {
+        id: `ev-wf-sub-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        brokerId: job.brokerId,
+        brokerName: job.brokerName,
+        brokerDomain: job.brokerDomain,
+        action: 'SUBMITTED_AWAITING_EXTERNAL_CACHE_PURGE',
+        externalConfirmationToken: job.brokerConfirmationCode || job.internalSubmissionId,
+        statusText:
+          job.evidence?.outcomeSummary ||
+          `Approved web-form submission completed (${job.state}) for ${job.brokerName}.`,
+        externalStatusCode: job.evidence?.httpStatus || 200,
+      });
+    }
+
+    return res.json({ job });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed submitting workflow.';
+    return res.status(400).json({ error: msg });
+  }
+});
+
+app.post('/api/workflows/:jobId/verify-email', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const jobId = sanitizeString(req.params.jobId, 80);
+  const verificationUrl = sanitizeString(req.body.verificationUrl, 600);
+  const rawEmailText = typeof req.body.rawEmailText === 'string' ? req.body.rawEmailText.slice(0, 12000) : undefined;
+
+  if (!verificationUrl) {
+    return res.status(400).json({ error: 'Verification link URL is required.' });
+  }
+
+  try {
+    const job = await completeWorkflowEmailVerification({
+      sessionId,
+      jobId,
+      verificationUrl,
+      rawEmailText,
+    });
+    return res.json({ job });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Email verification link check failed.';
+    return res.status(400).json({ error: msg });
+  }
+});
+
+app.post('/api/workflows/:jobId/recheck', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const jobId = sanitizeString(req.params.jobId, 80);
+  const checkUrl = sanitizeString(req.body.checkUrl, 380) || undefined;
+
+  try {
+    const job = await recheckWorkflowListingRemoval({
+      sessionId,
+      jobId,
+      checkUrl,
+    });
+    return res.json({ job });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Listing removal re-check failed.';
+    return res.status(400).json({ error: msg });
+  }
+});
+
+app.post('/api/workflows/:jobId/handoff-complete', apiRateLimiter, (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const jobId = sanitizeString(req.params.jobId, 80);
+  const userProvidedConfirmationCode = sanitizeString(req.body.userProvidedConfirmationCode, 80);
+  const requiresEmailVerification = Boolean(req.body.requiresEmailVerification);
+
+  try {
+    const job = recordManualHandoffCompletion({
+      sessionId,
+      jobId,
+      userProvidedConfirmationCode: userProvidedConfirmationCode || undefined,
+      requiresEmailVerification,
+    });
+    return res.json({ job });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Could not update handoff status.';
+    return res.status(400).json({ error: msg });
+  }
+});
+
+app.post('/api/workflows/:jobId/cancel', apiRateLimiter, (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const jobId = sanitizeString(req.params.jobId, 80);
+  try {
+    const job = cancelSessionWorkflowJob(sessionId, jobId);
+    return res.json({ job });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Could not cancel workflow.';
+    return res.status(404).json({ error: msg });
+  }
+});
+
+// Endpoint: Automated Web Form Navigator execution via real Playwright WorkflowRunner (zero fabricated tickets)
 app.post('/api/broker/execute-form-removal', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
   const safeBrokerId = sanitizeString(req.body.brokerId || 'broker', 80);
   const safeBrokerName = sanitizeString(req.body.brokerName || 'Data Broker', 100);
   const safeBrokerDomain = sanitizeString(req.body.brokerDomain || 'broker.com', 100);
   const optOutUrl = sanitizeString(req.body.optOutUrl, 380);
+  const profile = req.body.profile;
 
-  let httpStatus = 200;
-  let pageTitle = '';
-  let antiBotGate = 'none';
+  if (!profile || typeof profile.firstName !== 'string') {
+    return res.status(400).json({ error: 'Valid consumer UserProfile is required for autonomous form removal.' });
+  }
 
-  if (optOutUrl) {
-    try {
-      const inspection = await inspectSingleOptOutUrl({
-        url: optOutUrl,
-        profile: req.body.profile || undefined,
+  try {
+    const job = await startOptOutWorkflow({
+      sessionId,
+      broker: req.body.broker || undefined,
+      brokerId: safeBrokerId,
+      brokerName: safeBrokerName,
+      brokerDomain: safeBrokerDomain,
+      targetUrl: optOutUrl || undefined,
+      profile,
+      senderEmail: sanitizeString(req.body.senderEmail, 160) || undefined,
+      mode: 'autonomous_auto_submit',
+    });
+
+    const submitted =
+      job.state === 'awaiting_broker_processing' ||
+      job.state === 'awaiting_email_verification' ||
+      job.state === 'submitted_unconfirmed';
+
+    if (submitted) {
+      pushSessionEvent(sessionId, {
+        id: `ev-nav-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        brokerId: safeBrokerId,
+        brokerName: safeBrokerName,
+        brokerDomain: safeBrokerDomain,
+        action: 'SUBMITTED_AWAITING_EXTERNAL_CACHE_PURGE',
+        externalConfirmationToken: job.brokerConfirmationCode || job.internalSubmissionId,
+        statusText:
+          job.evidence?.outcomeSummary ||
+          `Autonomous web-form workflow (${job.state}) completed for ${safeBrokerName}.`,
+        externalStatusCode: job.evidence?.httpStatus || 200,
       });
-      httpStatus = inspection.httpStatus || 200;
-      pageTitle = inspection.pageTitle;
-      antiBotGate = inspection.antiBotGate;
-    } catch {
-      httpStatus = 202;
+    }
+
+    return res.json({
+      success: submitted,
+      job,
+      state: job.state,
+      httpStatus: job.evidence?.httpStatus || 200,
+      pageTitle: job.discoveredTitle,
+      antiBotGate: job.blocker?.kind || 'none',
+      internalSubmissionId: job.internalSubmissionId,
+      brokerConfirmationCode: job.brokerConfirmationCode,
+      confirmationCode: job.brokerConfirmationCode || null,
+      blocker: job.blocker,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Autonomous form execution failed.';
+    return res.status(502).json({ success: false, error: msg });
+  }
+});
+
+
+// Endpoint: Execute a harvested broker email verification link via isolated SSRF-guarded Playwright
+app.post('/api/inbox/execute-verification-link', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const verificationUrl = sanitizeString(req.body.verificationUrl, 650);
+  const expectedBrokerDomain = sanitizeString(req.body.expectedBrokerDomain, 160);
+  const safeBrokerId = sanitizeString(req.body.brokerId || 'broker', 80);
+  const safeBrokerName = sanitizeString(req.body.brokerName || expectedBrokerDomain || 'Data Broker', 100);
+  const rawEmailText =
+    typeof req.body.rawEmailText === 'string' ? req.body.rawEmailText.slice(0, 12000) : undefined;
+
+  if (!verificationUrl || !expectedBrokerDomain) {
+    return res
+      .status(400)
+      .json({ error: 'Both verificationUrl and expectedBrokerDomain are required.' });
+  }
+
+  const allowLoopback =
+    process.env.SYNOUT_TEST_ALLOW_LOOPBACK === '1' && Boolean(req.body.allowLoopbackForTests);
+
+  try {
+    const result = await executeStandaloneVerificationLink({
+      verificationUrl,
+      expectedBrokerDomain,
+      rawEmailText,
+      allowLoopbackForTests: allowLoopback,
+    });
+
+    if (result.verified) {
+      pushSessionEvent(sessionId, {
+        id: `ev-harvester-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        brokerId: safeBrokerId,
+        brokerName: safeBrokerName,
+        brokerDomain: expectedBrokerDomain,
+        action: 'EXTERNAL_PURGE_CONFIRMED',
+        externalConfirmationToken:
+          result.brokerConfirmationCode || `SHA256-${result.evidenceSha256.slice(0, 12)}`,
+        statusText: result.summary,
+        externalStatusCode: result.httpStatus,
+      });
+    }
+
+    return res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Verification link execution failed.';
+    return res.status(400).json({ error: msg });
+  }
+});
+
+// Endpoint: Batch 30/60/90-day Re-Listing Diff Monitor Sweep
+app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
+  const brokers = Array.isArray(req.body.brokers) ? req.body.brokers.slice(0, 15) : [];
+  const profile = req.body.profile || null;
+  const previousHashes =
+    req.body.previousHashes && typeof req.body.previousHashes === 'object'
+      ? (req.body.previousHashes as Record<string, string>)
+      : {};
+
+  if (brokers.length === 0) {
+    return res.status(400).json({ error: 'Provide at least one broker to re-check.' });
+  }
+
+  const diffs: Array<{
+    brokerId: string;
+    brokerName: string;
+    brokerDomain: string;
+    probeUrl: string;
+    httpStatus: number;
+    snapshotSha256: string;
+    previousSha256: string | null;
+    outcome:
+      | 'confirmed_absent'
+      | 'resurfaced_regression'
+      | 'still_present_within_sla'
+      | 'anti_bot_gated'
+      | 'unreachable';
+    checkedAtIso: string;
+    summary: string;
+  }> = [];
+
+  const fullName = profile
+    ? `${profile.firstName || ''} ${profile.lastName || ''}`.trim().toLowerCase()
+    : '';
+  const city = (profile?.currentCity || '').trim().toLowerCase();
+
+  // Bounded concurrency (4 at a time)
+  const chunkSize = 4;
+  for (let i = 0; i < brokers.length; i += chunkSize) {
+    const slice = brokers.slice(i, i + chunkSize);
+    const batchResults = await Promise.all(
+      slice.map(async (entry: { broker: any; baselineStatus?: string }) => {
+        const broker = entry?.broker;
+        const baselineStatus = entry?.baselineStatus === 'removed' ? 'removed' : 'submitted';
+        if (!broker || typeof broker.domain !== 'string') return null;
+
+        const probeUrl = getBrokerRecordSearchUrl(broker, profile);
+        const checkedAtIso = new Date().toISOString();
+        const prevHash = previousHashes[broker.id] || null;
+
+        try {
+          const fetched = await safePublicFetch(probeUrl, { timeoutMs: 5000 });
+          const antiBot = detectAntiBotGate(fetched.bodyText, fetched.status);
+          const plainText = fetched.bodyText
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          const snapshotSha256 = crypto
+            .createHash('sha256')
+            .update(`${fetched.status}|${plainText.slice(0, 8000)}`)
+            .digest('hex');
+
+          if (
+            fetched.status === 403 ||
+            fetched.status === 429 ||
+            antiBot.gate === 'cloudflare_challenge'
+          ) {
+            return {
+              brokerId: String(broker.id),
+              brokerName: String(broker.name || broker.domain),
+              brokerDomain: String(broker.domain),
+              probeUrl,
+              httpStatus: fetched.status,
+              snapshotSha256,
+              previousSha256: prevHash,
+              outcome: 'anti_bot_gated' as const,
+              checkedAtIso,
+              summary: `${broker.domain} returned anti-bot gate (HTTP ${fetched.status}); manual spot-check recommended.`,
+            };
+          }
+
+          const explicitAbsent =
+            fetched.status === 404 ||
+            fetched.status === 410 ||
+            /\b(no\s+records?\s+found|0\s+results|could\s+not\s+find\s+any\s+records|no\s+matching\s+people)\b/i.test(
+              plainText
+            );
+
+          if (explicitAbsent) {
+            return {
+              brokerId: String(broker.id),
+              brokerName: String(broker.name || broker.domain),
+              brokerDomain: String(broker.domain),
+              probeUrl,
+              httpStatus: fetched.status,
+              snapshotSha256,
+              previousSha256: prevHash,
+              outcome: 'confirmed_absent' as const,
+              checkedAtIso,
+              summary: `Confirmed absent on ${broker.domain} (HTTP ${fetched.status}).`,
+            };
+          }
+
+          const hasNameAndCity =
+            fullName.length > 3 &&
+            plainText.toLowerCase().includes(fullName) &&
+            (!city || plainText.toLowerCase().includes(city));
+
+          if (hasNameAndCity) {
+            const outcome =
+              baselineStatus === 'removed'
+                ? ('resurfaced_regression' as const)
+                : ('still_present_within_sla' as const);
+            return {
+              brokerId: String(broker.id),
+              brokerName: String(broker.name || broker.domain),
+              brokerDomain: String(broker.domain),
+              probeUrl,
+              httpStatus: fetched.status,
+              snapshotSha256,
+              previousSha256: prevHash,
+              outcome,
+              checkedAtIso,
+              summary:
+                outcome === 'resurfaced_regression'
+                  ? `ALERT: Previously purged profile tokens resurfaced on ${broker.domain}!`
+                  : `Listing tokens still visible on ${broker.domain} while awaiting broker purge.`,
+            };
+          }
+
+          return {
+            brokerId: String(broker.id),
+            brokerName: String(broker.name || broker.domain),
+            brokerDomain: String(broker.domain),
+            probeUrl,
+            httpStatus: fetched.status,
+            snapshotSha256,
+            previousSha256: prevHash,
+            outcome: 'confirmed_absent' as const,
+            checkedAtIso,
+            summary: `No matching consumer listing tokens detected on ${broker.domain} (HTTP ${fetched.status}).`,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Timeout';
+          return {
+            brokerId: String(broker.id),
+            brokerName: String(broker.name || broker.domain),
+            brokerDomain: String(broker.domain),
+            probeUrl,
+            httpStatus: 0,
+            snapshotSha256: crypto.createHash('sha256').update(`ERR|${probeUrl}`).digest('hex'),
+            previousSha256: prevHash,
+            outcome: 'unreachable' as const,
+            checkedAtIso,
+            summary: `Could not reach ${broker.domain} (${msg}).`,
+          };
+        }
+      })
+    );
+
+    for (const item of batchResults) {
+      if (item) diffs.push(item);
     }
   }
 
-  const confirmationCode = `WEBFORM-${safeBrokerDomain
-    .replace(/[^a-zA-Z0-9]/g, '')
-    .slice(0, 8)
-    .toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
-
-  realtimeProtectionEvents.unshift({
-    id: `ev-nav-${Date.now()}`,
-    timestamp: new Date().toISOString(),
-    brokerId: safeBrokerId,
-    brokerName: safeBrokerName,
-    brokerDomain: safeBrokerDomain,
-    action: 'SUBMITTED_AWAITING_EXTERNAL_CACHE_PURGE',
-    externalConfirmationToken: confirmationCode,
-    statusText: `Web opt-out portal suppression logged for ${safeBrokerName}${pageTitle ? ` ("${pageTitle.slice(0, 50)}")` : ''}.`,
-    externalStatusCode: httpStatus,
-  });
-
   return res.json({
-    success: true,
-    httpStatus,
-    pageTitle,
-    antiBotGate,
-    confirmationCode,
+    checkedCount: diffs.length,
+    resurfacedCount: diffs.filter((d) => d.outcome === 'resurfaced_regression').length,
+    confirmedAbsentCount: diffs.filter((d) => d.outcome === 'confirmed_absent').length,
+    diffs,
   });
 });
 
-// Endpoint: Live feed
+// Endpoint: Audit a registered broker's statutory opt-out portal & Global Privacy Control (.well-known/gpc.json)
+app.post('/api/registries/audit-broker-gpc', apiRateLimiter, async (req, res) => {
+  const domain = sanitizeString(req.body.domain, 140)
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0];
+  const optOutUrl = sanitizeString(req.body.optOutUrl, 380);
+
+  if (!domain) {
+    return res.status(400).json({ error: 'Broker domain is required.' });
+  }
+
+  let gpcWellKnownSupported = false;
+  let gpcStatus = 0;
+  try {
+    const gpcRes = await safePublicFetch(`https://${domain}/.well-known/gpc.json`, {
+      timeoutMs: 4000,
+    });
+    gpcStatus = gpcRes.status;
+    if (gpcRes.status === 200) {
+      const parsed = JSON.parse(gpcRes.bodyText);
+      gpcWellKnownSupported = Boolean(parsed && parsed.gpc === true);
+    }
+  } catch {
+    gpcWellKnownSupported = false;
+  }
+
+  let portalReachable = false;
+  let portalHttpStatus = 0;
+  const targetPortal = optOutUrl || `https://${domain}`;
+  try {
+    const portalRes = await safePublicFetch(targetPortal, { timeoutMs: 5000 });
+    portalHttpStatus = portalRes.status;
+    portalReachable = portalRes.status >= 200 && portalRes.status < 400;
+  } catch {
+    portalReachable = false;
+  }
+
+  return res.json({
+    domain,
+    checkedAtIso: new Date().toISOString(),
+    gpcWellKnownSupported,
+    gpcStatus,
+    portalReachable,
+    portalHttpStatus,
+    complianceSummary:
+      portalReachable && gpcWellKnownSupported
+        ? `Portal online (HTTP ${portalHttpStatus}) & publishes .well-known/gpc.json (gpc: true).`
+        : portalReachable
+        ? `Opt-out portal reachable (HTTP ${portalHttpStatus}); no .well-known/gpc.json manifest published.`
+        : `Opt-out portal returned HTTP ${portalHttpStatus || 'unreachable'} — potential statutory availability issue.`,
+  });
+});
+
+// Endpoint: Session-isolated live feed
 app.get('/api/realtime-protection/live-feed', (req, res) => {
+  const sessionId = getRequestSessionId(req);
   res.json({
     activeMonitoring: true,
-    events: realtimeProtectionEvents,
+    events: getSessionEvents(sessionId),
     lastSync: new Date().toISOString(),
   });
 });
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
+  const automation = getAutomationCapabilities();
   res.json({
     status: 'ok',
     service: 'synOUT Privacy Engine',
     secretHygiene: 'env-isolated',
+    browserAutomation: automation.workerMode,
+    headlessAvailable: automation.headlessBrowserAvailable,
     timestamp: new Date().toISOString(),
   });
 });
@@ -852,7 +1512,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }
@@ -862,4 +1522,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.SYNOUT_IMPORT_SERVER_ONLY !== '1') {
+  startServer();
+}

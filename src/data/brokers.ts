@@ -28,6 +28,13 @@ export const DATA_BROKERS: DataBroker[] = [
       'Verify via telephone verification code sent to your phone number.'
     ],
     exposureLikelihood: 0.95,
+    adapterId: 'whitepages_phone_verify',
+    workflowType: 'profile_url_form',
+    requiresProfileUrl: true,
+    requiresPhoneVerification: true,
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
+    expectedSlaDays: 45,
   },
   {
     id: 'spokeo',
@@ -51,6 +58,14 @@ export const DATA_BROKERS: DataBroker[] = [
       'Click the confirmation link sent to your email.'
     ],
     exposureLikelihood: 0.92,
+    adapterId: 'spokeo_url_optout',
+    workflowType: 'profile_url_form',
+    requiresProfileUrl: true,
+    requiresEmailVerification: true,
+    knownAntiBotGate: 'recaptcha',
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
+    expectedSlaDays: 45,
   },
   {
     id: 'beenverified',
@@ -75,6 +90,13 @@ export const DATA_BROKERS: DataBroker[] = [
       'Click link in verification email to finalize suppression.'
     ],
     exposureLikelihood: 0.94,
+    adapterId: 'beenverified_network',
+    workflowType: 'record_search_then_form',
+    requiresEmailVerification: true,
+    knownAntiBotGate: 'cloudflare_challenge',
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
+    expectedSlaDays: 45,
   },
   {
     id: 'radaris',
@@ -97,6 +119,13 @@ export const DATA_BROKERS: DataBroker[] = [
       'Submit the removal request and confirm via SMS or email.'
     ],
     exposureLikelihood: 0.90,
+    adapterId: 'generic_dom_form',
+    workflowType: 'profile_url_form',
+    requiresProfileUrl: true,
+    requiresEmailVerification: true,
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
+    expectedSlaDays: 45,
   },
   {
     id: 'fastpeoplesearch',
@@ -120,6 +149,12 @@ export const DATA_BROKERS: DataBroker[] = [
       'Click confirmation link in your inbox.'
     ],
     exposureLikelihood: 0.88,
+    adapterId: 'cloudflare_captcha_portal',
+    workflowType: 'captcha_assisted_handoff',
+    requiresEmailVerification: true,
+    knownAntiBotGate: 'cloudflare_challenge',
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
   },
   {
     id: 'truepeoplesearch',
@@ -143,6 +178,12 @@ export const DATA_BROKERS: DataBroker[] = [
       'Verify via link sent to email.'
     ],
     exposureLikelihood: 0.89,
+    adapterId: 'cloudflare_captcha_portal',
+    workflowType: 'captcha_assisted_handoff',
+    requiresEmailVerification: true,
+    knownAntiBotGate: 'cloudflare_challenge',
+    provenanceSource: 'verified_privacy_portal',
+    lastVerifiedDate: '2026-03-15',
   },
   {
     id: 'thatsthem',
@@ -164,6 +205,11 @@ export const DATA_BROKERS: DataBroker[] = [
       'Submit request for instant suppression.'
     ],
     exposureLikelihood: 0.84,
+    adapterId: 'generic_dom_form',
+    workflowType: 'direct_web_form',
+    knownAntiBotGate: 'recaptcha',
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
   },
   {
     id: 'cyberbackgroundchecks',
@@ -186,6 +232,12 @@ export const DATA_BROKERS: DataBroker[] = [
       'Verify via email token.'
     ],
     exposureLikelihood: 0.86,
+    adapterId: 'cloudflare_captcha_portal',
+    workflowType: 'record_search_then_form',
+    requiresEmailVerification: true,
+    knownAntiBotGate: 'turnstile',
+    provenanceSource: 'verified_privacy_portal',
+    lastVerifiedDate: '2026-03-15',
   },
   {
     id: 'lexisnexis',
@@ -209,6 +261,11 @@ export const DATA_BROKERS: DataBroker[] = [
       'Submit supporting documentation or PIN verification.'
     ],
     exposureLikelihood: 0.95,
+    adapterId: 'lexisnexis_dsar',
+    workflowType: 'multi_step_dsar',
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
+    expectedSlaDays: 45,
   },
   {
     id: 'acxiom',
@@ -230,6 +287,13 @@ export const DATA_BROKERS: DataBroker[] = [
       'Confirm email address to complete marketing profile suppression.'
     ],
     exposureLikelihood: 0.88,
+    adapterId: 'acxiom_marketing_optout',
+    workflowType: 'direct_web_form',
+    requiresEmailVerification: true,
+    knownAntiBotGate: 'recaptcha',
+    provenanceSource: 'cpra_data_broker_registry',
+    lastVerifiedDate: '2026-03-15',
+    expectedSlaDays: 45,
   },
   {
     id: 'experian-marketing',
@@ -274,6 +338,11 @@ export const DATA_BROKERS: DataBroker[] = [
       'Confirm deletion link sent via email.'
     ],
     exposureLikelihood: 0.92,
+    adapterId: 'peopleconnect_suppression',
+    workflowType: 'record_search_then_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'parent_network_dpo',
+    lastVerifiedDate: '2026-03-15',
   },
   {
     id: 'instantcheckmate',
@@ -297,6 +366,11 @@ export const DATA_BROKERS: DataBroker[] = [
       'Click confirmation token.'
     ],
     exposureLikelihood: 0.85,
+    adapterId: 'peopleconnect_suppression',
+    workflowType: 'record_search_then_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'parent_network_dpo',
+    lastVerifiedDate: '2026-03-15',
   },
   {
     id: 'ussearch',
@@ -316,6 +390,11 @@ export const DATA_BROKERS: DataBroker[] = [
     overview: 'Long-standing national consumer locator service operated under PeopleConnect Holdings.',
     instructions: ['Submit statutory suppression demand to PeopleConnect privacy desk or suppression.peopleconnect.us.'],
     exposureLikelihood: 0.83,
+    adapterId: 'peopleconnect_suppression',
+    workflowType: 'record_search_then_form',
+    requiresEmailVerification: true,
+    provenanceSource: 'parent_network_dpo',
+    lastVerifiedDate: '2026-03-15',
   },
   {
     id: 'peoplefinders',
