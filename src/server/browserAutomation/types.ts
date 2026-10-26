@@ -27,7 +27,7 @@ export type BlockerKind =
 export interface CandidateRecordMatch {
   candidateId: string;
   selector: string;
-  actionType: 'click_button' | 'click_link' | 'check_radio' | 'navigate_url';
+  actionType: 'click_button' | 'click_link' | 'check_radio' | 'check_checkbox' | 'navigate_url';
   targetUrl?: string;
   fullName: string;
   age?: string;
@@ -43,7 +43,8 @@ export interface CandidateRecordMatch {
 export interface LiveDomFieldMapping {
   fieldKey: string;
   selector: string;
-  tag: 'input' | 'select' | 'textarea' | 'custom_combobox';
+  labelSelector?: string;
+  tag: 'input' | 'select' | 'textarea' | 'custom_combobox' | 'custom_checkbox';
   inputType: string;
   name: string;
   id: string;

@@ -46,6 +46,7 @@ import {
   ShieldCheck,
   Edit3,
   RotateCcw,
+  Bot,
 } from 'lucide-react';
 
 interface RemovalQueueModalProps {
@@ -55,6 +56,8 @@ interface RemovalQueueModalProps {
   onBrokerDispatched: (brokerId: string, messageId: string, silent?: boolean) => void;
   onComplete: (sentCount: number, senderEmail: string) => void;
   onOpenEmailWorkspace?: () => void;
+  onOpenAutomatedNavigator?: (broker: DataBroker, result: ScanResult) => void;
+  onOpenWebFormWorkbench?: (broker: DataBroker) => void;
 }
 
 interface DeliveryReceiptItem {
@@ -76,6 +79,8 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
   onBrokerDispatched,
   onComplete,
   onOpenEmailWorkspace,
+  onOpenAutomatedNavigator,
+  onOpenWebFormWorkbench,
 }) => {
   const {
     smtp,
@@ -104,6 +109,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
   const [rememberInBrowser, setRememberInBrowser] = useState<boolean>(true);
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [inlineConnectTab, setInlineConnectTab] = useState<'webmail' | 'app_code'>('webmail');
 
   // Queue & deliverability mitigation options
   const [includeAlreadySent, setIncludeAlreadySent] = useState<boolean>(false);
@@ -323,13 +329,13 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
     setMxResultsByBroker(nextMap);
     setIsCheckingMx(false);
 
-    const parts: string[] = [`${verifiedCount} mail server(s) verified via live DNS MX`];
+    const parts: string[] = [`${verifiedCount} broker inbox(es) verified active`];
     if (reroutedCount > 0) {
-      parts.push(`${reroutedCount} dead address(es) auto-rerouted to backup DPO`);
+      parts.push(`${reroutedCount} inactive address(es) switched to backup privacy inbox`);
     }
     if (portalFallbackCount > 0) {
       parts.push(
-        `${portalFallbackCount} unresolvable domain(s) moved to Web Portal queue to prevent bounces`
+        `${portalFallbackCount} site(s) switched to Online Form to prevent bounced mail`
       );
     }
     setMxSummaryBanner(parts.join(' · '));
@@ -488,15 +494,15 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
               className="text-xl font-bold text-white tracking-tight tabular-nums"
             >
               {dispatchFinished
-                ? 'Email Opt-Out Transmission & Deliverability Report'
+                ? 'Legal Removal Email Summary'
                 : isSingleMode
-                ? `Send Statutory Opt-Out Email to ${candidateTargets[0]?.broker.name}`
-                : `Send ${activeTargets.length} Verified Opt-Out Emails From Your Email`}
+                ? `Send Legal Removal Email to ${candidateTargets[0]?.broker.name}`
+                : `Send ${activeTargets.length} Legal Removal Emails For You`}
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
               {dispatchFinished
-                ? `Completed outbound transmission via ${activeConnectedEmail} with live DNS MX bounce protection.`
-                : 'synOUT pre-verifies recipient DNS MX servers, routes subsidiary brokers to parent-entity DPO desks, and lets you override any compliance email before sending.'}
+                ? `Finished sending your removal notices from ${activeConnectedEmail}.`
+                : 'synOUT writes every legal deletion email for you, checks that each broker inbox is active so nothing bounces, and sends directly from your email.'}
             </p>
           </div>
 
@@ -511,6 +517,37 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
           </button>
         </div>
 
+        {/* Single-Broker Online Form Alternative Bar */}
+        {!dispatchFinished &&
+          !isSending &&
+          isSingleMode &&
+          candidateTargets[0] &&
+          (onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
+            <div className="px-4 py-3 glass-subtle rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+              <span className="text-slate-300">
+                Prefer the online form? Let synOUT fill out{' '}
+                <strong className="text-white">{candidateTargets[0].broker.name}</strong>&apos;s
+                form &amp; check required consent boxes for you.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = candidateTargets[0];
+                  onClose();
+                  if (onOpenAutomatedNavigator) {
+                    onOpenAutomatedNavigator(target.broker, target.result);
+                  } else if (onOpenWebFormWorkbench) {
+                    onOpenWebFormWorkbench(target.broker);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-sky-300 font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                <Bot className="w-3.5 h-3.5 text-sky-400" />
+                <span>Auto-Fill Online Form Instead</span>
+              </button>
+            </div>
+          )}
+
         {/* Connected Account Banner OR Inline Connect Form */}
         {!dispatchFinished && (
           <>
@@ -520,13 +557,13 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
                   <div className="min-w-0">
                     <div className="text-xs font-bold text-white truncate">
-                      Sending From:{' '}
+                      Ready to Auto-Send From:{' '}
                       <span className="text-emerald-400 font-mono">{activeConnectedEmail}</span>
                     </div>
                     <div className="text-[11px] text-slate-400">
                       {smtp?.verified
-                        ? `Connected via ${smtp.resolvedHost}:${smtp.resolvedPort} · Pre-send DNS MX failover active`
-                        : 'Connected via Google Gmail API · Pre-send DNS MX failover active'}
+                        ? 'Verified background sender · Automatic backup privacy-inbox routing active'
+                        : 'Connected via Google Account · Automatic backup privacy-inbox routing active'}
                     </div>
                   </div>
                 </div>
@@ -547,13 +584,12 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                   <CheckCircle2 className="w-5 h-5 text-sky-400 shrink-0" />
                   <div className="min-w-0">
                     <div className="text-xs font-bold text-white truncate">
-                      Signed In via Webmail:{' '}
+                      Ready via 1-Click Webmail:{' '}
                       <span className="text-sky-400 font-mono">{activeConnectedEmail}</span>
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      Launches pre-addressed notices in{' '}
-                      {webmailSender.preferredLauncher.toUpperCase()} (no password or server socket
-                      required)
+                      Opens your pre-written legal removal email inside{' '}
+                      {webmailSender.preferredLauncher.toUpperCase()} — no password needed
                     </div>
                   </div>
                 </div>
@@ -564,24 +600,25 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                     onClick={handleDisconnectCurrent}
                     className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-semibold text-slate-300 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   >
-                    Switch Login Method
+                    Change Method
                   </button>
                 )}
               </div>
             ) : (
-              <div className="p-4 sm:p-5 glass-subtle border-amber-500/30 rounded-2xl space-y-4">
+              <div className="p-4 sm:p-5 glass-subtle border-emerald-500/25 rounded-2xl space-y-4">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="space-y-1">
-                    <div className="text-xs font-bold text-amber-300 flex items-center gap-2 tabular-nums">
-                      <Mail className="w-4 h-4 text-amber-400 shrink-0" />
+                    <div className="text-xs font-bold text-white flex items-center gap-2 tabular-nums">
+                      <Mail className="w-4 h-4 text-emerald-400 shrink-0" />
                       <span>
-                        Connect Your Email Once to Dispatch {activeTargets.length} Demand(s)
+                        Quick Email Setup — Pick Whichever Way Feels Easiest ({activeTargets.length}{' '}
+                        {activeTargets.length === 1 ? 'Email' : 'Emails'})
                       </span>
                     </div>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      {backendAvailable === false
-                        ? 'Static hosting detected — sign in with Instant Webmail Login or Google OAuth (HTTPS) below.'
-                        : 'Sign in with an App Password for automated background sending, Google OAuth, or Instant Webmail Login (zero password).'}
+                      Data brokers only honor deletion requests that come from you. Choose{' '}
+                      <strong className="text-slate-200">1-Click Webmail</strong> (zero passwords) or{' '}
+                      <strong className="text-slate-200">Auto-Send in Background</strong>.
                     </p>
                   </div>
                   {onOpenEmailWorkspace && (
@@ -593,151 +630,217 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                       }}
                       className="text-[11px] text-emerald-400 hover:underline cursor-pointer whitespace-nowrap"
                     >
-                      Full OAuth &amp; Email Settings
+                      More Email Options
                     </button>
                   )}
                 </div>
 
-                <form onSubmit={handleInlineConnect} className="space-y-3">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {(Object.keys(EMAIL_PROVIDER_PRESETS) as EmailProviderId[]).map((pid) => (
-                      <button
-                        key={pid}
-                        type="button"
-                        onClick={() => setProvider(pid)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer whitespace-nowrap ${
-                          provider === pid
-                            ? 'bg-emerald-500/15 text-white border-emerald-400/50'
-                            : 'bg-white/[0.04] text-slate-400 border-white/[0.08] hover:text-slate-200'
-                        }`}
-                      >
-                        {EMAIL_PROVIDER_PRESETS[pid].shortLabel}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="block text-xs font-semibold text-slate-300">
-                        Your Email Address
-                      </label>
-                      <input
-                        type="email"
-                        required
-                        value={emailInput}
-                        onChange={(e) => handleEmailChange(e.target.value)}
-                        placeholder="you@gmail.com"
-                        className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="block text-xs font-semibold text-slate-300">
-                          {preset.credentialLabel}
-                        </label>
-                        {preset.appPasswordUrl && (
-                          <a
-                            href={preset.appPasswordUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[11px] text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
-                          >
-                            <span>Get App Password</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
-                      </div>
-                      <div className="relative">
-                        <input
-                          type={showPassword ? 'text' : 'password'}
-                          required
-                          autoComplete="off"
-                          value={appPassword}
-                          onChange={(e) => setAppPassword(e.target.value)}
-                          placeholder={
-                            provider === 'icloud' ? 'xxxx-xxxx-xxxx-xxxx' : 'xxxx xxxx xxxx xxxx'
-                          }
-                          className="w-full glass-input rounded-xl pl-3 pr-8 py-2 text-xs text-white font-mono placeholder-slate-500"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowPassword((v) => !v)}
-                          aria-label={showPassword ? 'Hide password' : 'Show password'}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
-                        >
-                          {showPassword ? (
-                            <EyeOff className="w-3.5 h-3.5" />
-                          ) : (
-                            <Eye className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {provider === 'custom' && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <input
-                        type="text"
-                        required
-                        value={customHost}
-                        onChange={(e) => setCustomHost(e.target.value)}
-                        placeholder="smtp.yourdomain.com"
-                        className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white font-mono placeholder-slate-500"
-                      />
-                      <select
-                        value={customPort}
-                        onChange={(e) => {
-                          const p = Number(e.target.value);
-                          setCustomPort(p);
-                          setCustomSecure(p === 465);
-                        }}
-                        className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white font-mono"
-                      >
-                        <option value={587} className="bg-slate-900">
-                          Port 587 (STARTTLS)
-                        </option>
-                        <option value={465} className="bg-slate-900">
-                          Port 465 (SSL/TLS)
-                        </option>
-                        <option value={2525} className="bg-slate-900">
-                          Port 2525
-                        </option>
-                      </select>
-                    </div>
+                {/* Friendly 2-Way Method Chooser */}
+                <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-950/80 border border-white/[0.08] rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setInlineConnectTab('webmail')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      inlineConnectTab === 'webmail'
+                        ? 'bg-sky-500 text-slate-950 font-bold'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    1. 1-Click Webmail (Easiest · No Password)
+                  </button>
+                  {backendAvailable !== false && (
+                    <button
+                      type="button"
+                      onClick={() => setInlineConnectTab('app_code')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                        inlineConnectTab === 'app_code'
+                          ? 'bg-emerald-500 text-slate-950 font-bold'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      2. Auto-Send in Background (2-Step App Code)
+                    </button>
                   )}
+                </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={rememberInBrowser}
-                        onChange={(e) => setRememberInBrowser(e.target.checked)}
-                        className="rounded border-white/20 bg-slate-950/60 text-emerald-500"
-                      />
-                      <span>Keep my email connected on this browser</span>
-                    </label>
-
-                    <div className="flex flex-wrap items-center gap-2">
+                {inlineConnectTab === 'webmail' || backendAvailable === false ? (
+                  <div className="space-y-3 pt-1">
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Enter your email below. We&apos;ll open your pre-written legal removal email
+                      directly inside Gmail, Outlook, Yahoo, or your default mail app — you just
+                      click <strong>Send</strong>.
+                    </p>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2.5">
+                      <div className="flex-1 space-y-1">
+                        <label className="block text-xs font-semibold text-slate-300">
+                          Your Email Address
+                        </label>
+                        <input
+                          type="email"
+                          value={emailInput}
+                          onChange={(e) => handleEmailChange(e.target.value)}
+                          placeholder="you@gmail.com"
+                          className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
+                        />
+                      </div>
                       <button
                         type="button"
                         onClick={handleInlineWebmailSignIn}
-                        className="px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-sky-300 border border-sky-500/30 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                        className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
                       >
-                        Instant Webmail Login (No Password)
+                        Use My Email (No Password)
                       </button>
                       {oauthConfigured && (
                         <button
                           type="button"
                           onClick={handleInlineGoogleOAuth}
                           disabled={isVerifying}
-                          className="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 text-xs font-semibold cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                          className="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-900 text-xs font-semibold cursor-pointer disabled:opacity-50 whitespace-nowrap"
                         >
-                          Google OAuth
+                          Sign in with Google
                         </button>
                       )}
-                      {backendAvailable !== false && (
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={rememberInBrowser}
+                        onChange={(e) => setRememberInBrowser(e.target.checked)}
+                        className="rounded border-white/20 bg-slate-950/60 text-sky-500"
+                      />
+                      <span>Remember my email on this browser</span>
+                    </label>
+                  </div>
+                ) : (
+                  <form onSubmit={handleInlineConnect} className="space-y-3 pt-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(Object.keys(EMAIL_PROVIDER_PRESETS) as EmailProviderId[]).map((pid) => (
+                        <button
+                          key={pid}
+                          type="button"
+                          onClick={() => setProvider(pid)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer whitespace-nowrap ${
+                            provider === pid
+                              ? 'bg-emerald-500/15 text-white border-emerald-400/50'
+                              : 'bg-white/[0.04] text-slate-400 border-white/[0.08] hover:text-slate-200'
+                          }`}
+                        >
+                          {EMAIL_PROVIDER_PRESETS[pid].shortLabel}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="block text-xs font-semibold text-slate-300">
+                          Step 1: Your Email Address
+                        </label>
+                        <input
+                          type="email"
+                          required
+                          value={emailInput}
+                          onChange={(e) => handleEmailChange(e.target.value)}
+                          placeholder="you@gmail.com"
+                          className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="block text-xs font-semibold text-slate-300">
+                            Step 2: {preset.credentialLabel}
+                          </label>
+                          {preset.appPasswordUrl && (
+                            <a
+                              href={preset.appPasswordUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+                            >
+                              <span>Get 16-Letter Code</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                        <div className="relative">
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            required
+                            autoComplete="off"
+                            value={appPassword}
+                            onChange={(e) => setAppPassword(e.target.value)}
+                            placeholder={
+                              provider === 'icloud' ? 'xxxx-xxxx-xxxx-xxxx' : 'xxxx xxxx xxxx xxxx'
+                            }
+                            className="w-full glass-input rounded-xl pl-3 pr-8 py-2 text-xs text-white font-mono placeholder-slate-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword((v) => !v)}
+                            aria-label={showPassword ? 'Hide password' : 'Show password'}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                          >
+                            {showPassword ? (
+                              <EyeOff className="w-3.5 h-3.5" />
+                            ) : (
+                              <Eye className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {provider === 'custom' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <input
+                          type="text"
+                          required
+                          value={customHost}
+                          onChange={(e) => setCustomHost(e.target.value)}
+                          placeholder="smtp.yourdomain.com"
+                          className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white font-mono placeholder-slate-500"
+                        />
+                        <select
+                          value={customPort}
+                          onChange={(e) => {
+                            const p = Number(e.target.value);
+                            setCustomPort(p);
+                            setCustomSecure(p === 465);
+                          }}
+                          className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white font-mono"
+                        >
+                          <option value={587} className="bg-slate-900">
+                            Port 587 (STARTTLS)
+                          </option>
+                          <option value={465} className="bg-slate-900">
+                            Port 465 (SSL/TLS)
+                          </option>
+                          <option value={2525} className="bg-slate-900">
+                            Port 2525
+                          </option>
+                        </select>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={rememberInBrowser}
+                          onChange={(e) => setRememberInBrowser(e.target.checked)}
+                          className="rounded border-white/20 bg-slate-950/60 text-emerald-500"
+                        />
+                        <span>Keep my email connected on this browser</span>
+                      </label>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleInlineWebmailSignIn}
+                          className="px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-sky-300 border border-sky-500/30 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          Switch to 1-Click Webmail
+                        </button>
                         <button
                           type="submit"
                           disabled={isVerifying}
@@ -746,21 +849,21 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                           {isVerifying ? (
                             <>
                               <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                              <span>Verifying...</span>
+                              <span>Connecting...</span>
                             </>
                           ) : (
                             <>
                               <Lock className="w-3.5 h-3.5" />
-                              <span>Connect &amp; Verify Email</span>
+                              <span>Connect &amp; Auto-Send</span>
                             </>
                           )}
                         </button>
-                      )}
+                      </div>
                     </div>
-                  </div>
 
-                  <p className="text-[11px] text-slate-400">{preset.helpText}</p>
-                </form>
+                    <p className="text-[11px] text-slate-400">{preset.helpText}</p>
+                  </form>
+                )}
 
                 {connectError && (
                   <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -774,7 +877,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                         onClick={handleInlineWebmailSignIn}
                         className="px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold cursor-pointer shrink-0 whitespace-nowrap"
                       >
-                        Use Webmail Login Instead
+                        Use 1-Click Webmail Instead
                       </button>
                     )}
                   </div>
@@ -805,8 +908,8 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
             <div className="space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                 <span className="font-semibold text-slate-300 tabular-nums">
-                  Recipient Broker Privacy Desks ({activeTargets.length} email
-                  {portalOnlyTargets.length > 0 ? ` · ${portalOnlyTargets.length} portal` : ''})
+                  Broker Privacy Inboxes ({activeTargets.length} email
+                  {portalOnlyTargets.length > 0 ? ` · ${portalOnlyTargets.length} online form` : ''})
                 </span>
 
                 <div className="flex flex-wrap items-center gap-3">
@@ -822,7 +925,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                       <ShieldCheck className="w-3.5 h-3.5" />
                     )}
                     <span>
-                      {isCheckingMx ? 'Checking DNS MX...' : 'Verify Deliverability & Auto-Fix'}
+                      {isCheckingMx ? 'Checking Inboxes...' : 'Verify Broker Inboxes'}
                     </span>
                   </button>
 
@@ -833,7 +936,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                       className="text-slate-300 hover:text-white inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                     >
                       <Eye className="w-3.5 h-3.5" />
-                      <span>{showSamplePreview ? 'Hide Preview' : 'Preview Notice'}</span>
+                      <span>{showSamplePreview ? 'Hide Email Text' : 'Preview Email Text'}</span>
                       {showSamplePreview ? (
                         <ChevronUp className="w-3.5 h-3.5" />
                       ) : (
@@ -908,6 +1011,28 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
+                          {(contact.requiresPortalWarning || isSkippedToPortal) &&
+                            (onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const matchedResult = queue.find(
+                                    (q) => q.brokerId === broker.id
+                                  );
+                                  onClose();
+                                  if (onOpenAutomatedNavigator && matchedResult) {
+                                    onOpenAutomatedNavigator(broker, matchedResult);
+                                  } else if (onOpenWebFormWorkbench) {
+                                    onOpenWebFormWorkbench(broker);
+                                  }
+                                }}
+                                className="px-2 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-sky-300 font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap text-[11px]"
+                                title="Let synOUT fill this online form & check required boxes for you"
+                              >
+                                <Bot className="w-3 h-3 text-sky-400" />
+                                <span>Auto-Fill Form</span>
+                              </button>
+                            )}
                           {contact.requiresPortalWarning && (
                             <a
                               href={broker.optOutUrl}
@@ -1033,9 +1158,9 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                   className="mt-0.5 rounded border-white/20 bg-slate-950/60 text-emerald-500"
                 />
                 <span>
-                  CC verified backup / parent-entity DPO address when available{' '}
+                  Also CC the parent company&apos;s privacy team when available{' '}
                   <span className="text-slate-500">
-                    (ensures delivery even if a subsidiary brand inbox is unmonitored)
+                    (helps make sure your email is read even if a smaller site&apos;s inbox is slow)
                   </span>
                 </span>
               </label>
@@ -1049,11 +1174,8 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                     className="mt-0.5 rounded border-white/20 bg-slate-950/60 text-emerald-500"
                   />
                   <span>
-                    Skip {portalPrimaryCount} Web-Portal-Primary directory inbox(es) and list their
-                    direct opt-out portals instead{' '}
-                    <span className="text-slate-500">
-                      (prevents auto-bounces from free directories that enforce CAPTCHA portals)
-                    </span>
+                    Skip {portalPrimaryCount} site(s) that prefer an online form and show their
+                    direct form link instead
                   </span>
                 </label>
               )}
@@ -1067,8 +1189,9 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                     className="mt-0.5 rounded border-white/20 bg-slate-950/60 text-emerald-500"
                   />
                   <span>
-                    BCC a copy of each sent demand to{' '}
-                    <strong className="font-mono text-white">{activeConnectedEmail}</strong>
+                    Send a blind copy (BCC) of each removal email to{' '}
+                    <strong className="font-mono text-white">{activeConnectedEmail}</strong> for my
+                    records
                   </span>
                 </label>
               )}
@@ -1185,6 +1308,28 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                         Blocked Bounce · Use Portal
                       </span>
                     )}
+
+                    {(item.status !== 'sent' || item.requiresPortalFollowup) &&
+                      (onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const brokerObj = findBrokerById(item.brokerId);
+                            const matchedResult = queue.find((q) => q.brokerId === item.brokerId);
+                            if (!brokerObj) return;
+                            onClose();
+                            if (onOpenAutomatedNavigator && matchedResult) {
+                              onOpenAutomatedNavigator(brokerObj, matchedResult);
+                            } else if (onOpenWebFormWorkbench) {
+                              onOpenWebFormWorkbench(brokerObj);
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap text-[11px]"
+                        >
+                          <Bot className="w-3 h-3" />
+                          <span>Auto-Fill Form For Me</span>
+                        </button>
+                      )}
 
                     {(item.status !== 'sent' || item.requiresPortalFollowup) && item.optOutUrl && (
                       <a

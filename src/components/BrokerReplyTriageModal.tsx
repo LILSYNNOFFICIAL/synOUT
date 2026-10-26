@@ -20,6 +20,7 @@ import {
   useEmailConnection,
 } from '../services/emailConnectionStore';
 import { copyTextToClipboard, downloadFile } from '../utils/exportEngines';
+import { sessionFetch } from '../services/sessionClient';
 import {
   X,
   Inbox,
@@ -36,6 +37,8 @@ import {
   RefreshCw,
   FileWarning,
   Lock,
+  Play,
+  Bot,
 } from 'lucide-react';
 
 interface BrokerReplyTriageModalProps {
@@ -50,6 +53,15 @@ interface BrokerReplyTriageModalProps {
     markVerifiedRemoved: boolean
   ) => void;
   onRecordCounterNoticeSent: (brokerId: string, receiptMessageId: string) => void;
+  onVerificationLinkCompleted?: (params: {
+    broker: DataBroker;
+    confirmationCode: string | null;
+    finalUrl: string;
+    evidenceSha256: string;
+    summary: string;
+  }) => void;
+  onOpenAutomatedNavigator?: (broker: DataBroker, result: ScanResult) => void;
+  onOpenWebFormWorkbench?: (broker: DataBroker) => void;
   onOpenConnectEmail: () => void;
   onOpenIdRedactor?: () => void;
   onClose: () => void;
@@ -111,10 +123,14 @@ function formatTriageStatusProse(category: string): string {
 
 export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
   initialBroker,
+  initialResult,
   results,
   profile,
   onSaveTicketAndNotes,
   onRecordCounterNoticeSent,
+  onVerificationLinkCompleted,
+  onOpenAutomatedNavigator,
+  onOpenWebFormWorkbench,
   onOpenConnectEmail,
   onOpenIdRedactor,
   onClose,
@@ -177,6 +193,17 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendSuccess, setSendSuccess] = useState<string | null>(null);
   const [ticketSavedBanner, setTicketSavedBanner] = useState<string | null>(null);
+  const [linkExecByUrl, setLinkExecByUrl] = useState<
+    Record<
+      string,
+      {
+        running: boolean;
+        verified: boolean;
+        summary: string;
+        confirmationCode?: string | null;
+      }
+    >
+  >({});
 
   const analysis = useMemo(() => {
     if (!rawReplyText.trim()) return null;
@@ -246,6 +273,89 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
       );
     } else {
       setTicketSavedBanner(`Blacklisted bounced address for ${activeBroker.name}.`);
+    }
+  };
+
+  const handleExecuteSanitizedLink = async (sanitizedUrl: string, host: string) => {
+    const expectedDomain = activeBroker?.domain || host;
+    setLinkExecByUrl((prev) => ({
+      ...prev,
+      [sanitizedUrl]: {
+        running: true,
+        verified: false,
+        summary: 'Clicking confirmation link and checking any required boxes for you...',
+      },
+    }));
+
+    try {
+      const res = await sessionFetch('/api/inbox/execute-verification-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          verificationUrl: sanitizedUrl,
+          expectedBrokerDomain: expectedDomain,
+          brokerId: activeBroker?.id,
+          brokerName: activeBroker?.name,
+          rawEmailText: rawReplyText,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+
+      const verified = Boolean(data.verified);
+      const code = data.brokerConfirmationCode || activeTicketId || null;
+      const summary = String(data.summary || 'Confirmation link completed.');
+
+      if (data.brokerConfirmationCode && !manualTicketOverride) {
+        setManualTicketOverride(data.brokerConfirmationCode);
+      }
+
+      setLinkExecByUrl((prev) => ({
+        ...prev,
+        [sanitizedUrl]: {
+          running: false,
+          verified,
+          summary,
+          confirmationCode: code,
+        },
+      }));
+
+      if (verified && activeBroker) {
+        onVerificationLinkCompleted?.({
+          broker: activeBroker,
+          confirmationCode: code,
+          finalUrl: data.finalUrl || sanitizedUrl,
+          evidenceSha256: data.evidenceSha256 || '',
+          summary,
+        });
+        setTicketSavedBanner(
+          `Confirmed ${activeBroker.name} verification link${code ? ` (Code: ${code})` : ''}.`
+        );
+      }
+    } catch (err) {
+      setLinkExecByUrl((prev) => ({
+        ...prev,
+        [sanitizedUrl]: {
+          running: false,
+          verified: false,
+          summary: err instanceof Error ? err.message : 'Could not complete link automatically.',
+        },
+      }));
+    }
+  };
+
+  const handleLaunchAutoFormForActiveBroker = () => {
+    if (!activeBroker) return;
+    const matchedResult =
+      (initialResult && initialResult.brokerId === activeBroker.id ? initialResult : undefined) ||
+      results.find((r) => r.brokerId === activeBroker.id);
+    onClose();
+    if (matchedResult && onOpenAutomatedNavigator) {
+      onOpenAutomatedNavigator(activeBroker, matchedResult);
+    } else if (onOpenWebFormWorkbench) {
+      onOpenWebFormWorkbench(activeBroker);
     }
   };
 
@@ -323,12 +433,12 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
               <span>11 CCR § 7060 Verification Shield</span>
             </div>
             <h2 className="text-xl font-bold text-white tracking-tight">
-              Broker Response Parser, Bounce Remediator &amp; Statutory Rebuttal
+              Broker Reply Helper, Confirmation Link Runner &amp; Bounce Fixer
             </h2>
             <p className="text-slate-400 leading-relaxed">
-              Paste any broker email reply or Mailer-Daemon bounce message to blacklist dead
-              addresses, switch to verified backup DPO contacts, sanitize links, or counter
-              unlawful ID demands.
+              Paste any broker email reply or bounce notice. synOUT can click confirmation links and
+              check final boxes for you, switch bounced addresses to a backup contact or online form,
+              or push back against unlawful ID requests.
             </p>
           </div>
           <button
@@ -450,17 +560,29 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
               <div className="pt-4 border-t border-white/[0.08] space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="font-bold text-amber-300">
-                    Undeliverable Address Mitigation ({activeBroker.name})
+                    Email Bounced — Switch to Backup Email or Let synOUT Fill the Online Form ({activeBroker.name})
                   </div>
-                  <a
-                    href={activeBroker.optOutUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
-                  >
-                    <span>Open Official Opt-Out Portal</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
+                      <button
+                        type="button"
+                        onClick={handleLaunchAutoFormForActiveBroker}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <Bot className="w-3.5 h-3.5" />
+                        <span>Auto-Fill Online Form For Me</span>
+                      </button>
+                    )}
+                    <a
+                      href={activeBroker.optOutUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-slate-200 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <span>Open Official Opt-Out Portal</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
                 </div>
 
                 {analysis.bouncedAddresses.length > 0 && (
@@ -522,59 +644,101 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
                 )}
 
                 <div className="divide-y divide-white/[0.07] rounded-xl border border-white/[0.08] bg-slate-950/40 overflow-hidden">
-                  {analysis.extractedLinks.map((lnk, idx) => (
-                    <div
-                      key={idx}
-                      className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0 space-y-1">
-                        <div className="font-mono text-sky-300 break-all text-[11px]">
-                          {lnk.sanitizedUrl}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-400">
-                          <span>Host: {lnk.host || 'unknown'}</span>
-                          {lnk.matchesBrokerDomain === true && (
-                            <span className="text-emerald-400">
-                              · Matches {activeBroker?.domain}
-                            </span>
-                          )}
-                          {lnk.matchesBrokerDomain === false && (
-                            <span className="text-rose-400">· External Host Mismatch</span>
-                          )}
-                          {lnk.strippedParams.length > 0 && (
-                            <span className="text-amber-300">
-                              · Stripped {lnk.strippedParams.length} tracker(s):{' '}
-                              {lnk.strippedParams.join(', ')}
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                  {analysis.extractedLinks.map((lnk, idx) => {
+                    const exec = linkExecByUrl[lnk.sanitizedUrl];
+                    return (
+                      <div key={idx} className="p-3 space-y-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="min-w-0 space-y-1">
+                            <div className="font-mono text-sky-300 break-all text-[11px]">
+                              {lnk.sanitizedUrl}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-400">
+                              <span>Host: {lnk.host || 'unknown'}</span>
+                              {lnk.matchesBrokerDomain === true && (
+                                <span className="text-emerald-400">
+                                  · Matches {activeBroker?.domain}
+                                </span>
+                              )}
+                              {lnk.matchesBrokerDomain === false && (
+                                <span className="text-rose-400">· External Host Mismatch</span>
+                              )}
+                              {lnk.strippedParams.length > 0 && (
+                                <span className="text-amber-300">
+                                  · Stripped {lnk.strippedParams.length} tracker(s):{' '}
+                                  {lnk.strippedParams.join(', ')}
+                                </span>
+                              )}
+                            </div>
+                          </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(`link-${idx}`, lnk.sanitizedUrl)}
-                          className="px-2.5 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                        >
-                          {copiedItem === `link-${idx}` ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                          <span>Copy Clean URL</span>
-                        </button>
-                        <a
-                          href={lnk.sanitizedUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
-                        >
-                          <span>Open Link</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            {lnk.matchesBrokerDomain !== false && (
+                              <button
+                                type="button"
+                                disabled={exec?.running || exec?.verified}
+                                onClick={() =>
+                                  handleExecuteSanitizedLink(lnk.sanitizedUrl, lnk.host)
+                                }
+                                className={`px-3 py-1.5 rounded-lg font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                                  exec?.verified
+                                    ? 'bg-emerald-500/15 border border-emerald-400/30 text-emerald-300'
+                                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                                }`}
+                              >
+                                {exec?.verified ? (
+                                  <>
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                    <span>Confirmed</span>
+                                  </>
+                                ) : exec?.running ? (
+                                  <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Confirming...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Play className="w-3.5 h-3.5" />
+                                    <span>Click &amp; Confirm For Me</span>
+                                  </>
+                                )}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(`link-${idx}`, lnk.sanitizedUrl)}
+                              className="px-2.5 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                            >
+                              {copiedItem === `link-${idx}` ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                              <span>Copy Clean URL</span>
+                            </button>
+                            <a
+                              href={lnk.sanitizedUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                            >
+                              <span>Open Link</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
+                        </div>
+                        {exec?.summary && (
+                          <div
+                            className={`text-[11px] font-mono pt-1.5 border-t border-white/[0.05] ${
+                              exec.verified ? 'text-emerald-300' : 'text-amber-300'
+                            }`}
+                          >
+                            {exec.summary}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

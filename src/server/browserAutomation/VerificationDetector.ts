@@ -140,7 +140,7 @@ export async function extractAndScoreCandidateRecords(
     const results: Array<{
       candidateId: string;
       selector: string;
-      actionType: 'click_button' | 'click_link' | 'check_radio' | 'navigate_url';
+      actionType: 'click_button' | 'click_link' | 'check_radio' | 'check_checkbox' | 'navigate_url';
       targetUrl?: string;
       text: string;
     }> = [];
@@ -158,7 +158,7 @@ export async function extractAndScoreCandidateRecords(
       }
 
       const actionBtn = el.querySelector(
-        'button, input[type="button"], input[type="submit"], a, input[type="radio"]'
+        'button, input[type="button"], input[type="submit"], a, input[type="radio"], input[type="checkbox"]'
       ) as HTMLElement | null;
       if (!actionBtn) continue;
 
@@ -167,11 +167,15 @@ export async function extractAndScoreCandidateRecords(
           ? (actionBtn as HTMLInputElement).value || actionBtn.getAttribute('aria-label') || ''
           : actionBtn.innerText || actionBtn.textContent || '';
 
-      const isRadio =
-        actionBtn.tagName === 'INPUT' &&
-        (actionBtn as HTMLInputElement).type.toLowerCase() === 'radio';
+      const inputTypeLower =
+        actionBtn.tagName === 'INPUT'
+          ? (actionBtn as HTMLInputElement).type.toLowerCase()
+          : '';
+      const isRadio = inputTypeLower === 'radio';
+      const isCheckbox = inputTypeLower === 'checkbox';
       const isOptOutAction =
         isRadio ||
+        isCheckbox ||
         /\b(remove|opt[\s-]?out|select|this\s+is\s+me|delete|suppress|control|view\s+profile|claim)\b/i.test(
           `${btnLabel} ${actionBtn.getAttribute('href') || ''}`
         );
@@ -182,12 +186,18 @@ export async function extractAndScoreCandidateRecords(
       actionBtn.setAttribute('data-synout-cand', attrId);
       const selector = `[data-synout-cand="${attrId.replace(/"/g, '\\"')}"]`;
 
-      let actionType: 'click_button' | 'click_link' | 'check_radio' | 'navigate_url' =
-        'click_button';
+      let actionType:
+        | 'click_button'
+        | 'click_link'
+        | 'check_radio'
+        | 'check_checkbox'
+        | 'navigate_url' = 'click_button';
       let targetUrl: string | undefined;
 
       if (isRadio) {
         actionType = 'check_radio';
+      } else if (isCheckbox) {
+        actionType = 'check_checkbox';
       } else if (actionBtn.tagName === 'A') {
         const href = (actionBtn as HTMLAnchorElement).href;
         if (href && /^https?:\/\//i.test(href)) {

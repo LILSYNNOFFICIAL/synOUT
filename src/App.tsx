@@ -1000,6 +1000,7 @@ export default function App() {
               onExploreBrokers={() => setActiveTab('directory')}
               hasScanResults={hasCompletedScan}
               onNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
+              onOpenWebForms={() => handleOpenWebFormWorkbench()}
               onOpenInboxHarvester={() => setActiveTab('inbox')}
               onOpenStateRegistries={() => setActiveTab('registries')}
             />
@@ -1126,7 +1127,7 @@ export default function App() {
                   submissionEvidenceHash: evidenceSha256,
                 });
               } else {
-                showToast('Completed broker opt-out verification link in headless Chromium.');
+                showToast('Confirmed broker opt-out link and checked required confirmation boxes.');
               }
             }}
             onBrokerConfirmedRemoved={(brokerId, ticketId, summaryNote) => {
@@ -1235,6 +1236,7 @@ export default function App() {
               onToggleStatus={handleToggleStatus}
               onBatchOptOut={handleOpenBatchEmailOptOut}
               onAutomatedOptOut={handleSingleBrokerOptOutRequest}
+              onOpenAutomatedNavigator={(b, r) => setActiveNavigatorModal({ broker: b, result: r })}
               onOpenDiyAssistantModal={(b, r) => setActiveDiyModal({ broker: b, result: r })}
               onOpenNukeAll={() => setIsNukeAllModalOpen(true)}
               onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
@@ -1294,6 +1296,14 @@ export default function App() {
           profile={userProfile}
           onClose={() => setActiveListingModal(null)}
           onAutomatedOptOut={handleSingleBrokerOptOutRequest}
+          onOpenAutomatedNavigator={(b, r) => {
+            setActiveListingModal(null);
+            setActiveNavigatorModal({ broker: b, result: r });
+          }}
+          onOpenWebFormWorkbench={(b) => {
+            setActiveListingModal(null);
+            handleOpenWebFormWorkbench(b);
+          }}
         />
       )}
 
@@ -1306,6 +1316,14 @@ export default function App() {
           onMarkSubmitted={handleMarkEmailDispatched}
           onOpenConnectEmail={() => setActiveTab('gmail')}
           onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
+          onOpenAutomatedNavigator={(b, r) => {
+            setActiveLegalModal(null);
+            setActiveNavigatorModal({ broker: b, result: r });
+          }}
+          onOpenWebFormWorkbench={(b) => {
+            setActiveLegalModal(null);
+            handleOpenWebFormWorkbench(b);
+          }}
         />
       )}
 
@@ -1336,6 +1354,14 @@ export default function App() {
           onBrokerDispatched={handleMarkEmailDispatched}
           onComplete={handleEmailBatchComplete}
           onOpenEmailWorkspace={() => setActiveTab('gmail')}
+          onOpenAutomatedNavigator={(b, r) => {
+            setEmailDispatchQueue(null);
+            setActiveNavigatorModal({ broker: b, result: r });
+          }}
+          onOpenWebFormWorkbench={(b) => {
+            setEmailDispatchQueue(null);
+            handleOpenWebFormWorkbench(b);
+          }}
         />
       )}
 
@@ -1355,6 +1381,10 @@ export default function App() {
           onOpenFormWorkbench={(broker) => {
             setActiveDiyModal(null);
             handleOpenWebFormWorkbench(broker);
+          }}
+          onOpenAutomatedNavigator={(b, r) => {
+            setActiveDiyModal(null);
+            setActiveNavigatorModal({ broker: b, result: r });
           }}
         />
       )}
@@ -1414,6 +1444,24 @@ export default function App() {
           profile={userProfile || DEFAULT_FALLBACK_PROFILE}
           onSaveTicketAndNotes={handleSaveTicketAndNotes}
           onRecordCounterNoticeSent={handleRecordEscalationSent}
+          onVerificationLinkCompleted={({ broker, confirmationCode, finalUrl, evidenceSha256 }) => {
+            handleRecordWebFormSubmitted({
+              broker,
+              confirmationCode: confirmationCode || undefined,
+              optOutUrl: finalUrl,
+              workflowState: 'awaiting_broker_processing',
+              brokerConfirmedReceipt: confirmationCode,
+              submissionEvidenceHash: evidenceSha256,
+            });
+          }}
+          onOpenAutomatedNavigator={(b, r) => {
+            setActiveReplyTriageModal(null);
+            setActiveNavigatorModal({ broker: b, result: r });
+          }}
+          onOpenWebFormWorkbench={(b) => {
+            setActiveReplyTriageModal(null);
+            handleOpenWebFormWorkbench(b);
+          }}
           onOpenConnectEmail={() => setActiveTab('gmail')}
           onOpenIdRedactor={() => {
             setFirewallSubTab('hygiene');
@@ -1482,6 +1530,10 @@ export default function App() {
             });
           }}
           onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
+          onSwitchToEmailOptOut={(brokerId) => {
+            setActiveNavigatorModal(null);
+            handleSingleBrokerOptOutRequest(brokerId);
+          }}
         />
       )}
 

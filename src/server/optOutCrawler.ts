@@ -562,7 +562,9 @@ export async function submitWebFormViaRelay(params: {
   for (const [k, v] of Object.entries(params.fields || {})) {
     const cleanKey = String(k || '').trim().slice(0, 120);
     if (!cleanKey) continue;
-    encodedParams.append(cleanKey, String(v ?? '').slice(0, 2000));
+    const strVal = String(v ?? '');
+    if (strVal === '__unchecked__') continue;
+    encodedParams.append(cleanKey, strVal.slice(0, 2000));
   }
 
   let requestUrl = safeAction.normalizedUrl;

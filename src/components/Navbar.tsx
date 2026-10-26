@@ -148,23 +148,23 @@ export function buildNavCompartments(params: {
     {
       id: 'suppression',
       label: 'Suppression',
-      summary: 'Autonomous web-form & email execution',
+      summary: 'Done-for-you online forms & legal emails',
       items: [
         {
           id: 'webforms',
-          label: 'Web-Form Runner',
-          shortLabel: 'Web Forms',
-          description: 'Headless Chromium opt-out forms & broker adapters',
+          label: 'Online Forms (Done For You)',
+          shortLabel: 'Online Forms',
+          description: 'Auto-fills opt-out forms & checks consent boxes on your behalf',
           tab: 'webforms',
           icon: FileCode2,
         },
         {
           id: 'gmail',
-          label: 'Email Dispatch',
+          label: 'Email Removal (Sent For You)',
           shortLabel: 'Email',
           description: activeConnectedEmail
             ? `Connected sender: ${activeConnectedEmail}`
-            : 'Connect Gmail OAuth, App Password or Webmail',
+            : 'Easy 1-click email setup & automatic legal removal emails',
           tab: 'gmail',
           icon: Mail,
         },
@@ -172,7 +172,7 @@ export function buildNavCompartments(params: {
           id: 'deindex',
           label: 'Search De-Indexing',
           shortLabel: 'De-Index',
-          description: 'Purge cached snippets from Google, Bing & DuckDuckGo',
+          description: 'Clear old search results from Google, Bing & DuckDuckGo',
           tab: 'deindex',
           icon: SearchCode,
         },
@@ -182,7 +182,7 @@ export function buildNavCompartments(params: {
                 id: 'nuke-modal',
                 label: 'Mass Suppression (NUKE ALL)',
                 shortLabel: 'NUKE ALL',
-                description: 'Batch-dispatch deletion demands across all channels',
+                description: 'Remove across all online forms & legal emails at once',
                 action: 'nuke' as const,
                 icon: Flame,
               },

@@ -72,9 +72,9 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
             Verified Data Broker Directory ({registry.length} Indexed)
           </h1>
           <p className="text-xs text-slate-400 max-w-3xl leading-relaxed">
-            Search verified people-search aggregators, B2B intelligence networks, and public-record
-            clearinghouses. Launch dedicated multi-step Playwright form playbooks or send statutory
-            deletion demands directly.
+            Search verified people-search sites, marketing lists, and public-record directories.
+            Let synOUT automatically fill out each site&apos;s online form (including checking
+            required boxes) or send a legal removal email on your behalf.
           </p>
         </div>
 
@@ -86,7 +86,7 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
               className="px-4 py-2.5 rounded-xl glass-subtle hover:border-emerald-400/35 text-emerald-300 text-xs font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
             >
               <FileCode2 className="w-4 h-4 text-emerald-400" />
-              <span>Web-Form Runner</span>
+              <span>Auto-Fill Online Forms</span>
             </button>
           )}
           {onOpenNukeAll && (
@@ -210,7 +210,7 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
                     {playbook && (
                       <div className="flex items-center gap-1.5 text-[11px] text-emerald-300 mt-1">
                         <Bot className="w-3.5 h-3.5 shrink-0" />
-                        <span>Multi-Step Playbook Ready</span>
+                        <span>Auto-Fill Form &amp; Checkboxes Ready</span>
                       </div>
                     )}
                   </div>
@@ -260,11 +260,11 @@ export const BrokerDirectory: React.FC<BrokerDirectoryProps> = ({
                       <button
                         type="button"
                         onClick={() => onOpenWebFormWorkbench(broker)}
-                        className="px-2.5 py-2 rounded-xl glass-subtle hover:border-emerald-400/35 text-emerald-300 font-medium inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
-                        title="Open Autonomous Web-Form Runner"
+                        className="px-2.5 py-2 rounded-xl glass-subtle hover:border-emerald-400/35 text-emerald-300 font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                        title="Let synOUT fill out this broker's online form and check required boxes for you"
                       >
-                        <FileCode2 className="w-3.5 h-3.5" />
-                        <span>Form</span>
+                        <Bot className="w-3.5 h-3.5" />
+                        <span>Auto-Fill Form</span>
                       </button>
                     )}
 

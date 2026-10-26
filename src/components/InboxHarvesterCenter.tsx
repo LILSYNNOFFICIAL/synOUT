@@ -119,7 +119,7 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
       if (!token) {
         if (!oauthConfigured) {
           throw new Error(
-            'Connect Google OAuth in Email settings to scan Gmail automatically, or paste any broker confirmation email below.'
+            'Connect Gmail in Email Setup to scan automatically, or paste any broker confirmation email below.'
           );
         }
         const authRes = await googleSignIn({
@@ -187,7 +187,7 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
         running: true,
         done: false,
         verified: false,
-        summary: 'Opening confirmation link in isolated headless Chromium...',
+        summary: 'Opening confirmation link and checking any required boxes for you...',
       },
     }));
 
@@ -235,7 +235,7 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
         });
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Headless verification failed.';
+      const msg = err instanceof Error ? err.message : 'Could not complete confirmation link automatically.';
       setExecStateById((prev) => ({
         ...prev,
         [item.id]: {
@@ -289,19 +289,19 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
-              <span className="text-emerald-400 font-medium">Autonomous Inbox Harvester</span>
+              <span className="text-emerald-400 font-medium">Automatic Confirmation Link Helper</span>
               <span aria-hidden="true">·</span>
-              <span>{activeQueueDomains.length} Broker Domains Scoped</span>
+              <span>{activeQueueDomains.length} Broker Domains Checked</span>
               <span aria-hidden="true">·</span>
               <span>{readyLinkItems.length} Confirmation Links Ready</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight [text-wrap:balance]">
-              Email Verification Link &amp; Broker Reply Harvester
+              Confirm Opt-Out Links &amp; Broker Replies
             </h1>
             <p className="text-sm text-slate-400 max-w-3xl leading-relaxed">
-              Queries only messages matching data broker domains in your active queue, strips tracking
-              tokens, validates HTTPS domain ownership, and executes one-time opt-out confirmation links
-              in isolated headless Chromium.
+              Finds confirmation emails from data brokers in your queue, removes tracking parameters,
+              and clicks one-time confirmation links (including checking any final confirmation boxes)
+              on your behalf.
             </p>
           </div>
 
@@ -313,7 +313,7 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
               className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-semibold inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isScanningInbox ? 'animate-spin' : ''}`} />
-              <span>{isScanningInbox ? 'Scanning Broker Mail...' : 'Scan Connected Gmail'}</span>
+              <span>{isScanningInbox ? 'Checking Broker Emails...' : 'Scan Connected Gmail'}</span>
             </button>
 
             {readyLinkItems.length > 0 && (
@@ -326,8 +326,8 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
                 <Bot className="w-3.5 h-3.5 text-emerald-400" />
                 <span>
                   {isBatchRunning
-                    ? 'Executing Links...'
-                    : `Confirm All (${readyLinkItems.length})`}
+                    ? 'Confirming Links...'
+                    : `Confirm All Links For Me (${readyLinkItems.length})`}
                 </span>
               </button>
             )}
@@ -363,11 +363,11 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
       {/* Optional Manual Raw Email Paste Drawer for Non-Gmail / App-Password Users */}
       {showPasteDrawer && (
         <form onSubmit={handleParsePastedEmail} className="glass-panel rounded-2xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-white">
-              Extract Verification Link or Ticket from Any Email Provider (Outlook, Proton, Yahoo, iCloud)
+              Paste a Confirmation Email from Any Inbox (Outlook, Proton, Yahoo, iCloud, or Gmail)
             </h2>
-            <span className="text-xs text-slate-400">Parsed locally · SSRF-validated</span>
+            <span className="text-xs text-slate-400 shrink-0">Checked privately · Safe broker links only</span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -512,7 +512,7 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
                             <>
                               <Play className="w-3.5 h-3.5" />
                               <span>
-                                {exec?.running ? 'Confirming...' : 'Complete in Headless Browser'}
+                                {exec?.running ? 'Confirming...' : 'Click & Confirm For Me'}
                               </span>
                             </>
                           )}

@@ -1262,3 +1262,423 @@ test('37. Animated Brand Splash Screen, Single Persistent Logo Incorporation & P
     await vite.close();
   }
 });
+
+test('38. Automated Online Form Checkbox Checking: CSS-Styled Hidden Checkboxes, Custom ARIA Checkboxes, Marketing Skip & Candidate Record Checkboxes', async () => {
+  const {
+    inspectRawOptOutHtml,
+    buildUniversalAutoFillScript,
+  } = await import('../src/utils/optOutFormEngine.ts');
+
+  const receivedSubmissions: Array<{ route: string; payload: Record<string, string> }> = [];
+
+  const server = http.createServer(async (req, res) => {
+    const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
+    const pathname = reqUrl.pathname;
+
+    // A. Privacy opt-out form with CSS-styled opacity:0 checkbox + custom ARIA [role="checkbox"] + marketing box
+    if (req.method === 'GET' && pathname === '/checkbox-heavy-optout') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <head><title>Consumer Suppression &amp; Consent Form</title></head>
+  <body>
+    <h1>Remove My Personal Record</h1>
+    <form method="POST" action="/checkbox-heavy-submit">
+      <label for="ch_first">First Name *</label>
+      <input id="ch_first" name="first_name" type="text" required />
+      <label for="ch_last">Last Name *</label>
+      <input id="ch_last" name="last_name" type="text" required />
+      <label for="ch_email">Email Address *</label>
+      <input id="ch_email" name="email" type="email" required />
+
+      <div class="styled-checkbox-wrapper">
+        <input
+          id="ccpa_consent_box"
+          name="ccpa_consent"
+          type="checkbox"
+          value="confirmed_yes"
+          style="opacity: 0; position: absolute; width: 1px; height: 1px;"
+          required
+        />
+        <label for="ccpa_consent_box">
+          I confirm I am at least 18 years old and request removal of my personal record *
+        </label>
+      </div>
+
+      <input type="hidden" id="aria_dns_hidden" name="aria_do_not_sell" value="no" />
+      <div
+        id="custom_dns_box"
+        role="checkbox"
+        aria-checked="false"
+        tabindex="0"
+        style="padding: 8px; border: 1px solid #333; cursor: pointer;"
+        onclick="this.setAttribute('aria-checked', 'true'); document.getElementById('aria_dns_hidden').value = 'yes';"
+      >
+        Do Not Sell or Share My Personal Information
+      </div>
+
+      <label>
+        <input type="checkbox" name="promo_offers" value="yes" />
+        Subscribe to promotional marketing offers from partner sponsors
+      </label>
+
+      <button type="submit">Submit Removal Request</button>
+    </form>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/checkbox-heavy-submit') {
+      const raw = await readPostBody(req);
+      const parsed = Object.fromEntries(new URLSearchParams(raw).entries());
+      receivedSubmissions.push({ route: pathname, payload: parsed });
+
+      if (parsed.ccpa_consent !== 'confirmed_yes' || parsed.aria_do_not_sell !== 'yes' || parsed.promo_offers) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<html><body><div role="alert" class="error">Validation failed: required consent boxes were not properly checked (${JSON.stringify(parsed)}).</div></body></html>`);
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <body>
+    <h1>Opt-Out Request Confirmed</h1>
+    <p>Confirmation ID: CHK-2026-77102</p>
+  </body>
+</html>`);
+      return;
+    }
+
+    // B. Multi-step candidate record results using <input type="checkbox"> + "Remove Selected" wizard button
+    if (req.method === 'GET' && pathname === '/checkbox-candidate-results') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <body>
+    <h1>Select Your Record to Suppress</h1>
+    <form method="GET" action="/checkbox-candidate-final">
+      <div class="record-card" data-record-id="homonym_chk_tx">
+        <label>
+          <input type="checkbox" name="selected_records" value="homonym_chk_tx" />
+          Jane Doe — Age 64 — Austin, TX — Relatives: Mark Doe
+        </label>
+      </div>
+      <div class="record-card" data-record-id="match_chk_ca_01">
+        <label>
+          <input type="checkbox" name="selected_records" value="match_chk_ca_01" />
+          Jane Doe — Age 38 — Sacramento, CA — Relatives: Robert Doe
+        </label>
+      </div>
+      <button type="submit">Remove Selected</button>
+    </form>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/checkbox-candidate-final') {
+      const selected = reqUrl.searchParams.get('selected_records') || 'none';
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <body>
+    <h1>Finalize Suppression for ${selected}</h1>
+    <form method="POST" action="/checkbox-candidate-submit">
+      <input type="hidden" name="selected_record" value="${selected}" />
+      <label for="cf_email">Confirmation Email *</label>
+      <input id="cf_email" name="email" type="email" required />
+      <label>
+        <input type="checkbox" name="confirm_Authorized" required />
+        I confirm removal of this listing *
+      </label>
+      <button type="submit">Submit Opt-Out</button>
+    </form>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/checkbox-candidate-submit') {
+      const raw = await readPostBody(req);
+      const parsed = Object.fromEntries(new URLSearchParams(raw).entries());
+      receivedSubmissions.push({ route: pathname, payload: parsed });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <body>
+    <h1>Your Opt-Out Request Has Been Received</h1>
+    <p>Confirmation ID: CAND-CHK-55190</p>
+  </body>
+</html>`);
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not found');
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const addr = server.address();
+  assert.ok(addr && typeof addr === 'object');
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+  const sessionId = mintSessionToken();
+
+  try {
+    // 1. Static HTML parser & universal bookmarklet verification
+    const rawHtmlRes = await fetch(`${baseUrl}/checkbox-heavy-optout`);
+    const rawHtml = await rawHtmlRes.text();
+    const inspection = inspectRawOptOutHtml({
+      pageUrl: `${baseUrl}/checkbox-heavy-optout`,
+      html: rawHtml,
+      profile: TEST_PROFILE,
+      allowLoopbackForTests: true,
+    });
+    const primaryForm = inspection.forms[0];
+    assert.ok(primaryForm, 'Must parse primary opt-out form');
+
+    const ccpaField = primaryForm.fields.find((f) => f.name === 'ccpa_consent');
+    assert.ok(ccpaField, 'Must detect CSS opacity:0 checkbox');
+    assert.strictEqual(
+      ccpaField!.semanticRole,
+      'consent_checkbox',
+      'CSS opacity:0 checkbox paired with a <label> must map to consent_checkbox, NEVER honeypot_trap'
+    );
+    assert.strictEqual(
+      ccpaField!.suggestedValue,
+      'confirmed_yes',
+      'Must preserve custom checkbox value attribute when checking on user behalf'
+    );
+
+    const promoField = primaryForm.fields.find((f) => f.name === 'promo_offers');
+    assert.ok(promoField);
+    assert.strictEqual(promoField!.semanticRole, 'marketing_opt_in');
+    assert.strictEqual(promoField!.disclosureAllowed, false);
+    assert.strictEqual(promoField!.suggestedValue, '');
+
+    const bookmarkletJs = buildUniversalAutoFillScript(TEST_PROFILE);
+    assert.ok(
+      bookmarkletJs.includes('[role="checkbox"]'),
+      'Universal bookmarklet must check custom ARIA checkboxes on the user behalf'
+    );
+
+    // 2. Live Playwright WorkflowRunner on /checkbox-heavy-optout
+    const job1 = await startOptOutWorkflow({
+      sessionId,
+      brokerId: 'mock-checkbox-portal',
+      brokerName: 'CheckboxPortal',
+      brokerDomain: '127.0.0.1',
+      targetUrl: `${baseUrl}/checkbox-heavy-optout`,
+      mode: 'autonomous_auto_submit',
+      profile: TEST_PROFILE,
+      senderEmail: 'jane.doe@privacy.example',
+      allowLoopbackForTests: true,
+    });
+
+    assert.strictEqual(job1.state, 'awaiting_broker_processing');
+    assert.strictEqual(job1.brokerConfirmationCode, 'CHK-2026-77102');
+
+    const formPost = receivedSubmissions.find((s) => s.route === '/checkbox-heavy-submit');
+    assert.ok(formPost, 'Must submit checkbox-heavy form');
+    assert.strictEqual(formPost!.payload.ccpa_consent, 'confirmed_yes', 'Must check CSS-styled hidden checkbox via label');
+    assert.strictEqual(formPost!.payload.aria_do_not_sell, 'yes', 'Must click custom ARIA [role="checkbox"]');
+    assert.strictEqual(formPost!.payload.promo_offers, undefined, 'Must leave marketing checkbox unchecked');
+
+    // 3. Live Playwright WorkflowRunner on /checkbox-candidate-results (multi-step candidate checkbox selection)
+    const job2 = await startOptOutWorkflow({
+      sessionId,
+      brokerId: 'mock-candidate-checkbox',
+      brokerName: 'CandidateCheckboxBroker',
+      brokerDomain: '127.0.0.1',
+      targetUrl: `${baseUrl}/checkbox-candidate-results`,
+      mode: 'autonomous_auto_submit',
+      profile: TEST_PROFILE,
+      senderEmail: 'jane.doe@privacy.example',
+      allowLoopbackForTests: true,
+    });
+
+    assert.strictEqual(job2.state, 'awaiting_broker_processing');
+    assert.strictEqual(job2.brokerConfirmationCode, 'CAND-CHK-55190');
+
+    const candPost = receivedSubmissions.find((s) => s.route === '/checkbox-candidate-submit');
+    assert.ok(candPost, 'Must advance past candidate checkbox selection and submit final step');
+    assert.strictEqual(
+      candPost!.payload.selected_record,
+      'match_chk_ca_01',
+      'Must check ONLY the matching Sacramento CA candidate checkbox and skip Austin TX homonym'
+    );
+    assert.strictEqual(
+      candPost!.payload.confirm_Authorized,
+      'on',
+      'Must also check required confirmation checkbox on final wizard step'
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('39. Email Confirmation Landing Page Auto-Checks Required Checkboxes & Skips Marketing Opt-Ins', async () => {
+  let lastVerifyPost: Record<string, string> | null = null;
+
+  const server = http.createServer(async (req, res) => {
+    const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
+
+    if (req.method === 'GET' && reqUrl.pathname === '/optout-start') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+        <html>
+          <head><title>VerifyOptOut Broker</title></head>
+          <body>
+            <form method="POST" action="/optout-request">
+              <label for="f_name">Full Name</label>
+              <input id="f_name" name="full_name" type="text" required />
+              <label for="f_email">Email</label>
+              <input id="f_email" name="email" type="email" required />
+              <button type="submit">Submit Request</button>
+            </form>
+          </body>
+        </html>`);
+      return;
+    }
+
+    if (req.method === 'POST' && reqUrl.pathname === '/optout-request') {
+      await readPostBody(req);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+        <html>
+          <head><title>Check Your Email</title></head>
+          <body>
+            <h1>Check your inbox to verify your email address</h1>
+            <p>We sent a one-time confirmation link to complete your opt-out request.</p>
+          </body>
+        </html>`);
+      return;
+    }
+
+    if (req.method === 'GET' && reqUrl.pathname === '/verify-landing') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+        <html>
+          <head><title>Finalize Your Opt-Out</title></head>
+          <body>
+            <h1>Confirm Your Deletion Request</h1>
+            <form id="verify-form" method="POST" action="/verify-complete">
+              <input type="hidden" name="token" value="${reqUrl.searchParams.get('token') || ''}" />
+              <div class="custom-chk">
+                <input id="chk_confirm" name="confirm_suppression" type="checkbox" value="yes_suppress" required style="opacity:0;width:1px;height:1px;position:absolute;" />
+                <label for="chk_confirm">I confirm permanent suppression of my personal record under CCPA</label>
+              </div>
+              <div id="aria_verify_box" role="checkbox" aria-checked="false" aria-required="true" tabindex="0">
+                I verify that I am the consumer or authorized agent
+              </div>
+              <input type="hidden" id="aria_verify_val" name="aria_agent_verified" value="no" />
+              <div class="marketing-chk">
+                <label>
+                  <input type="checkbox" name="newsletter_promo" value="subscribe" />
+                  Send me promotional partner offers and marketing newsletters
+                </label>
+              </div>
+              <input type="submit" value="Confirm Opt-Out" />
+            </form>
+            <script>
+              document.getElementById('aria_verify_box').addEventListener('click', function() {
+                var next = this.getAttribute('aria-checked') !== 'true';
+                this.setAttribute('aria-checked', next ? 'true' : 'false');
+                document.getElementById('aria_verify_val').value = next ? 'yes' : 'no';
+              });
+            </script>
+          </body>
+        </html>`);
+      return;
+    }
+
+    if (req.method === 'POST' && reqUrl.pathname === '/verify-complete') {
+      const raw = await readPostBody(req);
+      const parsed = Object.fromEntries(new URLSearchParams(raw).entries());
+      lastVerifyPost = parsed;
+      if (parsed.confirm_suppression !== 'yes_suppress' || parsed.aria_agent_verified !== 'yes') {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end('<html><body><p>Verification failed: required confirmation boxes were not checked.</p></body></html>');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+        <html>
+          <head><title>Opt-Out Confirmed</title></head>
+          <body>
+            <h1>Your opt-out request is confirmed</h1>
+            <p>Confirmation Code: VRF-CHK-90412</p>
+          </body>
+        </html>`);
+      return;
+    }
+
+    res.writeHead(404).end('Not found');
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const addr = server.address();
+  assert.ok(addr && typeof addr === 'object');
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+  const sessionId = mintSessionToken();
+
+  try {
+    // 1. Standalone confirmation link execution (used by Inbox Harvester & Reply Triage)
+    const standalone = await executeStandaloneVerificationLink({
+      verificationUrl: `${baseUrl}/verify-landing?token=tok_standalone_1&utm_source=email`,
+      expectedBrokerDomain: '127.0.0.1',
+      allowLoopbackForTests: true,
+    });
+
+    assert.strictEqual(standalone.verified, true, 'Standalone verification link must succeed');
+    assert.strictEqual(
+      standalone.checkedBoxesCount,
+      2,
+      'Must automatically check both CSS opacity:0 required checkbox and ARIA role=checkbox'
+    );
+    assert.strictEqual(standalone.brokerConfirmationCode, 'VRF-CHK-90412');
+    assert.ok(lastVerifyPost, 'Verification form must have been submitted via <input type="submit">');
+    assert.strictEqual(lastVerifyPost!.confirm_suppression, 'yes_suppress');
+    assert.strictEqual(lastVerifyPost!.aria_agent_verified, 'yes');
+    assert.strictEqual(
+      lastVerifyPost!.newsletter_promo,
+      undefined,
+      'Marketing opt-in checkbox on confirmation landing page must remain unchecked'
+    );
+
+    // 2. Workflow-linked email verification completion
+    lastVerifyPost = null;
+    const job = await startOptOutWorkflow({
+      sessionId,
+      brokerId: 'mock-verify-checkbox',
+      brokerName: 'VerifyCheckboxBroker',
+      brokerDomain: '127.0.0.1',
+      targetUrl: `${baseUrl}/optout-start`,
+      mode: 'autonomous_auto_submit',
+      profile: TEST_PROFILE,
+      senderEmail: 'jane.doe@privacy.example',
+      allowLoopbackForTests: true,
+    });
+    assert.strictEqual(job.state, 'awaiting_email_verification');
+
+    const completedJob = await completeWorkflowEmailVerification({
+      sessionId,
+      jobId: job.jobId,
+      verificationUrl: `${baseUrl}/verify-landing?token=tok_workflow_2`,
+    });
+    assert.strictEqual(completedJob.state, 'awaiting_broker_processing');
+    assert.strictEqual(completedJob.brokerConfirmationCode, 'VRF-CHK-90412');
+    assert.ok(completedJob.emailVerification?.summary.includes('checked 2 confirmation checkboxes'));
+    assert.ok(lastVerifyPost);
+    assert.strictEqual(lastVerifyPost!.newsletter_promo, undefined);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+

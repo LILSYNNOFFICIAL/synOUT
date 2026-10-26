@@ -25,6 +25,7 @@ import {
   Inbox,
   Flame,
   FileCode2,
+  Bot,
 } from 'lucide-react';
 
 interface RemovalTrackerProps {
@@ -37,6 +38,7 @@ interface RemovalTrackerProps {
   onToggleStatus: (brokerId: string) => void;
   onBatchOptOut: () => void;
   onAutomatedOptOut?: (brokerId: string) => void;
+  onOpenAutomatedNavigator?: (broker: DataBroker, result: ScanResult) => void;
   onOpenDiyAssistantModal: (broker: DataBroker, result: ScanResult) => void;
   onOpenNukeAll?: () => void;
   onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
@@ -53,6 +55,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
   onToggleStatus,
   onBatchOptOut,
   onAutomatedOptOut,
+  onOpenAutomatedNavigator,
   onOpenDiyAssistantModal,
   onOpenNukeAll,
   onOpenWebFormWorkbench,
@@ -405,21 +408,39 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
 
               {/* Actions */}
               <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {!isRemoved && onOpenAutomatedNavigator && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenAutomatedNavigator(broker, result)}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                      isWebFormSubmitted
+                        ? 'bg-emerald-500/15 border border-emerald-400/25 text-emerald-300'
+                        : 'bg-emerald-400 hover:bg-emerald-300 text-slate-950'
+                    }`}
+                    title="Let synOUT fill out this broker's online form and check required boxes for you"
+                  >
+                    <Bot className="w-3.5 h-3.5" />
+                    <span>{isWebFormSubmitted ? 'Re-Run Form' : 'Auto-Fill Form'}</span>
+                  </button>
+                )}
+
                 {!isRemoved && onAutomatedOptOut && (
                   <button
                     onClick={() => onAutomatedOptOut(broker.id)}
                     className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                       isEmailVerified
                         ? 'glass-subtle hover:bg-white/[0.08] text-slate-300'
+                        : onOpenAutomatedNavigator
+                        ? 'glass-subtle hover:border-emerald-400/35 text-emerald-300'
                         : 'bg-emerald-400 hover:bg-emerald-300 text-slate-950'
                     }`}
                   >
                     <Mail className="w-3.5 h-3.5" />
-                    <span>{isEmailVerified ? 'Re-Send' : 'Send Email'}</span>
+                    <span>{isEmailVerified ? 'Re-Send Email' : 'Send Email'}</span>
                   </button>
                 )}
 
-                {!isRemoved && onOpenWebFormWorkbench && (
+                {!isRemoved && onOpenWebFormWorkbench && !onOpenAutomatedNavigator && (
                   <button
                     type="button"
                     onClick={() => onOpenWebFormWorkbench(broker)}
@@ -431,7 +452,7 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                     title="Find Opt-Out Page & Auto-Fill Web Form"
                   >
                     <FileCode2 className="w-3.5 h-3.5" />
-                    <span>{isWebFormSubmitted ? 'Form Logged' : 'Web Form'}</span>
+                    <span>{isWebFormSubmitted ? 'Form Logged' : 'Auto-Fill Form'}</span>
                   </button>
                 )}
 

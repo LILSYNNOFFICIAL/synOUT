@@ -1867,4 +1867,106 @@ test('29. Compartmentalized Glassmorphic Navigation, Inbox Harvester Safety, Mul
   assert(packet.markdownDossier.includes('https://cppa.ca.gov/webapplications/complaint'));
 });
 
+test('30. Dual-Channel Form + Checkbox Automation & Friendly Email UX Across All Surfaces', () => {
+  const rootDir = path.resolve(process.cwd(), 'src');
+
+  // Legacy dead simulation file must not exist
+  assert.strictEqual(
+    fs.existsSync(path.join(rootDir, 'components', 'RealtimeProtectionView.tsx')),
+    false,
+    'Legacy unimported RealtimeProtectionView.tsx must remain removed'
+  );
+
+  const heroSrc = fs.readFileSync(path.join(rootDir, 'components', 'HeroSection.tsx'), 'utf8');
+  assert(heroSrc.includes('onOpenWebForms'), 'HeroSection must wire onOpenWebForms for web-form card');
+
+  const listingSrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'ListingDetailModal.tsx'),
+    'utf8'
+  );
+  assert(
+    listingSrc.includes('onOpenAutomatedNavigator') &&
+      /Auto-Fill &(amp;)? Submit Form/.test(listingSrc),
+    'ListingDetailModal must expose side-by-side Auto-Fill & Submit Form and Legal Email removal'
+  );
+
+  const navSrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'AutomatedRemovalNavigator.tsx'),
+    'utf8'
+  );
+  assert(
+    navSrc.includes('formatWorkflowStepAction') &&
+      navSrc.includes('candidateRecords') &&
+      navSrc.includes('onSwitchToEmailOptOut'),
+    'AutomatedRemovalNavigator must format workflow steps in plain English, render candidate record picker, and offer 1-click Email fallback'
+  );
+
+  const queueSrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'RemovalQueueModal.tsx'),
+    'utf8'
+  );
+  assert(
+    queueSrc.includes('onOpenAutomatedNavigator') && queueSrc.includes('Auto-Fill'),
+    'RemovalQueueModal must offer 1-click Auto-Fill Form switching for portal-preferred and bounced brokers'
+  );
+
+  const diySrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'DiyOptOutAssistantModal.tsx'),
+    'utf8'
+  );
+  assert(
+    diySrc.includes('onOpenAutomatedNavigator') &&
+      /Auto-Fill &(amp;)? Submit Form For Me/.test(diySrc),
+    'DiyOptOutAssistantModal must let users delegate form filling & checkbox checking in 1 click'
+  );
+
+  const legalSrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'LegalNoticeModal.tsx'),
+    'utf8'
+  );
+  assert(
+    legalSrc.includes('onOpenAutomatedNavigator') && legalSrc.includes('Auto-Fill Form'),
+    'LegalNoticeModal must offer 1-click Auto-Fill Form handoff alongside statutory email'
+  );
+
+  const triageSrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'BrokerReplyTriageModal.tsx'),
+    'utf8'
+  );
+  assert(
+    triageSrc.includes('/api/inbox/execute-verification-link') &&
+      triageSrc.includes('Click &amp; Confirm For Me') &&
+      triageSrc.includes('Auto-Fill Online Form For Me'),
+    'BrokerReplyTriageModal must execute confirmation links (with checkbox checking) and offer form fallback on bounced replies'
+  );
+
+  const trackerSrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'RemovalTracker.tsx'),
+    'utf8'
+  );
+  assert(
+    trackerSrc.includes('onOpenAutomatedNavigator') && trackerSrc.includes('Auto-Fill Form'),
+    'RemovalTracker must expose 1-click Auto-Fill Form alongside Send Email'
+  );
+
+  const gmailSrc = fs.readFileSync(
+    path.join(rootDir, 'components', 'GmailDispatchCenter.tsx'),
+    'utf8'
+  );
+  assert(
+    gmailSrc.includes('Send Test Email to Myself') &&
+      gmailSrc.includes('1-Click Webmail (Easiest — No Password Needed)'),
+    'GmailDispatchCenter must offer friendly 1-Click Webmail option alongside guided OAuth and App Password setup'
+  );
+
+  const appSrc = fs.readFileSync(path.join(rootDir, 'App.tsx'), 'utf8');
+  assert(
+    appSrc.includes('onSwitchToEmailOptOut=') &&
+      appSrc.includes('onOpenWebForms=') &&
+      appSrc.includes('onVerificationLinkCompleted='),
+    'App.tsx must wire all dual-channel Form, Email, and Confirmation Link callbacks'
+  );
+});
+
+
 

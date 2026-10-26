@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   Edit3,
   RotateCcw,
+  Bot,
 } from 'lucide-react';
 
 type StatutePreset = 'CCPA' | 'TDPSA' | 'OMNIBUS' | 'GDPR';
@@ -43,6 +44,8 @@ interface LegalNoticeModalProps {
   onMarkSubmitted: (brokerId: string, confirmationCode?: string, silent?: boolean) => void;
   onOpenConnectEmail?: () => void;
   onOpenPowerOfAttorney?: () => void;
+  onOpenAutomatedNavigator?: (broker: DataBroker, result: ScanResult) => void;
+  onOpenWebFormWorkbench?: (broker: DataBroker) => void;
 }
 
 const STATUTE_META: Record<
@@ -134,11 +137,14 @@ Data Subject & Consumer`;
 
 export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
   broker,
+  result,
   profile,
   onClose,
   onMarkSubmitted,
   onOpenConnectEmail,
   onOpenPowerOfAttorney,
+  onOpenAutomatedNavigator,
+  onOpenWebFormWorkbench,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
   const overrides = useBrokerContactOverrides();
@@ -351,6 +357,24 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                 <span>{isEditingRecipient ? 'Close' : 'Edit Recipient'}</span>
               </button>
 
+              {(onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    if (onOpenAutomatedNavigator) {
+                      onOpenAutomatedNavigator(broker, result);
+                    } else if (onOpenWebFormWorkbench) {
+                      onOpenWebFormWorkbench(broker);
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Bot className="w-3 h-3" />
+                  <span>Auto-Fill Form</span>
+                </button>
+              )}
+
               <a
                 href={broker.optOutUrl}
                 target="_blank"
@@ -376,16 +400,18 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
                       : ''
                   }`
                 : mxCheck.reason ||
-                  'No active mail exchanger found — use the Web Portal button above.'}
+                  'No active mail exchanger found — click Auto-Fill Form above so synOUT fills out the online form for you.'}
             </div>
           )}
 
           {contact.requiresPortalWarning && (
-            <p className="text-[11px] text-amber-300/90 leading-relaxed">
-              Deliverability note: {broker.name} primarily processes removals via its interactive
-              web portal. Sending this statutory email establishes a dated legal record, and
-              completing the Web Portal ensures immediate directory suppression.
-            </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+              <p className="text-[11px] text-amber-300/90 leading-relaxed">
+                Tip: {broker.name} also uses an online removal form. Sending this email creates a
+                dated legal paper trail, and clicking <strong>Auto-Fill Form</strong> lets synOUT
+                fill out the online form and check required boxes for you.
+              </p>
+            </div>
           )}
 
           {isEditingRecipient && (
@@ -551,15 +577,34 @@ export const LegalNoticeModal: React.FC<LegalNoticeModalProps> = ({
               <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
               <span>{sendError}</span>
             </div>
-            <a
-              href={broker.optOutUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-emerald-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0"
-            >
-              <span>Use Portal</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {(onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    if (onOpenAutomatedNavigator) {
+                      onOpenAutomatedNavigator(broker, result);
+                    } else if (onOpenWebFormWorkbench) {
+                      onOpenWebFormWorkbench(broker);
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500 text-slate-950 font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                >
+                  <Bot className="w-3 h-3" />
+                  <span>Auto-Fill Form For Me</span>
+                </button>
+              )}
+              <a
+                href={broker.optOutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-emerald-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+              >
+                <span>Use Portal</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
           </div>
         )}
 

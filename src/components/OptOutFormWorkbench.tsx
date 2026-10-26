@@ -11,6 +11,7 @@ import {
   sendEmailViaConnectedAccount,
   useEmailConnection,
 } from '../services/emailConnectionStore';
+import { buildWebmailComposeUrls } from '../utils/emailProviderConfig';
 import {
   clearBrokerCustomOptOutUrl,
   markBrokerEmailBounced,
@@ -103,35 +104,76 @@ function formatWorkflowStateLabel(state: RemovalWorkflowState): string {
     case 'queued':
       return 'Queued';
     case 'discovering':
-      return 'Discovering Opt-Out Endpoint';
+      return 'Finding Removal Form';
     case 'inspecting':
-      return 'Inspecting Live DOM';
+      return 'Reading Form & Checkboxes';
     case 'matching_record':
-      return 'Matching Person Listing';
+      return 'Matching Your Listing';
     case 'awaiting_user_input':
-      return 'Awaiting User Selection / Input';
+      return 'Ready for Your Quick Review';
     case 'ready_to_submit':
-      return 'Preview Ready for Approval';
+      return 'Filled & Checkboxes Checked — Ready to Submit';
     case 'submitting':
-      return 'Submitting Form';
+      return 'Submitting Form For You';
     case 'submitted_unconfirmed':
-      return 'Submitted (No Broker Ticket Issued)';
+      return 'Form Submitted (Awaiting Removal)';
     case 'awaiting_email_verification':
-      return 'Awaiting Email Confirmation Link';
+      return 'Form Submitted · Click Confirmation Link in Your Email';
     case 'awaiting_broker_processing':
-      return 'Submitted · Awaiting Broker Purge';
+      return 'Submitted · Broker Processing Removal';
     case 'removal_verified':
       return 'Removal Verified on Live Site';
     case 'rejected':
-      return 'Rejected by Portal';
+      return 'Portal Rejected Request';
     case 'blocked':
-      return 'Paused for Human Handoff (Anti-Bot / Gate)';
+      return 'Paused at Security Check (Quick 1-Click Finish Below)';
     case 'failed':
-      return 'Failed (Validation / Network)';
+      return 'Could Not Reach Form Automatically';
     case 'cancelled':
       return 'Cancelled';
     default:
       return state;
+  }
+}
+
+function formatFriendlyFieldRole(role: string): string {
+  switch (role) {
+    case 'consent_checkbox':
+      return 'Required Consent Box';
+    case 'marketing_opt_in':
+      return 'Spam / Newsletter Box';
+    case 'request_type':
+      return 'Removal Option';
+    case 'first_name':
+      return 'First Name';
+    case 'last_name':
+      return 'Last Name';
+    case 'full_name':
+      return 'Full Name';
+    case 'email':
+      return 'Email Address';
+    case 'phone':
+      return 'Phone Number';
+    case 'city':
+      return 'City';
+    case 'state':
+      return 'State';
+    case 'zip':
+      return 'ZIP Code';
+    case 'street_address':
+      return 'Street Address';
+    case 'birth_year_or_age':
+      return 'Age / Birth Year';
+    case 'profile_url':
+      return 'Record Link';
+    case 'authorized_agent':
+      return 'Authorized Agent';
+    case 'sensitive_id_field':
+      return 'Blocked ID / SSN';
+    case 'honeypot_trap':
+      return 'Bot Trap (Skipped)';
+    default:
+      return 'Form Field';
   }
 }
 
@@ -144,7 +186,8 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
   onOpenConnectEmail,
   onOpenNukeAll,
 }) => {
-  const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const { isDirectSendConnected, isWebmailConnected, webmailSender, activeConnectedEmail } =
+    useEmailConnection();
   const overrides = useBrokerContactOverrides();
   const registry = useMemo(() => getExhaustiveBrokerRegistry(), []);
 
@@ -216,6 +259,19 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
   const [handoffTicketInput, setHandoffTicketInput] = useState('');
   const [handoffNeedsEmailVerify, setHandoffNeedsEmailVerify] = useState(false);
   const [showTraceLog, setShowTraceLog] = useState(false);
+  const [showAdvancedPrivacyControls, setShowAdvancedPrivacyControls] = useState(false);
+  const [showSearchFinders, setShowSearchFinders] = useState(false);
+  const [isBatchRunningForms, setIsBatchRunningForms] = useState(false);
+  const [batchFormProgress, setBatchFormProgress] = useState<{
+    current: number;
+    total: number;
+    brokerName: string;
+  } | null>(null);
+  const [batchFormSummary, setBatchFormSummary] = useState<{
+    submitted: number;
+    needsReviewOrVerify: number;
+    total: number;
+  } | null>(null);
 
   // Discovery & Form Inspection state per broker
   const [isCrawling, setIsCrawling] = useState(false);
@@ -349,6 +405,68 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
     }
   };
 
+  const pendingExposedFormBrokers = useMemo(() => {
+    return results
+      .filter((r) => r.status === 'exposed' && !hasWebFormSubmission(r) && r.removalStatus !== 'removed')
+      .map((r) => combinedBrokers.find((b) => b.id === r.brokerId))
+      .filter((b): b is DataBroker => Boolean(b));
+  }, [results, combinedBrokers]);
+
+  const handleBatchRunExposedWebForms = async () => {
+    if (pendingExposedFormBrokers.length === 0 || isBatchRunningForms) return;
+    setIsBatchRunningForms(true);
+    setBatchFormSummary(null);
+    setWorkflowError(null);
+
+    let submitted = 0;
+    let needsReviewOrVerify = 0;
+
+    for (let i = 0; i < pendingExposedFormBrokers.length; i++) {
+      const targetBroker = pendingExposedFormBrokers[i];
+      const targetContact = resolveBrokerContactProfile(targetBroker, overrides);
+      setSelectedBrokerId(targetBroker.id);
+      setBatchFormProgress({
+        current: i + 1,
+        total: pendingExposedFormBrokers.length,
+        brokerName: targetBroker.name,
+      });
+
+      try {
+        const job = await startWorkflowClient({
+          broker: targetBroker,
+          brokerId: targetBroker.id,
+          brokerName: targetBroker.name,
+          brokerDomain: targetBroker.domain,
+          targetUrl: targetContact.optOutUrl,
+          profile,
+          senderEmail: senderEmail || undefined,
+          mode: 'autonomous_auto_submit',
+          disclosurePolicy,
+        });
+        syncJobToParentState(job, targetBroker);
+        if (
+          job.state === 'awaiting_broker_processing' ||
+          job.state === 'submitted_unconfirmed' ||
+          job.state === 'removal_verified'
+        ) {
+          submitted++;
+        } else {
+          needsReviewOrVerify++;
+        }
+      } catch {
+        needsReviewOrVerify++;
+      }
+    }
+
+    setBatchFormProgress(null);
+    setIsBatchRunningForms(false);
+    setBatchFormSummary({
+      submitted,
+      needsReviewOrVerify,
+      total: pendingExposedFormBrokers.length,
+    });
+  };
+
   const handleRunHeadlessWorkflow = async (
     mode: 'inspect_and_preview' | 'autonomous_auto_submit'
   ) => {
@@ -359,7 +477,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
       const job = await startWorkflowClient({
         broker: activeBroker,
         brokerId: activeBroker.id,
-        brokerName: activeBroker.name,
+        brokerName: activeBroker.id.startsWith('custom-site-') ? activeBroker.name : activeBroker.name,
         brokerDomain: activeBroker.domain,
         targetUrl: contact.optOutUrl,
         profile,
@@ -370,7 +488,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
       syncJobToParentState(job, activeBroker);
     } catch (err) {
       setWorkflowError(
-        err instanceof Error ? err.message : 'Failed executing headless opt-out workflow.'
+        err instanceof Error ? err.message : 'Failed executing automated opt-out form.'
       );
     } finally {
       setIsWorkflowBusy(false);
@@ -816,14 +934,32 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
     [combinedBrokers]
   );
 
-  if (!activeBroker || !contact) {
-    return null;
-  }
-
   const activePlaybook = useMemo(
     () => (activeBroker ? resolveBrokerPlaybook(activeBroker.domain) : null),
     [activeBroker]
   );
+
+  const companionNoticeDraft = useMemo(
+    () =>
+      activeBroker
+        ? buildStatutoryNoticeForBroker(activeBroker, profile, senderEmail || undefined)
+        : null,
+    [activeBroker, profile, senderEmail]
+  );
+
+  const companionWebmailUrls = useMemo(() => {
+    if (!contact?.effectivePrimaryEmail || !companionNoticeDraft) return null;
+    return buildWebmailComposeUrls(
+      contact.effectivePrimaryEmail,
+      companionNoticeDraft.subject,
+      companionNoticeDraft.body,
+      { cc: contact.recommendedCcEmails }
+    );
+  }, [contact, companionNoticeDraft]);
+
+  if (!activeBroker || !contact) {
+    return null;
+  }
 
   const recordSearchUrl = getBrokerRecordSearchUrl(activeBroker, profile);
   const isFormLogged = activeScanResult ? hasWebFormSubmission(activeScanResult) : false;
@@ -840,7 +976,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             <div className="flex flex-wrap items-center gap-2 text-slate-300">
               <Bot className="w-4 h-4 text-emerald-400 shrink-0" />
               <span className="font-semibold text-white">
-                Dedicated Multi-Step Playbook Active: {activePlaybook.brokerName}
+                Step-by-Step Automation Ready for {activePlaybook.brokerName}
               </span>
               {activePlaybook.networkGroup && (
                 <>
@@ -849,10 +985,10 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                 </>
               )}
             </div>
-            <span className="text-[11px] font-mono text-slate-400">
+            <span className="text-[11px] text-slate-400">
               {activePlaybook.requiresEmailVerificationLink
-                ? 'Requires Email Confirmation Link (Auto-Supported in Inbox Harvester)'
-                : 'Direct Suppression Portal'}
+                ? 'Sends a confirmation link to your email after form submission'
+                : 'Direct online removal form'}
             </span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px] text-slate-300">
@@ -865,18 +1001,19 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
           </div>
         </div>
       )}
+
       {/* Top Workbench Header */}
       <div className="p-6 sm:p-8 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400 tabular-nums">
+        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-5">
+          <div className="space-y-2 max-w-3xl">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
               <span className="text-emerald-400 font-semibold">
-                Autonomous Headless Browser + Bookmarklet Opt-Out Engine
+                Done-For-You Online Forms &amp; Legal Email Removal
               </span>
               <span aria-hidden="true">·</span>
-              <span>{webFormPrimaryCatalogCount} Portal-Primary Brokers</span>
+              <span>{webFormPrimaryCatalogCount} Online-Form Brokers</span>
               <span aria-hidden="true">·</span>
-              <span>{webFormCompletedCount} Forms Tracked</span>
+              <span>{webFormCompletedCount} Forms Submitted</span>
               {capabilities && (
                 <>
                   <span aria-hidden="true">·</span>
@@ -886,25 +1023,48 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                     }
                   >
                     {capabilities.headlessBrowserAvailable
-                      ? `Chromium Worker Ready (${capabilities.workerMode})`
-                      : 'Static Mode (Bookmarklet Fallback)'}
+                      ? 'Auto-Browser Ready'
+                      : '1-Click Auto-Fill Ready'}
                   </span>
                 </>
               )}
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
-              Autonomous Opt-Out Web Form Runner &amp; Page Discovery Workbench
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white [text-wrap:balance]">
+              Remove Your Records via Online Forms &amp; Email — Done For You
             </h1>
-            <p className="text-xs text-slate-400 max-w-3xl leading-relaxed">
-              Many data brokers require locating a profile, navigating multi-step JavaScript portals
-              (<em>&ldquo;Your Privacy Choices&rdquo;</em>, <em>&ldquo;Do Not Sell or Share&rdquo;</em>,
-              OneTrust DSARs), filling suppression forms, and clicking email confirmation links.
-              Launch a real headless Chromium session to inspect, match, populate, submit, and
-              re-verify removal — with clean human handoff whenever a CAPTCHA gate appears.
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              You don&apos;t need to hunt down hidden privacy pages, type out forms, or guess which
+              boxes to check. <strong>synOUT fills out online removal forms on your behalf</strong>{' '}
+              — entering your info, selecting your record, and{' '}
+              <strong className="text-emerald-300">
+                automatically checking required privacy &amp; consent boxes
+              </strong>{' '}
+              (while leaving spam boxes unchecked) — and lets you send a{' '}
+              <strong>pre-written legal removal email</strong> in one click.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {pendingExposedFormBrokers.length > 0 && (
+              <button
+                type="button"
+                onClick={handleBatchRunExposedWebForms}
+                disabled={isBatchRunningForms || isWorkflowBusy}
+                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-extrabold inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap tabular-nums"
+              >
+                {isBatchRunningForms ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4 fill-current" />
+                )}
+                <span>
+                  {isBatchRunningForms
+                    ? 'Filling & Submitting Forms...'
+                    : `Auto-Run ${pendingExposedFormBrokers.length} Exposed Forms`}
+                </span>
+              </button>
+            )}
+
             <a
               ref={(el) => {
                 if (el && bookmarkletHref) {
@@ -915,14 +1075,14 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                 e.preventDefault();
                 markCopied('header-bookmarklet', autoFillScript);
               }}
-              title="Drag this button to your browser Bookmarks Bar, then click it on ANY broker opt-out page to auto-fill all fields"
-              className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-2 transition-colors cursor-grab whitespace-nowrap"
+              title="Drag this button to your browser Bookmarks Bar, then click it on ANY broker opt-out page to auto-fill fields & check consent boxes"
+              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/35 text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-grab whitespace-nowrap"
             >
-              <Bookmark className="w-4 h-4" />
+              <Bookmark className="w-4 h-4 text-emerald-400" />
               <span>
                 {copiedKey === 'header-bookmarklet'
-                  ? 'Auto-Fill Script Copied'
-                  : 'synOUT Auto-Fill Bookmarklet'}
+                  ? 'Auto-Fill Helper Copied'
+                  : '1-Click Auto-Fill Bookmarklet'}
               </span>
             </a>
 
@@ -939,10 +1099,90 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
           </div>
         </div>
 
+        {/* Batch Auto-Run Progress or Summary */}
+        {batchFormProgress && (
+          <div className="p-4 bg-slate-950 border border-emerald-500/35 rounded-xl space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-3 tabular-nums">
+              <span className="font-semibold text-white flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                <span>
+                  Filling form, checking consent boxes &amp; submitting for{' '}
+                  <strong className="text-emerald-300">{batchFormProgress.brokerName}</strong>...
+                </span>
+              </span>
+              <span className="font-mono text-emerald-400 font-bold">
+                {batchFormProgress.current} / {batchFormProgress.total}
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-emerald-400 transition-transform duration-150 origin-left"
+                style={{
+                  transform: `scaleX(${Math.max(
+                    0.05,
+                    batchFormProgress.current / Math.max(1, batchFormProgress.total)
+                  )})`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {batchFormSummary && !batchFormProgress && (
+          <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-200">
+            <div className="flex items-start gap-2.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <span>
+                Finished running <strong className="text-white tabular-nums">{batchFormSummary.total}</strong>{' '}
+                online removal form(s):{' '}
+                <strong className="text-emerald-300 tabular-nums">
+                  {batchFormSummary.submitted} submitted automatically
+                </strong>
+                {batchFormSummary.needsReviewOrVerify > 0
+                  ? ` · ${batchFormSummary.needsReviewOrVerify} waiting for a quick email link or human CAPTCHA click.`
+                  : '.'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setBatchFormSummary(null)}
+              className="text-slate-300 hover:text-white font-semibold cursor-pointer self-end sm:self-auto whitespace-nowrap"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* Clear 3-Card Plain-English How It Works Strip */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-800 text-xs">
+          <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+            <div className="font-bold text-white">01. Online Forms Filled &amp; Boxes Checked</div>
+            <p className="text-slate-400 leading-relaxed">
+              synOUT opens the broker&apos;s opt-out form, fills your details, selects your listing,
+              and <strong className="text-emerald-300">checks every required privacy &amp; consent box</strong>{' '}
+              for you.
+            </p>
+          </div>
+          <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+            <div className="font-bold text-white">02. Legal Removal Email Sent For You</div>
+            <p className="text-slate-400 leading-relaxed">
+              Want a written paper trail too? Send a pre-written legal deletion email right from the
+              same broker card in 1 click.
+            </p>
+          </div>
+          <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+            <div className="font-bold text-white">03. Protected Against Tricks &amp; Spam</div>
+            <p className="text-slate-400 leading-relaxed">
+              Newsletter/marketing boxes are left unchecked, SSN &amp; ID uploads are blocked, and if
+              a site shows a human puzzle, our 1-Click Helper finishes it in seconds.
+            </p>
+          </div>
+        </div>
+
         {/* Custom Any-Website Opt-Out Page & Form Scanner */}
         <form
           onSubmit={handleAddAndCrawlCustomSite}
-          className="pt-4 border-t border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 text-xs"
+          className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 text-xs"
         >
           <div className="flex-1 flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 focus-within:border-emerald-500/60">
             <Globe className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -950,7 +1190,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
               type="text"
               value={customSiteInput}
               onChange={(e) => setCustomSiteInput(e.target.value)}
-              placeholder="Enter ANY broker domain or website URL (e.g. spokeo.com, clustrmaps.com, unknownbroker.com)..."
+              placeholder="Have another site with your info? Paste any website address (e.g. spokeo.com, clustrmaps.com)..."
               className="w-full bg-transparent text-white placeholder-slate-500 focus:outline-none font-mono"
             />
           </div>
@@ -964,7 +1204,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             ) : (
               <Search className="w-4 h-4" />
             )}
-            <span>Find Hidden Opt-Out Page &amp; Form</span>
+            <span>Find &amp; Fill Removal Form</span>
           </button>
         </form>
         {customSiteError && (
@@ -1090,27 +1330,21 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
 
         {/* Right Column: Autonomous Browser Runner, Opt-Out Spider, Field Mapper & Dual-Channel Actions */}
         <div className="lg:col-span-8 space-y-6">
-          {/* Section 1: Active Broker Overview & Opt-Out Endpoint Controls */}
-          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4">
+          {/* Section 1: Active Broker Overview + Side-by-Side Online Form vs Email Removal */}
+          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
               <div className="space-y-1">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-slate-400">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
                   <span className="text-emerald-400 font-semibold">
                     {channelStrategy?.shortBadge || activeBroker.removalMethod}
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span>{activeBroker.domain}</span>
+                  <span className="font-mono">{activeBroker.domain}</span>
                   <span aria-hidden="true">·</span>
-                  <span>SLA Window: {activeBroker.removalTime}</span>
-                  {activeBroker.adapterId && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="text-slate-500">Adapter: {activeBroker.adapterId}</span>
-                    </>
-                  )}
+                  <span>Typical Removal Time: {activeBroker.removalTime}</span>
                 </div>
                 <h2 className="text-xl font-extrabold text-white">{activeBroker.name}</h2>
-                <p className="text-xs text-slate-400 leading-relaxed">
+                <p className="text-xs text-slate-300 leading-relaxed">
                   {channelStrategy?.explanation}
                 </p>
               </div>
@@ -1120,10 +1354,10 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   type="button"
                   onClick={() => runDomainDiscovery(activeBroker)}
                   disabled={isCrawling}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-100 border border-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-100 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isCrawling ? 'animate-spin' : ''}`} />
-                  <span>{isCrawling ? 'Crawling Site...' : 'Crawl Site for Opt-Out Pages'}</span>
+                  <span>{isCrawling ? 'Searching Site...' : 'Find Hidden Form URL'}</span>
                 </button>
 
                 <button
@@ -1133,18 +1367,169 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <FileCode2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>{isInspecting ? 'Inspecting...' : 'Static HTML Inspect'}</span>
+                  <span>{isInspecting ? 'Reading Form...' : 'Quick Read HTML Form'}</span>
                 </button>
               </div>
             </div>
 
+            {/* Easy Side-by-Side Comparison & 1-Click Actions: Online Form vs. Legal Email */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+              {/* Card A: Online Form Removal (System Fills Fields & Checks Boxes) */}
+              <div className="p-4 bg-slate-950 border border-emerald-500/30 rounded-xl flex flex-col justify-between gap-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-white flex items-center gap-1.5">
+                      <Bot className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Method 1: Remove via Online Form</span>
+                    </span>
+                    <span className={isFormLogged ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>
+                      {isFormLogged ? 'Submitted' : 'Done For You'}
+                    </span>
+                  </div>
+                  <p className="text-slate-400 leading-relaxed">
+                    synOUT opens {activeBroker.name}&apos;s removal form, fills in your details,
+                    selects your record, and{' '}
+                    <strong className="text-emerald-300">
+                      automatically checks required privacy &amp; consent boxes
+                    </strong>{' '}
+                    on your behalf.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleRunHeadlessWorkflow('autonomous_auto_submit')}
+                    disabled={isWorkflowBusy}
+                    className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    {isWorkflowBusy ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                    )}
+                    <span>Auto-Fill, Check Boxes &amp; Submit</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleRunHeadlessWorkflow('inspect_and_preview')}
+                    disabled={isWorkflowBusy}
+                    className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-slate-200 border border-slate-700 font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <Search className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Preview Filled Form First</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Card B: Legal Email Removal (System Writes & Sends Email) */}
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl flex flex-col justify-between gap-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-white flex items-center gap-1.5">
+                      <Mail className="w-4 h-4 text-sky-400 shrink-0" />
+                      <span>Method 2: Remove via Legal Email</span>
+                    </span>
+                    <span className={isEmailSent ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>
+                      {isEmailSent ? 'Email Sent' : 'Sent For You'}
+                    </span>
+                  </div>
+                  <p className="text-slate-400 leading-relaxed">
+                    {contact.effectivePrimaryEmail ? (
+                      <>
+                        Sends a pre-written legal deletion notice to{' '}
+                        <span className="font-mono text-sky-300">{contact.effectivePrimaryEmail}</span>{' '}
+                        on your behalf so {activeBroker.name} is legally required to erase your
+                        record.
+                      </>
+                    ) : (
+                      <>
+                        {activeBroker.name} only accepts online form requests (no public privacy
+                        email inbox). Use Method 1 on the left!
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                {contact.effectivePrimaryEmail && (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    {isDirectSendConnected ? (
+                      <button
+                        type="button"
+                        onClick={handleSendCompanionEmail}
+                        disabled={isSendingEmail}
+                        className="px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        {isSendingEmail ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Send className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isEmailSent ? 'Re-Send Removal Email' : 'Send Legal Removal Email'}
+                        </span>
+                      </button>
+                    ) : isWebmailConnected && companionWebmailUrls ? (
+                      <a
+                        href={
+                          webmailSender?.preferredLauncher === 'outlook'
+                            ? companionWebmailUrls.outlookUrl
+                            : webmailSender?.preferredLauncher === 'yahoo'
+                            ? companionWebmailUrls.yahooUrl
+                            : webmailSender?.preferredLauncher === 'mailto'
+                            ? companionWebmailUrls.mailtoUrl
+                            : companionWebmailUrls.gmailUrl
+                        }
+                        target={webmailSender?.preferredLauncher === 'mailto' ? undefined : '_blank'}
+                        rel="noopener noreferrer"
+                        onClick={() =>
+                          onRecordEmailDispatched(
+                            activeBroker.id,
+                            `WEB-${(webmailSender?.preferredLauncher || 'gmail').toUpperCase()}-${Date.now()
+                              .toString(36)
+                              .toUpperCase()}`
+                          )
+                        }
+                        className="px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Open Pre-Filled Email in Webmail</span>
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={onOpenConnectEmail}
+                        className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-sky-500/40 text-sky-300 font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Mail className="w-3.5 h-3.5" />
+                        <span>Connect Email (Easy 1-Click Setup)</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {emailFeedback && (
+              <div
+                className={`p-3 rounded-xl border text-xs ${
+                  emailFeedback.ok
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                }`}
+              >
+                {emailFeedback.text}
+              </div>
+            )}
+
             {/* Active Opt-Out URL + Record Search URL */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1 text-xs">
               <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-slate-400 font-medium">
-                    Active Opt-Out / Suppression Page
-                    {contact.hasCustomOptOutUrl ? ' (Pinned Override)' : ''}
+                    Official Online Removal Form Link
+                    {contact.hasCustomOptOutUrl ? ' (Custom Saved)' : ''}
                   </span>
                   <div className="flex items-center gap-1.5">
                     <button
@@ -1157,14 +1542,14 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                       className="text-[11px] text-sky-400 hover:text-sky-300 inline-flex items-center gap-1 cursor-pointer"
                     >
                       <Edit3 className="w-3 h-3" />
-                      <span>{isEditingOptOutUrl ? 'Cancel' : 'Edit URL'}</span>
+                      <span>{isEditingOptOutUrl ? 'Cancel' : 'Change Link'}</span>
                     </button>
                     {contact.hasCustomOptOutUrl && (
                       <button
                         type="button"
                         onClick={() => clearBrokerCustomOptOutUrl(activeBroker.id)}
                         className="text-[11px] text-slate-400 hover:text-white inline-flex items-center gap-1 cursor-pointer"
-                        title="Reset to default catalog opt-out URL"
+                        title="Reset to default opt-out URL"
                       >
                         <RotateCcw className="w-3 h-3" />
                         <span>Reset</span>
@@ -1191,7 +1576,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
               <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-slate-400 font-medium">
-                    Step 1 Lookup — Direct Listing Search URL
+                    Check Your Public Listing on {activeBroker.name}
                   </span>
                   <button
                     type="button"
@@ -1216,7 +1601,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                 </a>
                 <div className="text-[11px] text-slate-500 truncate">
-                  Opens {activeBroker.domain} pre-queried for {profile.firstName} {profile.lastName}
+                  Searches {activeBroker.domain} for {profile.firstName} {profile.lastName}
                 </div>
               </div>
             </div>
@@ -1224,7 +1609,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             {isEditingOptOutUrl && (
               <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5 text-xs">
                 <div className="font-semibold text-white">
-                  Save Discovered or Custom Opt-Out Form URL for {activeBroker.name}
+                  Save Custom Online Removal Form Link for {activeBroker.name}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <input
@@ -1248,7 +1633,7 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                     onClick={handleSaveManualOptOutUrl}
                     className="px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
                   >
-                    Save Official Opt-Out URL
+                    Save Form Link
                   </button>
                 </div>
               </div>
@@ -1262,98 +1647,69 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             )}
           </div>
 
-          {/* Section 1B: Autonomous Headless Browser Opt-Out Workflow Engine */}
-          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-5 text-xs">
-            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+          {/* Section 1B: Automated Form Filler & Checkbox Status Panel */}
+          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-4 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="space-y-1">
-                <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-slate-400">
-                  <Bot className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-emerald-400 font-semibold">
-                    Playwright Chromium Workflow Engine
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>SSRF-Guarded</span>
-                  <span aria-hidden="true">·</span>
-                  <span>Zero CAPTCHA Evasion</span>
-                </div>
-                <h3 className="text-base font-bold text-white">
-                  Autonomous Web-Form Discovery, Record Matching &amp; Submission
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Automated Form Filling &amp; Checkbox Review</span>
                 </h3>
                 <p className="text-slate-400 leading-relaxed">
-                  Renders JavaScript SPAs, traverses multi-step privacy wizards, matches candidate
-                  listings using multi-anchor jurisdiction checks, populates only permitted profile
-                  fields, and captures SHA-256 DOM submission evidence.
+                  Review or customize what synOUT fills and checks on your behalf. SSNs, Driver&apos;s
+                  Licenses, and ID uploads are always blocked for your safety.
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => handleRunHeadlessWorkflow('inspect_and_preview')}
-                  disabled={isWorkflowBusy}
-                  className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white border border-slate-700 font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  {isWorkflowBusy ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Search className="w-3.5 h-3.5 text-sky-400" />
-                  )}
-                  <span>Inspect &amp; Preview Live Form</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleRunHeadlessWorkflow('autonomous_auto_submit')}
-                  disabled={isWorkflowBusy}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  {isWorkflowBusy ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                  )}
-                  <span>Autonomous Auto-Submit</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdvancedPrivacyControls((v) => !v)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold cursor-pointer whitespace-nowrap self-start sm:self-auto"
+              >
+                {showAdvancedPrivacyControls
+                  ? 'Hide Optional Info Settings'
+                  : 'Choose What Info Forms Can Use'}
+              </button>
             </div>
 
-            {/* Consumer Data Minimization & Disclosure Policy */}
-            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-semibold text-slate-200">
-                  Data-Minimization Disclosure Policy (11 CCR § 7060)
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">
-                  SSN, Driver&apos;s License &amp; Govt ID uploads are always blocked
-                </span>
+            {showAdvancedPrivacyControls && (
+              <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-200">
+                    Allowed Info When Filling Forms For You
+                  </span>
+                  <span className="text-[11px] text-emerald-400">
+                    SSN &amp; Govt ID uploads are permanently blocked
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1 text-slate-300">
+                  {(
+                    [
+                      ['allowPhone', 'Allow Phone Number'],
+                      ['allowStreetAddress', 'Allow Street Address'],
+                      ['allowZip', 'Allow ZIP Code'],
+                      ['allowBirthYearOrAge', 'Allow Birth Year / Age'],
+                      ['allowAuthorizedAgent', 'Include Signed Agent Authorization'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <label key={key} className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={disclosurePolicy[key]}
+                        onChange={(e) =>
+                          setDisclosurePolicy((prev) => ({
+                            ...prev,
+                            [key]: e.target.checked,
+                          }))
+                        }
+                        className="rounded border-slate-700 bg-slate-900 text-emerald-500"
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1 text-slate-300">
-                {(
-                  [
-                    ['allowPhone', 'Allow Phone Number'],
-                    ['allowStreetAddress', 'Allow Street Address'],
-                    ['allowZip', 'Allow ZIP Code'],
-                    ['allowBirthYearOrAge', 'Allow Birth Year / Age'],
-                    ['allowAuthorizedAgent', 'Attach POA / Agent Flag'],
-                  ] as const
-                ).map(([key, label]) => (
-                  <label key={key} className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={disclosurePolicy[key]}
-                      onChange={(e) =>
-                        setDisclosurePolicy((prev) => ({
-                          ...prev,
-                          [key]: e.target.checked,
-                        }))
-                      }
-                      className="rounded border-slate-700 bg-slate-900 text-emerald-500"
-                    />
-                    <span>{label}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
+            )}
 
             {workflowError && (
               <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 flex items-start gap-2">
@@ -1582,40 +1938,83 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   </div>
                 )}
 
-                {/* Live Mapped DOM Form Controls */}
+                {/* Live Mapped DOM Form Controls & Checkboxes */}
                 {activeWorkflowJob.mappedFields.filter((f) => !f.preserveOriginalHidden).length >
                   0 && (
                   <div className="space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-slate-400">
-                      <span>
-                        Live Browser DOM Controls Mapped (
-                        {
-                          activeWorkflowJob.mappedFields.filter((f) => !f.preserveOriginalHidden)
-                            .length
-                        }
-                        )
-                      </span>
-                      <span>
-                        Hidden CSRF Tokens Preserved:{' '}
-                        {activeWorkflowJob.mappedFields.filter((f) => f.preserveOriginalHidden).length}
-                      </span>
-                    </div>
+                    {(() => {
+                      const visibleLive = activeWorkflowJob.mappedFields.filter(
+                        (f) => !f.preserveOriginalHidden
+                      );
+                      const checkedBoxesCount = visibleLive.filter(
+                        (f) =>
+                          (f.inputType === 'checkbox' ||
+                            f.tag === 'custom_checkbox' ||
+                            f.semanticRole === 'consent_checkbox') &&
+                          f.disclosureAllowed &&
+                          f.semanticRole !== 'marketing_opt_in' &&
+                          (liveFieldOverrides[f.fieldKey] ?? f.plannedValue) !== 'false' &&
+                          (liveFieldOverrides[f.fieldKey] ?? f.plannedValue) !== '__unchecked__' &&
+                          Boolean(liveFieldOverrides[f.fieldKey] ?? f.plannedValue)
+                      ).length;
+                      const filledTextCount = visibleLive.filter(
+                        (f) =>
+                          f.inputType !== 'checkbox' &&
+                          f.tag !== 'custom_checkbox' &&
+                          f.semanticRole !== 'consent_checkbox' &&
+                          f.disclosureAllowed &&
+                          Boolean(liveFieldOverrides[f.fieldKey] ?? f.plannedValue)
+                      ).length;
+
+                      return (
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300 tabular-nums">
+                          <span>
+                            Prepared on your behalf:{' '}
+                            <strong className="text-white">{filledTextCount} field(s) filled</strong>
+                            {checkedBoxesCount > 0 && (
+                              <>
+                                {' '}
+                                ·{' '}
+                                <strong className="text-emerald-400">
+                                  {checkedBoxesCount} checkbox(es) checked for you
+                                </strong>
+                              </>
+                            )}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            You can edit any field or uncheck any box below
+                          </span>
+                        </div>
+                      );
+                    })()}
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {activeWorkflowJob.mappedFields
                         .filter((f) => !f.preserveOriginalHidden)
                         .map((field) => {
+                          const isCheckboxControl =
+                            field.inputType === 'checkbox' ||
+                            field.tag === 'custom_checkbox' ||
+                            field.semanticRole === 'consent_checkbox';
                           const isSkipped =
                             !field.disclosureAllowed ||
                             field.semanticRole === 'honeypot_trap' ||
                             field.semanticRole === 'sensitive_id_field' ||
                             field.semanticRole === 'marketing_opt_in';
+                          const currentVal = liveFieldOverrides[field.fieldKey] ?? field.plannedValue;
+                          const isChecked =
+                            Boolean(currentVal) &&
+                            currentVal !== 'false' &&
+                            currentVal !== '__unchecked__';
+
                           return (
                             <div
                               key={field.fieldKey}
-                              className={`p-2.5 rounded-lg border space-y-1 ${
+                              className={`p-3 rounded-xl border space-y-1.5 ${
                                 isSkipped
-                                  ? 'bg-slate-900/40 border-slate-800/80 opacity-75'
+                                  ? 'bg-slate-900/40 border-slate-800/80 opacity-80'
+                                  : isCheckboxControl && isChecked
+                                  ? 'bg-emerald-950/20 border-emerald-500/35'
                                   : 'bg-slate-900 border-slate-800'
                               }`}
                             >
@@ -1625,32 +2024,79 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                                   {field.required ? ' *' : ''}
                                 </span>
                                 <span
-                                  className={`font-mono text-[10px] shrink-0 ${
-                                    field.confidence >= 0.8
+                                  className={`text-[10px] shrink-0 ${
+                                    isSkipped
+                                      ? 'text-amber-300'
+                                      : field.confidence >= 0.8
                                       ? 'text-emerald-400'
-                                      : field.confidence >= 0.65
-                                      ? 'text-amber-400'
-                                      : 'text-rose-400'
+                                      : 'text-slate-400'
                                   }`}
                                 >
-                                  {field.semanticRole} · {Math.round(field.confidence * 100)}%
+                                  {formatFriendlyFieldRole(field.semanticRole)}
                                 </span>
                               </div>
+
                               {isSkipped ? (
-                                <div className="text-[11px] font-mono text-amber-300/90">
-                                  Skipped: {field.skipReason || 'Blocked by safety/disclosure policy'}
-                                </div>
+                                field.semanticRole === 'marketing_opt_in' ? (
+                                  <div className="flex items-center gap-2 pt-0.5 text-[11px] text-amber-300">
+                                    <input
+                                      type="checkbox"
+                                      checked={false}
+                                      disabled
+                                      className="rounded border-slate-700 bg-slate-950"
+                                    />
+                                    <span>Left unchecked for you (spam / marketing box skipped)</span>
+                                  </div>
+                                ) : (
+                                  <div className="text-[11px] text-amber-300/90">
+                                    Skipped for your safety:{' '}
+                                    {field.skipReason || 'Not needed for removal'}
+                                  </div>
+                                )
+                              ) : isCheckboxControl ? (
+                                <label className="flex items-center gap-2.5 pt-0.5 cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) => {
+                                      const defaultCheckedVal =
+                                        field.plannedValue &&
+                                        field.plannedValue !== 'false' &&
+                                        field.plannedValue !== '__unchecked__'
+                                          ? field.plannedValue
+                                          : 'true';
+                                      setLiveFieldOverrides((prev) => ({
+                                        ...prev,
+                                        [field.fieldKey]: e.target.checked
+                                          ? defaultCheckedVal
+                                          : 'false',
+                                      }));
+                                    }}
+                                    className="w-4 h-4 rounded border-emerald-500/50 bg-slate-950 text-emerald-500"
+                                  />
+                                  <span
+                                    className={
+                                      isChecked
+                                        ? 'text-emerald-300 font-semibold text-xs'
+                                        : 'text-slate-400 text-xs'
+                                    }
+                                  >
+                                    {isChecked
+                                      ? 'Checked for you by synOUT'
+                                      : 'Unchecked (click to check)'}
+                                  </span>
+                                </label>
                               ) : (
                                 <input
                                   type="text"
-                                  value={liveFieldOverrides[field.fieldKey] ?? field.plannedValue}
+                                  value={currentVal}
                                   onChange={(e) =>
                                     setLiveFieldOverrides((prev) => ({
                                       ...prev,
                                       [field.fieldKey]: e.target.value,
                                     }))
                                   }
-                                  className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
+                                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
                                 />
                               )}
                             </div>
@@ -1666,14 +2112,14 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                           type="button"
                           onClick={handleApproveAndSubmitWorkflow}
                           disabled={isWorkflowBusy}
-                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                          className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                         >
                           {isWorkflowBusy ? (
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <Send className="w-3.5 h-3.5" />
                           )}
-                          <span>Approve &amp; Submit Live Opt-Out Form</span>
+                          <span>Approve &amp; Submit Form For Me</span>
                         </button>
                       </div>
                     )}
@@ -2000,57 +2446,119 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
 
                 {visibleFormFields.length > 0 && primaryForm ? (
                   <div className="space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-slate-400">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300 tabular-nums">
                       <span>
-                        Detected Form ({primaryForm.method} {primaryForm.actionUrl})
+                        Found Online Form ({visibleFormFields.length} fields &amp; checkboxes mapped
+                        for you)
                       </span>
-                      <span>{visibleFormFields.length} Consumer Inputs Mapped</span>
+                      <span className="text-[11px] text-slate-500">
+                        Checkboxes are automatically set on your behalf
+                      </span>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {visibleFormFields.map((field) => (
-                        <div key={field.key} className="space-y-1">
-                          <div className="flex items-center justify-between gap-2 text-[11px]">
-                            <label className="text-slate-300 font-medium truncate">
-                              {field.label}
-                              {field.required ? ' *' : ''}
-                            </label>
-                            <span className="font-mono text-[10px] text-slate-500">
-                              {field.semanticRole} · {Math.round(field.confidence * 100)}%
-                            </span>
+                      {visibleFormFields.map((field) => {
+                        const isCheckbox =
+                          field.inputType === 'checkbox' || field.semanticRole === 'consent_checkbox';
+                        const isSpamBox = field.semanticRole === 'marketing_opt_in';
+                        const rawVal = editedFieldValues[field.name] ?? field.suggestedValue;
+                        const isChecked =
+                          Boolean(rawVal) && rawVal !== 'false' && rawVal !== '__unchecked__';
+
+                        return (
+                          <div
+                            key={field.key}
+                            className={`p-3 rounded-xl border space-y-1.5 ${
+                              isSpamBox
+                                ? 'bg-slate-900/40 border-slate-800/80 opacity-80'
+                                : isCheckbox && isChecked
+                                ? 'bg-emerald-950/20 border-emerald-500/35'
+                                : 'bg-slate-900 border-slate-800'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 text-[11px]">
+                              <label className="text-slate-200 font-semibold truncate">
+                                {field.label}
+                                {field.required ? ' *' : ''}
+                              </label>
+                              <span className="text-[10px] text-emerald-400 shrink-0">
+                                {formatFriendlyFieldRole(field.semanticRole)}
+                              </span>
+                            </div>
+
+                            {isSpamBox ? (
+                              <div className="flex items-center gap-2 pt-0.5 text-[11px] text-amber-300">
+                                <input
+                                  type="checkbox"
+                                  checked={false}
+                                  disabled
+                                  className="rounded border-slate-700 bg-slate-950"
+                                />
+                                <span>Left unchecked for you (marketing spam skipped)</span>
+                              </div>
+                            ) : isCheckbox ? (
+                              <label className="flex items-center gap-2.5 pt-0.5 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    const defaultCheckedVal =
+                                      field.suggestedValue &&
+                                      field.suggestedValue !== 'false' &&
+                                      field.suggestedValue !== '__unchecked__'
+                                        ? field.suggestedValue
+                                        : 'true';
+                                    setEditedFieldValues((prev) => ({
+                                      ...prev,
+                                      [field.name]: e.target.checked
+                                        ? defaultCheckedVal
+                                        : '__unchecked__',
+                                    }));
+                                  }}
+                                  className="w-4 h-4 rounded border-emerald-500/50 bg-slate-950 text-emerald-500"
+                                />
+                                <span
+                                  className={
+                                    isChecked
+                                      ? 'text-emerald-300 font-semibold text-xs'
+                                      : 'text-slate-400 text-xs'
+                                  }
+                                >
+                                  {isChecked
+                                    ? 'Checked for you by synOUT'
+                                    : 'Unchecked (click to check)'}
+                                </span>
+                              </label>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="text"
+                                  value={rawVal}
+                                  onChange={(e) =>
+                                    setEditedFieldValues((prev) => ({
+                                      ...prev,
+                                      [field.name]: e.target.value,
+                                    }))
+                                  }
+                                  className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => markCopied(`fld-${field.key}`, rawVal)}
+                                  className="p-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 cursor-pointer"
+                                  title={`Copy ${field.label}`}
+                                >
+                                  {copiedKey === `fld-${field.key}` ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            <input
-                              type="text"
-                              value={editedFieldValues[field.name] ?? field.suggestedValue}
-                              onChange={(e) =>
-                                setEditedFieldValues((prev) => ({
-                                  ...prev,
-                                  [field.name]: e.target.value,
-                                }))
-                              }
-                              className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
-                            />
-                            <button
-                              type="button"
-                              onClick={() =>
-                                markCopied(
-                                  `fld-${field.key}`,
-                                  editedFieldValues[field.name] ?? field.suggestedValue
-                                )
-                              }
-                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 cursor-pointer"
-                              title={`Copy ${field.label}`}
-                            >
-                              {copiedKey === `fld-${field.key}` ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-400" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     {relayFeedback && (
@@ -2084,20 +2592,18 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                         )}
                         <span>
                           {isSubmittingRelay
-                            ? 'Transmitting Form Payload...'
-                            : `Submit via HTTP Relay (${primaryForm.submitButtonLabel})`}
+                            ? 'Submitting Form For You...'
+                            : `Submit Filled Form Now (${primaryForm.submitButtonLabel})`}
                         </span>
                       </button>
                     </div>
                   </div>
                 ) : (
                   <p className="text-slate-400">
-                    No static HTML{' '}
-                    <span className="font-mono text-slate-200">&lt;form&gt;</span> inputs were
-                    embedded in the raw server response (client-rendered SPA or WAF-gated page).
-                    Click <strong className="text-emerald-400">Inspect &amp; Preview Live Form</strong>{' '}
-                    above to render JavaScript in headless Chromium, or use the{' '}
-                    <strong className="text-emerald-400">synOUT Auto-Fill Bookmarklet</strong>.
+                    This site loads its form dynamically with JavaScript. Click{' '}
+                    <strong className="text-emerald-400">Auto-Fill, Check Boxes &amp; Submit</strong>{' '}
+                    above so synOUT opens a live automated browser for you, or use the{' '}
+                    <strong className="text-emerald-400">1-Click Auto-Fill Bookmarklet</strong>.
                   </p>
                 )}
               </div>
@@ -2233,71 +2739,81 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             )}
           </div>
 
-          {/* Section 5: Search-Engine Deep Opt-Out Page Finders */}
-          <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-3 text-xs">
-            <div>
-              <h3 className="text-base font-bold text-white">
-                Search-Engine Hidden Opt-Out Page Finders for {activeBroker.domain}
-              </h3>
-              <p className="text-slate-400">
-                If a broker renamed their removal form to an obscure title or moved URLs, these
-                surgical site-dorks surface the exact indexed form page across Google, DuckDuckGo,
-                Bing, and Brave.
-              </p>
+          {/* Section 5: Collapsible Search-Engine Hidden Form Finders */}
+          <div className="p-5 bg-slate-900 border border-slate-800 rounded-2xl space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  Can&apos;t Find {activeBroker.name}&apos;s Form? Search Hidden Opt-Out Pages
+                </h3>
+                <p className="text-slate-400">
+                  Optional helper links that locate moved or renamed privacy forms on Google,
+                  DuckDuckGo, Bing, and Brave.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSearchFinders((v) => !v)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold cursor-pointer whitespace-nowrap"
+              >
+                {showSearchFinders ? 'Hide Search Links' : 'Show Search Links'}
+              </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {searchDorks.map((dork) => (
-                <div
-                  key={dork.id}
-                  className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2"
-                >
-                  <div className="font-bold text-white">{dork.label}</div>
-                  <p className="text-[11px] text-slate-400">{dork.description}</p>
-                  <div className="font-mono text-[11px] text-slate-300 bg-slate-900 p-2 rounded border border-slate-800 truncate">
-                    {dork.query}
+            {showSearchFinders && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+                {searchDorks.map((dork) => (
+                  <div
+                    key={dork.id}
+                    className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2"
+                  >
+                    <div className="font-bold text-white">{dork.label}</div>
+                    <p className="text-[11px] text-slate-400">{dork.description}</p>
+                    <div className="font-mono text-[11px] text-slate-300 bg-slate-900 p-2 rounded border border-slate-800 truncate">
+                      {dork.query}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <a
+                        href={dork.googleUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <span>Google</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      <a
+                        href={dork.duckDuckGoUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <span>DuckDuckGo</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      <a
+                        href={dork.bingUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <span>Bing</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      <a
+                        href={dork.braveUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <span>Brave</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <a
-                      href={dork.googleUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
-                    >
-                      <span>Google</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                    <a
-                      href={dork.duckDuckGoUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
-                    >
-                      <span>DuckDuckGo</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                    <a
-                      href={dork.bingUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
-                    >
-                      <span>Bing</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                    <a
-                      href={dork.braveUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
-                    >
-                      <span>Brave</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

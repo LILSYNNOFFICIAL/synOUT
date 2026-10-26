@@ -40,6 +40,7 @@ import {
   Search,
   Bookmark,
   Pin,
+  Bot,
 } from 'lucide-react';
 
 interface DiyOptOutAssistantModalProps {
@@ -56,6 +57,7 @@ interface DiyOptOutAssistantModalProps {
   onMarkEmailDispatched: (brokerId: string, messageId: string) => void;
   onOpenConnectEmail?: () => void;
   onOpenFormWorkbench?: (broker: DataBroker) => void;
+  onOpenAutomatedNavigator?: (broker: DataBroker, result: ScanResult) => void;
 }
 
 export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = ({
@@ -67,6 +69,7 @@ export const DiyOptOutAssistantModal: React.FC<DiyOptOutAssistantModalProps> = (
   onMarkEmailDispatched,
   onOpenConnectEmail,
   onOpenFormWorkbench,
+  onOpenAutomatedNavigator,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
   const overrides = useBrokerContactOverrides();
@@ -252,14 +255,46 @@ Printed Name: ${fullName}`;
           {/* Methodology Summary Row */}
           <div className="px-4 py-3 glass-subtle rounded-xl flex items-center justify-between gap-3 text-xs tabular-nums">
             <div className="flex items-center gap-2">
-              <span className="text-slate-400">Methodology:</span>
+              <span className="text-slate-400">Removal Method:</span>
               <span className="font-semibold text-white">{broker.removalMethod}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-slate-400">Estimated SLA:</span>
+              <span className="text-slate-400">Typical Timeframe:</span>
               <span className="font-mono text-emerald-400 font-medium">{broker.removalTime}</span>
             </div>
           </div>
+
+          {/* 1-Click Automated Form Runner (Fills Fields & Checks Boxes For User) */}
+          {(onOpenAutomatedNavigator || onOpenFormWorkbench) && (
+            <div className="p-4 rounded-2xl bg-sky-500/10 border border-sky-400/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="space-y-1">
+                <div className="font-bold text-white flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-sky-400 shrink-0" />
+                  <span>Want synOUT to Fill Out This Form &amp; Check Boxes For You?</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Skip manual copy-pasting — synOUT opens {broker.name}&apos;s opt-out form, fills
+                  your details, checks required consent &amp; &ldquo;Do Not Sell&rdquo; boxes, and
+                  submits on your behalf.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  if (onOpenAutomatedNavigator) {
+                    onOpenAutomatedNavigator(broker, result);
+                  } else if (onOpenFormWorkbench) {
+                    onOpenFormWorkbench(broker);
+                  }
+                }}
+                className="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                <Bot className="w-3.5 h-3.5" />
+                <span>Auto-Fill &amp; Submit Form For Me</span>
+              </button>
+            </div>
+          )}
 
           {/* Live Opt-Out Page Discovery & Form Auto-Fill Toolkit */}
           <div className="p-4 glass-subtle rounded-2xl space-y-3 text-xs">

@@ -8,6 +8,7 @@ interface HeroSectionProps {
   onExploreBrokers: () => void;
   hasScanResults?: boolean;
   onNukeAll?: () => void;
+  onOpenWebForms?: () => void;
   onOpenInboxHarvester?: () => void;
   onOpenStateRegistries?: () => void;
 }
@@ -17,6 +18,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
   onExploreBrokers,
   hasScanResults = false,
   onNukeAll,
+  onOpenWebForms,
   onOpenInboxHarvester,
   onOpenStateRegistries,
 }) => {
@@ -29,28 +31,28 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
         <div className="glass-panel rounded-3xl p-8 sm:p-12 lg:p-14 text-center space-y-8">
           {/* Unboxed Minimalist Metadata Line */}
           <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-slate-400 tabular-nums">
-            <span className="text-emerald-400 font-medium">Autonomous Privacy Removal</span>
+            <span className="text-emerald-400 font-medium">Automatic Web Forms &amp; Legal Emails</span>
             <span aria-hidden="true">·</span>
-            <span>{playbookCount} Multi-Step Aggregator Playbooks</span>
+            <span>{playbookCount} Guided Broker Playbooks</span>
             <span aria-hidden="true">·</span>
-            <span>Inbox Verification Harvester</span>
+            <span>Checks Required Consent Boxes For You</span>
             <span aria-hidden="true">·</span>
-            <span>CA CPPA, TX, OR &amp; VT Registry Sync</span>
+            <span>CA, TX, OR &amp; VT Privacy Laws</span>
           </div>
 
           {/* Display Headline */}
           <h1 className="text-3xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight text-white leading-[1.1] [text-wrap:balance] max-w-4xl mx-auto">
-            Minimalist, Evidence-Driven{' '}
+            Remove Your Personal Records{' '}
             <span className="bg-gradient-to-r from-emerald-300 via-teal-200 to-sky-300 bg-clip-text text-transparent">
-              Data Broker Suppression
+              Automatically — Forms &amp; Email
             </span>
           </h1>
 
           {/* Subtitle */}
           <p className="text-sm sm:text-base text-slate-300/90 max-w-2xl mx-auto leading-relaxed">
-            Discover disguised opt-out portals in isolated headless Chromium, harvest email
-            confirmation links automatically, monitor 30/60/90-day re-listings, and compile
-            SHA-256 regulator complaint packets.
+            See which data brokers publish your name, address, and phone number — then let synOUT
+            remove them on your behalf. We fill out online opt-out forms (including checking
+            required consent boxes for you) and send official legal removal emails in minutes.
           </p>
 
           {/* Primary Action Row */}
@@ -88,15 +90,15 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
           <div className="pt-6 border-t border-white/[0.07] grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
             <button
               type="button"
-              onClick={onExploreBrokers}
+              onClick={onOpenWebForms || onExploreBrokers}
               className="glass-card rounded-2xl p-4 space-y-1 cursor-pointer"
             >
               <div className="flex items-center justify-between text-xs font-semibold text-white">
-                <span>Multi-Step Form Playbooks</span>
+                <span>Automatic Web-Form Removal</span>
                 <Bot className="w-4 h-4 text-emerald-400 shrink-0" />
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                Dedicated Playwright adapters for Spokeo, Whitepages, BeenVerified, PeopleConnect &amp; Radaris.
+                Opens broker forms, fills your details, checks required privacy boxes for you, and submits.
               </p>
             </button>
 
@@ -106,11 +108,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
               className="glass-card rounded-2xl p-4 space-y-1 cursor-pointer"
             >
               <div className="flex items-center justify-between text-xs font-semibold text-white">
-                <span>Autonomous Inbox Harvester</span>
+                <span>1-Click Email Confirmation Helper</span>
                 <Inbox className="w-4 h-4 text-emerald-400 shrink-0" />
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                Extracts one-time confirmation links from broker replies and completes them headlessly.
+                Finds confirmation links brokers email back to you and finishes the final click safely.
               </p>
             </button>
 
@@ -120,11 +122,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
               className="glass-card rounded-2xl p-4 space-y-1 cursor-pointer"
             >
               <div className="flex items-center justify-between text-xs font-semibold text-white">
-                <span>State Registry &amp; CPPA Packets</span>
+                <span>State Privacy Law Protection</span>
                 <Scale className="w-4 h-4 text-emerald-400 shrink-0" />
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                Syncs CA, TX, OR &amp; VT broker filings and builds SHA-256 regulatory escalation dossiers.
+                Syncs official CA, TX, OR &amp; VT broker registries and builds ready-to-send complaint packets.
               </p>
             </button>
           </div>

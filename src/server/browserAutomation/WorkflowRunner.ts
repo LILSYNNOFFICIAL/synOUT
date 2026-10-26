@@ -200,6 +200,52 @@ async function executePageWorkflowPass(params: {
     const candidates = await extractAndScoreCandidateRecords(page, profile);
     const nonDisqualified = candidates.filter((c) => !c.disqualifiedHomonym);
 
+    const selectCandidateOnPage = async (cand: (typeof candidates)[number]) => {
+      const loc = page.locator(cand.selector).first();
+      if (cand.actionType === 'check_checkbox' || cand.actionType === 'check_radio') {
+        await loc.check({ timeout: 3000 }).catch(async () => {
+          await loc.check({ force: true, timeout: 2500 }).catch(async () => {
+            await loc.click({ force: true, timeout: 2500 });
+          });
+        });
+        // Many multi-step portals require checking the record box and clicking Continue / Remove Selected
+        const advanceSelector = await page.evaluate(() => {
+          const btns = Array.from(
+            document.querySelectorAll(
+              'button, input[type="submit"], input[type="button"], a[role="button"]'
+            )
+          ) as HTMLElement[];
+          for (let i = 0; i < btns.length; i++) {
+            const b = btns[i];
+            if ((b as HTMLButtonElement).disabled || b.hidden) continue;
+            const st = window.getComputedStyle(b);
+            if (st.display === 'none' || st.visibility === 'hidden') continue;
+            const txt = (
+              b.tagName === 'INPUT'
+                ? (b as HTMLInputElement).value || ''
+                : b.innerText || b.textContent || ''
+            )
+              .replace(/\s+/g, ' ')
+              .trim();
+            if (
+              /\b(continue|next|remove\s+selected|opt[\s-]?out\s+selected|delete\s+selected|submit\s+selected|proceed|remove\s+my\s+record)\b/i.test(
+                txt
+              )
+            ) {
+              b.setAttribute('data-synout-cand-advance', String(i));
+              return `[data-synout-cand-advance="${i}"]`;
+            }
+          }
+          return null;
+        });
+        if (advanceSelector) {
+          await page.locator(advanceSelector).first().click({ timeout: 3500 }).catch(() => undefined);
+        }
+      } else {
+        await loc.click({ timeout: 4000 });
+      }
+    };
+
     if (candidates.length > 0 && !candidateSelectedInPass) {
       job.candidateRecords = candidates;
 
@@ -213,9 +259,9 @@ async function executePageWorkflowPass(params: {
             'matching_record',
             'USER_SELECTED_RECORD',
             page.url(),
-            `Selected confirmed record ${chosen.candidateId}.`
+            `Selected confirmed record ${chosen.candidateId} (${chosen.actionType}).`
           );
-          await page.locator(chosen.selector).first().click({ timeout: 4000 });
+          await selectCandidateOnPage(chosen);
           await waitForPageReady(page);
           if (await checkBlocker(200)) return;
           continue;
@@ -263,7 +309,7 @@ async function executePageWorkflowPass(params: {
         return;
       }
 
-      // Unambiguous single match -> select it automatically!
+      // Unambiguous single match -> select/check it automatically on user's behalf!
       candidateSelectedInPass = true;
       job.selectedCandidateId = best.candidateId;
       appendJobStep(
@@ -273,7 +319,7 @@ async function executePageWorkflowPass(params: {
         page.url(),
         `Selected unambiguous listing (${Math.round(best.confidenceScore * 100)}% confidence: ${best.matchSignals.join(', ')}).`
       );
-      await page.locator(best.selector).first().click({ timeout: 4000 });
+      await selectCandidateOnPage(best);
       await waitForPageReady(page);
       if (await checkBlocker(200)) return;
       continue;
@@ -811,8 +857,129 @@ export async function approveAndSubmitWorkflow(params: {
 }
 
 /**
+ * Automatically checks required/confirmation/consent checkboxes on inbound email verification
+ * landing pages (native <input type="checkbox">, CSS-styled opacity:0 checkboxes via <label>,
+ * and custom [role="checkbox"][aria-checked="false"]), strictly skipping marketing opt-ins and honeypots.
+ */
+async function autoCheckVerificationLandingBoxes(page: Page): Promise<number> {
+  return page
+    .evaluate(() => {
+      const MARKETING_RE =
+        /\b(newsletter|promot|marketing|partner\s+offer|special\s+offer|sponsor|advertising|updates\s+and\s+offers)\b/i;
+      const CONFIRM_CONSENT_RE =
+        /\b(confirm|delete|remove|suppress|opt[\s-]?out|do\s+not\s+sell|privacy|authorize|attest|18\s+years|permanent|agree|consent|acknowledge|verify|request|listing|record)\b/i;
+
+      let checkedCount = 0;
+
+      // 1. Native <input type="checkbox"> (including CSS-styled opacity:0 checkboxes paired with <label>)
+      const inputs = Array.from(
+        document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
+      );
+      for (const el of inputs) {
+        if (el.disabled || el.checked) continue;
+
+        const labelEls: HTMLElement[] = [];
+        if (el.labels && el.labels.length > 0) {
+          for (const lbl of Array.from(el.labels)) {
+            labelEls.push(lbl);
+          }
+        }
+        if (el.id) {
+          const explicit = document.querySelector<HTMLElement>(
+            `label[for="${CSS.escape(el.id)}"]`
+          );
+          if (explicit && !labelEls.includes(explicit)) labelEls.push(explicit);
+        }
+        const wrapping = el.closest('label');
+        if (wrapping && !labelEls.includes(wrapping)) labelEls.push(wrapping);
+
+        const labelText = [
+          ...labelEls.map((l) => l.innerText || l.textContent || ''),
+          el.getAttribute('aria-label') || '',
+          el.name || '',
+          el.id || '',
+          el.parentElement?.innerText || '',
+        ]
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        const style = window.getComputedStyle(el);
+        const hasVisibleLabel = labelEls.some((l) => {
+          const ls = window.getComputedStyle(l);
+          return ls.display !== 'none' && ls.visibility !== 'hidden';
+        });
+
+        // Skip unlabelled invisible honeypot traps
+        if (
+          !hasVisibleLabel &&
+          (style.display === 'none' || style.visibility === 'hidden' || el.tabIndex === -1)
+        ) {
+          continue;
+        }
+
+        // Never check promotional / marketing opt-ins
+        if (MARKETING_RE.test(labelText)) continue;
+
+        if (el.required || CONFIRM_CONSENT_RE.test(labelText)) {
+          const visibleLabel = labelEls.find((l) => {
+            const ls = window.getComputedStyle(l);
+            return ls.display !== 'none' && ls.visibility !== 'hidden';
+          });
+          if (visibleLabel && (style.opacity === '0' || el.offsetWidth <= 2)) {
+            visibleLabel.click();
+          } else {
+            el.click();
+          }
+          if (!el.checked) {
+            el.checked = true;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          if (el.checked) checkedCount++;
+        }
+      }
+
+      // 2. Custom ARIA [role="checkbox"][aria-checked="false"] controls
+      const ariaBoxes = Array.from(
+        document.querySelectorAll<HTMLElement>('[role="checkbox"]')
+      );
+      for (const box of ariaBoxes) {
+        if (box.tagName.toLowerCase() === 'input') continue;
+        if (box.getAttribute('aria-disabled') === 'true') continue;
+        if (box.getAttribute('aria-checked') === 'true') continue;
+
+        const style = window.getComputedStyle(box);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+
+        const text = [
+          box.innerText || box.textContent || '',
+          box.getAttribute('aria-label') || '',
+          box.id || '',
+        ]
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (MARKETING_RE.test(text)) continue;
+        if (
+          box.getAttribute('aria-required') === 'true' ||
+          CONFIRM_CONSENT_RE.test(text)
+        ) {
+          box.click();
+          checkedCount++;
+        }
+      }
+
+      return checkedCount;
+    })
+    .catch(() => 0);
+}
+
+/**
  * Completes an inbound email verification link safely inside an isolated SSRF-guarded Playwright context,
- * clicking any secondary confirmation button and extracting any final broker ticket ID.
+ * checking any required confirmation checkboxes, clicking any secondary confirmation button,
+ * and extracting any final broker ticket ID.
  */
 export async function completeWorkflowEmailVerification(params: {
   sessionId: string;
@@ -847,13 +1014,22 @@ export async function completeWorkflowEmailVerification(params: {
       });
       await waitForPageReady(page);
 
-      // Some brokers render a secondary "Confirm Opt-Out" button on the verification landing page
+      // Automatically check any confirmation/consent boxes on the verification landing page
+      const checkedBoxesCount = await autoCheckVerificationLandingBoxes(page);
+
+      // Some brokers render a secondary "Confirm Opt-Out" button or submit input on the verification landing page
       const confirmBtn = page
-        .locator('button, input[type="submit"]')
-        .filter({ hasText: /confirm|complete|verify|remove|opt[\s-]?out|delete/i })
+        .locator('button, a[role="button"]')
+        .filter({ hasText: /confirm|complete|verify|remove|opt[\s-]?out|delete|finalize/i })
         .first();
-      if ((await confirmBtn.count()) > 0) {
+      const submitInput = page
+        .locator('input[type="submit"]')
+        .first();
+      if ((await confirmBtn.count()) > 0 && (await confirmBtn.isVisible().catch(() => false))) {
         await confirmBtn.click({ timeout: 3000 }).catch(() => null);
+        await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => null);
+      } else if ((await submitInput.count()) > 0 && (await submitInput.isVisible().catch(() => false))) {
+        await submitInput.click({ timeout: 3000 }).catch(() => null);
         await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => null);
       }
 
@@ -878,14 +1054,19 @@ export async function completeWorkflowEmailVerification(params: {
         job.brokerConfirmationCode = ticket;
       }
 
+      const boxNote =
+        checkedBoxesCount > 0
+          ? ` (checked ${checkedBoxesCount} confirmation checkbox${checkedBoxesCount === 1 ? '' : 'es'})`
+          : '';
+
       job.emailVerification = {
         verifiedAtIso: new Date().toISOString(),
         finalUrl: page.url(),
         httpStatus: finalStatus,
         brokerConfirmationCode: ticket,
         summary: ticket
-          ? `Email confirmation link verified; broker issued confirmation code ${ticket}.`
-          : 'Email confirmation link visited and confirmed (no additional ticket code issued).',
+          ? `Email confirmation link verified${boxNote}; broker issued confirmation code ${ticket}.`
+          : `Email confirmation link visited and confirmed${boxNote} (no additional ticket code issued).`,
       };
 
       appendJobStep(
@@ -1119,6 +1300,7 @@ export interface StandaloneVerificationResult {
   pageTitle: string;
   httpStatus: number;
   brokerConfirmationCode: string | null;
+  checkedBoxesCount: number;
   evidenceSha256: string;
   summary: string;
 }
@@ -1161,12 +1343,20 @@ export async function executeStandaloneVerificationLink(params: {
       });
       await waitForPageReady(page);
 
+      const checkedBoxesCount = await autoCheckVerificationLandingBoxes(page);
+
       const confirmBtn = page
-        .locator('button, input[type="submit"], a[role="button"]')
-        .filter({ hasText: /confirm|complete|verify|remove|opt[\s-]?out|delete/i })
+        .locator('button, a[role="button"]')
+        .filter({ hasText: /confirm|complete|verify|remove|opt[\s-]?out|delete|finalize/i })
+        .first();
+      const submitInput = page
+        .locator('input[type="submit"]')
         .first();
       if ((await confirmBtn.count()) > 0 && (await confirmBtn.isVisible().catch(() => false))) {
         await confirmBtn.click({ timeout: 3000 }).catch(() => null);
+        await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => null);
+      } else if ((await submitInput.count()) > 0 && (await submitInput.isVisible().catch(() => false))) {
+        await submitInput.click({ timeout: 3000 }).catch(() => null);
         await page.waitForLoadState('networkidle', { timeout: 4000 }).catch(() => null);
       }
 
@@ -1187,18 +1377,24 @@ export async function executeStandaloneVerificationLink(params: {
         .update(`${verifiedAtIso}|${page.url()}|${finalStatus}|${ticket || 'NONE'}`)
         .digest('hex');
 
+      const boxSuffix =
+        checkedBoxesCount > 0
+          ? ` Checked ${checkedBoxesCount} confirmation box${checkedBoxesCount === 1 ? '' : 'es'} for you.`
+          : '';
+
       outcome = {
         verified: !rejected,
         finalUrl: page.url(),
         pageTitle,
         httpStatus: finalStatus,
         brokerConfirmationCode: ticket,
+        checkedBoxesCount,
         evidenceSha256,
         summary: rejected
           ? `Verification link returned HTTP ${finalStatus} or expired notice on ${params.expectedBrokerDomain}.`
           : ticket
-          ? `Completed verification link on ${params.expectedBrokerDomain} (Confirmation Code: ${ticket}).`
-          : `Completed verification link on ${params.expectedBrokerDomain} (HTTP ${finalStatus}).`,
+          ? `Completed verification link on ${params.expectedBrokerDomain} (Confirmation Code: ${ticket}).${boxSuffix}`
+          : `Completed verification link on ${params.expectedBrokerDomain} (HTTP ${finalStatus}).${boxSuffix}`,
       };
     }
   );

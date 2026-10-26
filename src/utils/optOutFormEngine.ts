@@ -814,6 +814,7 @@ export function scoreSemanticFieldMapping(params: {
   tag: 'input' | 'select' | 'textarea';
   isHiddenOrOffscreen?: boolean;
   tabIndex?: number;
+  required?: boolean;
 }): {
   role: SemanticConsumerFieldRole;
   confidence: number;
@@ -862,7 +863,11 @@ export function scoreSemanticFieldMapping(params: {
   }
 
   if (inputType === 'checkbox') {
-    if (/\b(newsletter|marketing|promotional|subscribe|special[\s-]?offers|partner[\s-]?emails|opt[\s-]?in)\b/i.test(haystack)) {
+    if (
+      /\b(newsletter|marketing|promotional|subscribe|special[\s-]?offers|partner[\s-]?emails|receive[\s-]?updates|opt[\s-]?in)\b/i.test(
+        haystack
+      )
+    ) {
       return {
         role: 'marketing_opt_in',
         confidence: 0.95,
@@ -876,11 +881,22 @@ export function scoreSemanticFieldMapping(params: {
         signals: ['Authorized agent declaration checkbox'],
       };
     }
-    if (/\b(confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|opt[\s-]?out|terms|acknowledge)\b/i.test(haystack)) {
+    if (
+      /\b(confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|deletion|remove|removal|suppress|suppression|erase|opt[\s-]?out|do[\s-]?not[\s-]?sell|share|limit|sensitive|terms|acknowledge|understand|authorize|18|adult|age|identity|person[\s-]?listed|individual|consumer|human|robot|request|submit|all[\s-]?records|select[\s-]?record)\b/i.test(
+        haystack
+      )
+    ) {
       return {
         role: 'consent_checkbox',
-        confidence: 0.9,
-        signals: ['Statutory attestation / opt-out consent checkbox'],
+        confidence: 0.92,
+        signals: ['Statutory attestation / opt-out consent checkbox — checked on user behalf'],
+      };
+    }
+    if (params.required) {
+      return {
+        role: 'consent_checkbox',
+        confidence: 0.86,
+        signals: ['Required form confirmation checkbox — checked on user behalf'],
       };
     }
     return {
@@ -1262,8 +1278,13 @@ export function resolveProfileValueForField(
       return 'CCPA / CPRA (Cal. Civ. Code § 1798.105 & § 1798.120)';
     case 'reason_message':
       return `Pursuant to CCPA/CPRA (Cal. Civ. Code § 1798.105 & § 1798.120) and applicable state privacy statutes, please permanently delete all personal records and opt out of the sale or sharing of data associated with ${fullName} (${profile.currentCity}, ${stateCode}).`;
-    case 'consent_checkbox':
+    case 'consent_checkbox': {
+      const cleanDefault = (defaultRawValue || '').trim();
+      if (cleanDefault && !/^(on|false|0|no|off|__unchecked__)$/i.test(cleanDefault)) {
+        return cleanDefault;
+      }
       return 'true';
+    }
     case 'authorized_agent':
       return profile.powerOfAttorney?.isSigned ? 'true' : 'false';
     default:
@@ -1378,12 +1399,27 @@ function parseFieldsInsideFragment(
     }
   }
 
+  const wrappingLabels: Array<{ start: number; end: number; text: string }> = [];
+  const wrapLabelRegex = /<label\b[^>]*>([\s\S]*?)<\/label>/gi;
+  let wlMatch: RegExpExecArray | null;
+  while ((wlMatch = wrapLabelRegex.exec(fragmentHtml)) !== null) {
+    const text = stripHtmlTags(wlMatch[1]);
+    if (text) {
+      wrappingLabels.push({
+        start: wlMatch.index,
+        end: wlMatch.index + wlMatch[0].length,
+        text: text.slice(0, 120),
+      });
+    }
+  }
+
   const controlRegex =
     /<(input|textarea|select)\b([^>]*)(?:>([\s\S]*?)<\/\1>|\/?>)/gi;
   let match: RegExpExecArray | null;
   let idx = 0;
 
   while ((match = controlRegex.exec(fragmentHtml)) !== null) {
+    const controlPos = match.index;
     const tag = match[1].toLowerCase() as 'input' | 'select' | 'textarea';
     const attrs = parseAttributes(`<${tag} ${match[2]}>`);
     const innerHtml = match[3] || '';
@@ -1408,8 +1444,13 @@ function parseFieldsInsideFragment(
       continue;
     }
 
+    const enclosingLabel = wrappingLabels.find(
+      (wl) => controlPos >= wl.start && controlPos < wl.end
+    )?.text;
+
     const label =
       (id && labelsByFor.get(id)) ||
+      enclosingLabel ||
       attrs['aria-label'] ||
       attrs.placeholder ||
       name ||
@@ -1439,10 +1480,18 @@ function parseFieldsInsideFragment(
       tag === 'textarea' ? stripHtmlTags(innerHtml) : attrs.value || '';
 
     const inlineStyle = (attrs.style || '').toLowerCase();
+    const hasAssociatedLabel = Boolean(
+      (id && labelsByFor.has(id)) || enclosingLabel || attrs['aria-label']
+    );
+    const isStyledCheckboxOrRadio =
+      (inputType === 'checkbox' || inputType === 'radio') &&
+      hasAssociatedLabel &&
+      !/display\s*:\s*none|visibility\s*:\s*hidden/.test(inlineStyle);
     const isHiddenStyle =
       attrs['aria-hidden'] === 'true' ||
       'hidden' in attrs ||
-      /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0\b/.test(inlineStyle);
+      (!isStyledCheckboxOrRadio &&
+        /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0\b/.test(inlineStyle));
     const parsedTabIdx = attrs.tabindex !== undefined ? parseInt(attrs.tabindex, 10) : undefined;
 
     const scored = scoreSemanticFieldMapping({
@@ -1456,6 +1505,7 @@ function parseFieldsInsideFragment(
       tag,
       isHiddenOrOffscreen: isHiddenStyle,
       tabIndex: Number.isFinite(parsedTabIdx) ? parsedTabIdx : undefined,
+      required,
     });
 
     const semanticRole = scored.role;
@@ -1828,9 +1878,10 @@ export function buildUniversalAutoFillScript(
     age,
     recordUrl,
     reason,
+    allowAgent: Boolean(disclosurePolicy.allowAuthorizedAgent && profile.powerOfAttorney?.isSigned),
   });
 
-  // Clean, compact, dependency-free DOM + React native-value-setter auto-filler (never fills honeypots, SSN/ID, or marketing boxes; never auto-submits)
+  // Clean, compact, dependency-free DOM + React native-value-setter auto-filler (fills fields AND checks consent/removal checkboxes on user's behalf; never fills honeypots, SSN/ID, or marketing boxes)
   return `(function(){
   const d = ${payloadJson};
   const isVisible = (el) => {
@@ -1839,6 +1890,15 @@ export function buildUniversalAutoFillScript(
     if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') === 0) return false;
     const r = el.getBoundingClientRect();
     return r.width > 2 && r.height > 2;
+  };
+  const findVisibleLabel = (el) => {
+    if (el.id) {
+      const lb = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lb && isVisible(lb)) return lb;
+    }
+    const parentLb = el.closest('label');
+    if (parentLb && isVisible(parentLb)) return parentLb;
+    return null;
   };
   const setVal = (el, val) => {
     if (!val && val !== '') return false;
@@ -1855,26 +1915,37 @@ export function buildUniversalAutoFillScript(
     const parts = [];
     if (el.id) {
       const lb = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-      if (lb) parts.push(lb.innerText || '');
+      if (lb) parts.push(lb.innerText || lb.textContent || '');
     }
     const labelledBy = el.getAttribute('aria-labelledby');
     if (labelledBy) {
       labelledBy.split(/\\s+/).forEach(id => {
         const ref = document.getElementById(id);
-        if (ref) parts.push(ref.innerText || '');
+        if (ref) parts.push(ref.innerText || ref.textContent || '');
       });
     }
     const parentLb = el.closest('label');
-    if (parentLb) parts.push(parentLb.innerText || '');
+    if (parentLb) parts.push(parentLb.innerText || parentLb.textContent || '');
     return parts.join(' ');
   };
+  const shouldCheckConsentBox = (h, isReq) => {
+    if (/subscribe|marketing|newsletter|promo|special[\\s-]?offers|partner[\\s-]?emails|receive[\\s-]?updates|opt[\\s-]?in/i.test(h)) return false;
+    if (/agent|attorney|authorized[\\s-]?representative|on[\\s-]?behalf/i.test(h)) return Boolean(d.allowAgent);
+    if (/confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|deletion|remove|removal|suppress|erase|opt[\\s-]?out|do[\\s-]?not[\\s-]?sell|share|limit|terms|acknowledge|understand|authorize|18|adult|identity|individual|consumer|request|all[\\s-]?records/i.test(h)) return true;
+    return Boolean(isReq);
+  };
   let filled = 0;
+  let checkedBoxes = 0;
   let skippedSensitive = 0;
-  document.querySelectorAll('input, textarea, select').forEach((el) => {
-    if (el.disabled || el.readOnly || !isVisible(el)) return;
-    const t = (el.type || '').toLowerCase();
+  document.querySelectorAll('input, textarea, select, [role="checkbox"], [role="switch"]').forEach((el) => {
+    if (el.disabled || el.readOnly) return;
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const isAriaCheck = (role === 'checkbox' || role === 'switch') && el.tagName !== 'INPUT';
+    const t = isAriaCheck ? 'checkbox' : (el.type || '').toLowerCase();
+    const assocLabel = (t === 'checkbox' || t === 'radio') ? findVisibleLabel(el) : null;
+    if (!isVisible(el) && !assocLabel) return;
     if (['hidden','submit','button','reset','file','image','search','password'].includes(t)) return;
-    const h = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('autocomplete'), labelFor(el)].filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g,' ');
+    const h = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('autocomplete'), labelFor(el), isAriaCheck ? (el.innerText || '') : ''].filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g,' ');
     if (/\\b(honeypot|leave\\s*blank|do\\s*not\\s*fill)\\b/.test(h)) return;
     if (/\\b(ssn|social\\s*security|driver'?s?\\s*licen[sc]e|passport|tax\\s*id|government\\s*id)\\b/.test(h)) { skippedSensitive++; return; }
     if (el.tagName === 'SELECT') {
@@ -1894,14 +1965,27 @@ export function buildUniversalAutoFillScript(
       return;
     }
     if (t === 'checkbox') {
-      if (/confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|opt[\\s-]?out/i.test(h) && !/subscribe|marketing|newsletter|promo|opt[\\s-]?in/i.test(h)) {
-        if (!el.checked) { el.click(); el.style.outline = '2px solid #10b981'; filled++; }
+      const isReq = el.required || el.getAttribute('aria-required') === 'true';
+      if (shouldCheckConsentBox(h, isReq)) {
+        if (isAriaCheck) {
+          if (el.getAttribute('aria-checked') !== 'true') { el.click(); el.style.outline = '2px solid #10b981'; filled++; checkedBoxes++; }
+        } else if (!el.checked) {
+          if (!isVisible(el) && assocLabel) { assocLabel.click(); assocLabel.style.outline = '2px solid #10b981'; }
+          if (!el.checked) { el.click(); }
+          if (!el.checked) { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); }
+          el.style.outline = '2px solid #10b981';
+          filled++;
+          checkedBoxes++;
+        }
       }
       return;
     }
     if (t === 'radio') {
-      if (/delete|remove|opt[\\s-]?out|do not sell|suppress|consumer/i.test(h + ' ' + el.value) && !/agent/i.test(h)) {
-        if (!el.checked) { el.click(); filled++; }
+      if (/delete|remove|opt[\\s-]?out|do not sell|suppress|consumer/i.test(h + ' ' + (el.value || '')) && !/agent/i.test(h)) {
+        if (!el.checked) {
+          if (!isVisible(el) && assocLabel) { assocLabel.click(); } else { el.click(); }
+          filled++;
+        }
       }
       return;
     }
@@ -1921,7 +2005,7 @@ export function buildUniversalAutoFillScript(
     if (el.tagName === 'TEXTAREA' || /\\b(reason|message|details|comment|request)\\b/.test(h)) { if (setVal(el, d.reason)) filled++; return; }
   });
   const badge = document.createElement('div');
-  badge.textContent = 'synOUT Auto-Filled ' + filled + ' Field(s)' + (skippedSensitive ? ' (' + skippedSensitive + ' sensitive ID skipped)' : '') + ' — Review & Submit Manually';
+  badge.textContent = 'synOUT Auto-Filled ' + filled + ' Field(s)' + (checkedBoxes ? ' (including ' + checkedBoxes + ' checkbox' + (checkedBoxes === 1 ? '' : 'es') + ')' : '') + (skippedSensitive ? ' · ' + skippedSensitive + ' sensitive ID skipped' : '') + ' — Review & Submit';
   badge.style.cssText = 'position:fixed;bottom:18px;right:18px;z-index:2147483647;background:#022c22;color:#6ee7b7;border:1px solid #10b981;padding:10px 16px;border-radius:10px;font:600 13px/1.4 monospace;box-shadow:0 10px 25px rgba(0,0,0,.45)';
   document.body.appendChild(badge);
   setTimeout(() => badge.remove(), 6500);

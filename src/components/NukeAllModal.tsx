@@ -25,6 +25,7 @@ import {
   classifyBrokerChannelStrategy,
   hasWebFormSubmission,
 } from '../utils/optOutFormEngine';
+import { startWorkflowClient } from '../services/optOutDiscoveryClient';
 import {
   Flame,
   X,
@@ -42,6 +43,8 @@ import {
   UserCheck,
   FileCode2,
   Bookmark,
+  Bot,
+  CheckSquare,
 } from 'lucide-react';
 
 interface NukeAllModalProps {
@@ -134,11 +137,33 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
     failed: number;
   } | null>(null);
 
-  // Webmail & Web-Form copy helpers
+  // Webmail & Web-Form copy + automated batch form-fill state
   const [copiedAllEmails, setCopiedAllEmails] = useState<boolean>(false);
   const [copiedOmnibusBody, setCopiedOmnibusBody] = useState<boolean>(false);
   const [copiedAutoFillScript, setCopiedAutoFillScript] = useState<boolean>(false);
   const [loggedWebFormIds, setLoggedWebFormIds] = useState<Record<string, boolean>>({});
+  const [isAutoRunningForms, setIsAutoRunningForms] = useState<boolean>(false);
+  const [formBatchProgress, setFormBatchProgress] = useState<{
+    current: number;
+    total: number;
+    currentName: string;
+  } | null>(null);
+  const [formBatchResults, setFormBatchResults] = useState<
+    Record<
+      string,
+      {
+        status: 'submitted' | 'email_verify' | 'manual_needed';
+        summary: string;
+        checkedCount: number;
+      }
+    >
+  >({});
+  const [formBatchSummary, setFormBatchSummary] = useState<{
+    submitted: number;
+    emailVerify: number;
+    manualNeeded: number;
+    totalBoxesChecked: number;
+  } | null>(null);
 
   const effectiveProfile: UserProfile = useMemo(
     () => ({
@@ -407,6 +432,119 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
     setTimeout(() => setCopiedOmnibusBody(false), 2000);
   };
 
+  const handleAutoRunAllPortalForms = async () => {
+    const runnableTargets = portalPrimaryTargets.filter((t) => Boolean(t.brokerRef));
+    if (runnableTargets.length === 0 || isAutoRunningForms) return;
+
+    onUpdateProfile(effectiveProfile);
+    setIsAutoRunningForms(true);
+    setFormBatchSummary(null);
+
+    let submitted = 0;
+    let emailVerify = 0;
+    let manualNeeded = 0;
+    let totalBoxesChecked = 0;
+
+    for (let i = 0; i < runnableTargets.length; i++) {
+      const item = runnableTargets[i];
+      setFormBatchProgress({
+        current: i + 1,
+        total: runnableTargets.length,
+        currentName: item.name,
+      });
+
+      try {
+        const job = await startWorkflowClient({
+          broker: item.brokerRef,
+          targetUrl: item.optOutUrl,
+          profile: effectiveProfile,
+          senderEmail: senderEmail || undefined,
+          mode: 'autonomous_auto_submit',
+        });
+
+        const checkedOnSite = (job.mappedFields || []).filter(
+          (m) =>
+            m.semanticRole === 'consent_checkbox' &&
+            m.disclosureAllowed &&
+            m.plannedValue !== 'false' &&
+            m.plannedValue !== '__unchecked__'
+        ).length;
+        totalBoxesChecked += checkedOnSite;
+
+        if (
+          job.state === 'awaiting_broker_processing' ||
+          job.state === 'submitted_unconfirmed' ||
+          job.state === 'removal_verified'
+        ) {
+          submitted++;
+          if (item.brokerRef && onBrokerWebFormLogged) {
+            onBrokerWebFormLogged(item.brokerRef, job.currentUrl || item.optOutUrl);
+          }
+          setLoggedWebFormIds((prev) => ({ ...prev, [item.id]: true }));
+          setFormBatchResults((prev) => ({
+            ...prev,
+            [item.id]: {
+              status: 'submitted',
+              summary:
+                checkedOnSite > 0
+                  ? `Form filled, ${checkedOnSite} consent box(es) checked & submitted`
+                  : 'Form filled & submitted for you',
+              checkedCount: checkedOnSite,
+            },
+          }));
+        } else if (job.state === 'awaiting_email_verification') {
+          emailVerify++;
+          if (item.brokerRef && onBrokerWebFormLogged) {
+            onBrokerWebFormLogged(item.brokerRef, job.currentUrl || item.optOutUrl);
+          }
+          setLoggedWebFormIds((prev) => ({ ...prev, [item.id]: true }));
+          setFormBatchResults((prev) => ({
+            ...prev,
+            [item.id]: {
+              status: 'email_verify',
+              summary:
+                checkedOnSite > 0
+                  ? `Submitted (${checkedOnSite} box(es) checked) — click link in your email to finish`
+                  : 'Submitted — click confirmation link in your email',
+              checkedCount: checkedOnSite,
+            },
+          }));
+        } else {
+          manualNeeded++;
+          setFormBatchResults((prev) => ({
+            ...prev,
+            [item.id]: {
+              status: 'manual_needed',
+              summary:
+                job.blocker?.summary ||
+                'Human CAPTCHA check requested — open form & click synOUT Auto-Fill',
+              checkedCount: checkedOnSite,
+            },
+          }));
+        }
+      } catch {
+        manualNeeded++;
+        setFormBatchResults((prev) => ({
+          ...prev,
+          [item.id]: {
+            status: 'manual_needed',
+            summary: 'Open form & click synOUT Auto-Fill to fill fields and check boxes',
+            checkedCount: 0,
+          },
+        }));
+      }
+    }
+
+    setFormBatchProgress(null);
+    setIsAutoRunningForms(false);
+    setFormBatchSummary({
+      submitted,
+      emailVerify,
+      manualNeeded,
+      totalBoxesChecked,
+    });
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-sm overflow-y-auto"
@@ -420,19 +558,19 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-red-300 tabular-nums">
               <Flame className="w-4 h-4 text-red-400 shrink-0" />
-              <span className="font-bold uppercase tracking-wider">NUKE ALL Mass Removal Protocol</span>
+              <span className="font-bold tracking-wide">NUKE ALL — Done-For-You Mass Removal</span>
               <span aria-hidden="true" className="text-slate-600">
                 ·
               </span>
-              <span className="text-slate-300">{targets.length} Queued Compliance Targets</span>
+              <span className="text-slate-300">{targets.length} Sites &amp; Brokers Queued</span>
             </div>
             <h2 id="nuke-all-modal-title" className="text-xl sm:text-2xl font-extrabold text-white">
-              Mass-Email All Data Brokers, People-Search Websites &amp; Clearinghouses
+              Remove Your Records Everywhere — Via Email &amp; Online Forms
             </h2>
             <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
-              Dispatches binding CCPA, CPRA, TDPSA &amp; GDPR deletion and permanent do-not-re-index
-              demands across exposed brokers, the full people-search website catalog, specialty
-              clearinghouses, and cached URLs—with live DNS MX verification and parent-DPO failover.
+              Let synOUT handle both methods for you: send official legal deletion emails to every
+              broker at once, and automatically fill out online opt-out forms (including checking
+              required privacy and consent boxes on your behalf).
             </p>
           </div>
 
@@ -669,7 +807,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                Automated Individualized Mass Send ({targets.length} Emails)
+                Auto-Send All Emails ({targets.length})
               </button>
               <button
                 type="button"
@@ -680,8 +818,8 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                Instant Mass BCC Webmail Blast ({webmailBatches.length} Batch
-                {webmailBatches.length === 1 ? '' : 'es'})
+                1-Click Mass Webmail ({webmailBatches.length} Batch
+                {webmailBatches.length === 1 ? '' : 'es'} · No Password)
               </button>
               <button
                 type="button"
@@ -692,8 +830,8 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                     : 'text-emerald-300 hover:text-white'
                 }`}
               >
-                <FileCode2 className="w-3.5 h-3.5" />
-                <span>Web-Form &amp; Portal Queue ({portalPrimaryTargets.length} Portals)</span>
+                <CheckSquare className="w-3.5 h-3.5" />
+                <span>Auto-Fill Online Forms &amp; Checkboxes ({portalPrimaryTargets.length})</span>
               </button>
             </div>
 
@@ -704,20 +842,20 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                     <div className="space-y-1">
                       <div className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
                         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                        <span>Connect Your Email Account for Automated Individualized Dispatch</span>
+                        <span>Connect Your Email Once for Automatic Background Sending</span>
                       </div>
                       <p className="text-xs text-slate-400">
-                        Connect Gmail, Outlook, Yahoo, iCloud, Proton, or Google OAuth once so
-                        synOUT can transmit {targets.length} personalized statutory demands directly
-                        on your behalf—or switch to the{' '}
+                        Connect Gmail, Outlook, Yahoo, iCloud, or Proton once so synOUT can send{' '}
+                        {targets.length} personalized legal removal emails automatically for you —
+                        or use{' '}
                         <button
                           type="button"
                           onClick={() => setDispatchMode('webmail')}
                           className="text-red-400 hover:text-red-300 underline font-semibold cursor-pointer"
                         >
-                          Instant Mass BCC Webmail Blast
+                          1-Click Mass Webmail (No Password)
                         </button>{' '}
-                        tab right now without connecting credentials.
+                        right now.
                       </p>
                     </div>
                     <button
@@ -729,7 +867,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                       className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
                     >
                       <Mail className="w-4 h-4" />
-                      <span>Connect Email Now</span>
+                      <span>Easy Email Setup</span>
                     </button>
                   </div>
                 ) : (
@@ -955,19 +1093,44 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                 )}
               </div>
             ) : (
-              /* Web-Form & Disguised Opt-Out Portal Queue Mode */
+              /* Done-For-You Online Form & Checkbox Auto-Fill Mode */
               <div className="p-4 sm:p-5 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-4">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div className="space-y-1">
-                    <div className="text-xs font-bold text-white">
-                      Web-Form &amp; Disguised Opt-Out Page Companion Queue ({portalPrimaryTargets.length} Brokers)
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5 tabular-nums">
+                      <Bot className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>
+                        Done-For-You Online Forms &amp; Checkboxes ({portalPrimaryTargets.length} Sites)
+                      </span>
                     </div>
-                    <p className="text-xs text-slate-400 max-w-2xl">
-                      Some brokers require submitting an online web form (titled &ldquo;Your Privacy Choices&rdquo;, &ldquo;Do Not Sell or Share&rdquo;, or &ldquo;Data Suppression Center&rdquo;) in addition to email. Copy the universal auto-fill script or open the Opt-Out Page Finder to spider &amp; auto-fill any broker form.
+                    <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+                      Many people-search sites use an online opt-out form with required confirmation
+                      checkboxes. Click <strong className="text-white">Auto-Run All Online Forms</strong>{' '}
+                      below and synOUT will open each form, fill your details, check required
+                      privacy/consent boxes for you (while skipping spam boxes), and submit.
                     </p>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleAutoRunAllPortalForms}
+                      disabled={isAutoRunningForms || portalPrimaryTargets.length === 0}
+                      className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap tabular-nums"
+                    >
+                      {isAutoRunningForms ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Auto-Filling &amp; Checking Boxes...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckSquare className="w-3.5 h-3.5" />
+                          <span>Auto-Run All {portalPrimaryTargets.length} Online Forms</span>
+                        </>
+                      )}
+                    </button>
+
                     <a
                       ref={(el) => {
                         if (el && bookmarkletHref) {
@@ -980,34 +1143,14 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                         setCopiedAutoFillScript(true);
                         setTimeout(() => setCopiedAutoFillScript(false), 2000);
                       }}
-                      title="Drag to your Bookmarks Bar, or click to copy the Universal Auto-Fill Script"
+                      title="Drag to your Bookmarks Bar, or click to copy the Universal Auto-Fill & Checkbox Script"
                       className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-emerald-500/40 text-emerald-300 text-xs font-semibold inline-flex items-center gap-1.5 cursor-grab whitespace-nowrap"
                     >
                       <Bookmark className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>synOUT Auto-Fill</span>
+                      <span>
+                        {copiedAutoFillScript ? 'Copied Auto-Fill!' : '1-Click Auto-Fill Button'}
+                      </span>
                     </a>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void copyTextToClipboard(autoFillScript);
-                        setCopiedAutoFillScript(true);
-                        setTimeout(() => setCopiedAutoFillScript(false), 2000);
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      {copiedAutoFillScript ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Copied Auto-Fill Script</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Auto-Fill Script</span>
-                        </>
-                      )}
-                    </button>
 
                     {onOpenWebFormWorkbench && (
                       <button
@@ -1017,14 +1160,60 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                           onClose();
                           onOpenWebFormWorkbench();
                         }}
-                        className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                       >
-                        <FileCode2 className="w-3.5 h-3.5" />
-                        <span>Open Opt-Out Page Finder</span>
+                        <FileCode2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Inspect Forms Step-by-Step</span>
                       </button>
                     )}
                   </div>
                 </div>
+
+                {formBatchProgress && (
+                  <div className="p-3.5 bg-slate-900 border border-emerald-500/30 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between text-xs tabular-nums">
+                      <span className="font-semibold text-white flex items-center gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                        <span>
+                          Filling form &amp; checking required privacy boxes on{' '}
+                          {formBatchProgress.currentName}...
+                        </span>
+                      </span>
+                      <span className="font-mono text-emerald-300">
+                        {formBatchProgress.current} / {formBatchProgress.total}
+                      </span>
+                    </div>
+                    <progress
+                      value={formBatchProgress.current}
+                      max={Math.max(1, formBatchProgress.total)}
+                      className="w-full h-2 rounded-full overflow-hidden [&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:bg-emerald-500 [&::-moz-progress-bar]:bg-emerald-500"
+                    />
+                  </div>
+                )}
+
+                {formBatchSummary && (
+                  <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-200 flex items-start gap-2.5 tabular-nums">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <div className="font-bold text-white">
+                        Online Form Batch Run Finished
+                      </div>
+                      <div>
+                        Auto-submitted <strong>{formBatchSummary.submitted}</strong> form(s)
+                        {formBatchSummary.emailVerify > 0
+                          ? ` · ${formBatchSummary.emailVerify} awaiting email link click`
+                          : ''}
+                        {formBatchSummary.totalBoxesChecked > 0
+                          ? ` · Checked ${formBatchSummary.totalBoxesChecked} required consent box(es) for you`
+                          : ''}
+                        {formBatchSummary.manualNeeded > 0
+                          ? ` · ${formBatchSummary.manualNeeded} site(s) requested a quick human CAPTCHA check below`
+                          : ''}
+                        .
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="max-h-56 overflow-y-auto divide-y divide-slate-800/80 border border-slate-800 rounded-xl bg-slate-900/60">
                   {portalPrimaryTargets.length === 0 ? (
@@ -1037,6 +1226,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                       const alreadyLogged =
                         Boolean(loggedWebFormIds[item.id]) ||
                         (existingScan ? hasWebFormSubmission(existingScan) : false);
+                      const batchRes = formBatchResults[item.id];
 
                       return (
                         <div
@@ -1055,9 +1245,21 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                                 </>
                               )}
                             </div>
-                            <div className="text-[11px] font-mono text-slate-500 truncate">
-                              {item.optOutUrl}
-                            </div>
+                            {batchRes ? (
+                              <div
+                                className={`text-[11px] ${
+                                  batchRes.status === 'manual_needed'
+                                    ? 'text-amber-300'
+                                    : 'text-emerald-300'
+                                }`}
+                              >
+                                {batchRes.summary}
+                              </div>
+                            ) : (
+                              <div className="text-[11px] font-mono text-slate-500 truncate">
+                                {item.optOutUrl}
+                              </div>
+                            )}
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -1071,8 +1273,8 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                                 }}
                                 className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-emerald-500/30 text-emerald-300 font-semibold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                               >
-                                <FileCode2 className="w-3 h-3" />
-                                <span>Spider &amp; Fill</span>
+                                <Bot className="w-3 h-3" />
+                                <span>Auto-Fill Form</span>
                               </button>
                             )}
 
@@ -1082,7 +1284,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                               rel="noopener noreferrer"
                               className="px-2.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold inline-flex items-center gap-1 whitespace-nowrap"
                             >
-                              <span>Open Portal</span>
+                              <span>Open Site</span>
                               <ExternalLink className="w-3 h-3 text-emerald-400" />
                             </a>
 
@@ -1101,7 +1303,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                                 }`}
                               >
                                 <CheckCircle2 className="w-3 h-3" />
-                                <span>{alreadyLogged ? 'Form Logged' : 'Log Form Sent'}</span>
+                                <span>{alreadyLogged ? 'Form Logged' : 'Mark Form Done'}</span>
                               </button>
                             )}
                           </div>

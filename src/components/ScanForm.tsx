@@ -60,25 +60,27 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
       {/* Minimalist Unboxed Header */}
       <div className="space-y-1.5">
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-          <span className="text-emerald-400 font-medium">Exposure Audit</span>
+          <span className="text-emerald-400 font-medium">Step 1 · Free Privacy Check</span>
           <span aria-hidden="true">·</span>
-          <span>10 Search Vectors</span>
+          <span>Stays Private in Your Browser</span>
           <span aria-hidden="true">·</span>
-          <span>Session-Local PII</span>
+          <span>Auto-Fills Removal Forms &amp; Emails Next</span>
         </div>
         <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-          Configure Identity Scan Parameters
+          Check Where Your Personal Info Is Listed
         </h2>
-        <p className="text-xs text-slate-400">
-          Matches public-record aggregators, people-search clearinghouses, and breach indexes while
-          disqualifying out-of-state homonyms.
+        <p className="text-xs text-slate-400 leading-relaxed">
+          Enter the details you want protected. synOUT uses this only to find your exposed records
+          (ignoring other people with the same name) and to fill out removal forms and emails for you.
         </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-5">
         {/* Search Vector */}
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-slate-300 block">Search Vector</label>
+          <label className="text-xs font-medium text-slate-300 block">
+            What Type of Records Should We Check?
+          </label>
           <div className="relative">
             <select
               value={searchType}
@@ -194,8 +196,8 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
             <SlidersHorizontal className="w-3.5 h-3.5" />
             <span>
               {showAdvanced || needsVehicleOrCorp
-                ? 'Hide Cross-State, VIN & Corporate Anchors'
-                : 'Add Prior Cities, VIN or Corporate Anchors'}
+                ? 'Hide Optional Details (Past Cities, Vehicle VIN, Employer)'
+                : 'Optional: Add Past Cities, Vehicle VIN, or Employer'}
             </span>
           </button>
 

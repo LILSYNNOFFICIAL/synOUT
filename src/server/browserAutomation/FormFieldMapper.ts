@@ -16,7 +16,8 @@ import type { LiveDomFieldMapping } from './types.ts';
 interface ExtractedRawDomControl {
   index: number;
   selector: string;
-  tag: 'input' | 'select' | 'textarea' | 'custom_combobox';
+  labelSelector?: string;
+  tag: 'input' | 'select' | 'textarea' | 'custom_combobox' | 'custom_checkbox';
   inputType: string;
   name: string;
   id: string;
@@ -122,30 +123,62 @@ export async function extractAndMapLiveDomFields(params: {
         .slice(0, 120);
     };
 
+    const findVisibleAssociatedLabel = (el: HTMLElement): HTMLElement | null => {
+      if (el.id) {
+        const explicitLabel = document.querySelector(
+          `label[for="${cssEscape(el.id)}"]`
+        ) as HTMLElement | null;
+        if (explicitLabel && !isElementHiddenOrOffscreen(explicitLabel)) {
+          return explicitLabel;
+        }
+      }
+      const wrappingLabel = el.closest('label') as HTMLElement | null;
+      if (wrappingLabel && !isElementHiddenOrOffscreen(wrappingLabel)) {
+        return wrappingLabel;
+      }
+      return null;
+    };
+
     const controls: ExtractedRawDomControl[] = [];
     const rawNodes = Array.from(
-      document.querySelectorAll('input, select, textarea, [role="combobox"]')
+      document.querySelectorAll(
+        'input, select, textarea, [role="combobox"], [role="checkbox"], [role="switch"]'
+      )
     ) as HTMLElement[];
 
     let idx = 0;
     for (const el of rawNodes) {
-      if ((el as HTMLInputElement).disabled || (el as HTMLInputElement).readOnly) continue;
+      if (
+        (el as HTMLInputElement).disabled ||
+        (el as HTMLInputElement).readOnly ||
+        el.getAttribute('aria-disabled') === 'true'
+      ) {
+        continue;
+      }
 
       const tagLower = el.tagName.toLowerCase();
-      const isCustomCombo =
-        tagLower !== 'input' && tagLower !== 'select' && tagLower !== 'textarea';
-      const tag: ExtractedRawDomControl['tag'] = isCustomCombo
+      const roleLower = (el.getAttribute('role') || '').toLowerCase();
+      const isNativeControl =
+        tagLower === 'input' || tagLower === 'select' || tagLower === 'textarea';
+      const isAriaCheck =
+        !isNativeControl && (roleLower === 'checkbox' || roleLower === 'switch');
+
+      const tag: ExtractedRawDomControl['tag'] = isAriaCheck
+        ? 'custom_checkbox'
+        : !isNativeControl
         ? 'custom_combobox'
         : (tagLower as 'input' | 'select' | 'textarea');
 
       const inputType =
-        tag === 'input'
+        tag === 'custom_checkbox'
+          ? 'checkbox'
+          : tag === 'input'
           ? ((el as HTMLInputElement).getAttribute('type') || 'text').toLowerCase()
           : tag;
 
       if (['submit', 'button', 'reset', 'image'].includes(inputType)) continue;
 
-      const name = el.getAttribute('name') || '';
+      const name = el.getAttribute('name') || el.getAttribute('data-name') || '';
       const id = el.id || '';
       if (inputType === 'hidden' && !name && !id) continue;
 
@@ -158,9 +191,28 @@ export async function extractAndMapLiveDomFields(params: {
         continue;
       }
 
-      const hiddenOffscreen =
+      let hiddenOffscreen =
         inputType === 'hidden' ? false : isElementHiddenOrOffscreen(el);
-      const label = getControlLabel(el);
+      let labelSelector: string | undefined;
+
+      // Many privacy portals (OneTrust, TrustArc, Tailwind/Bootstrap custom checkboxes)
+      // visually hide the raw <input type="checkbox"> with opacity:0 or 1x1px while rendering a visible <label>.
+      if (
+        hiddenOffscreen &&
+        (inputType === 'checkbox' || inputType === 'radio') &&
+        !el.hidden &&
+        el.getAttribute('aria-hidden') !== 'true'
+      ) {
+        const visibleLabelEl = findVisibleAssociatedLabel(el);
+        if (visibleLabelEl) {
+          hiddenOffscreen = false;
+          labelSelector = buildUniqueSelector(visibleLabelEl, 5000 + idx);
+        }
+      }
+
+      const label =
+        getControlLabel(el) ||
+        (isAriaCheck ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120) : '');
       const ariaLabel = el.getAttribute('aria-label') || '';
       const placeholder = el.getAttribute('placeholder') || '';
       const autocomplete = el.getAttribute('autocomplete') || '';
@@ -182,7 +234,11 @@ export async function extractAndMapLiveDomFields(params: {
       }
 
       const defaultValue =
-        tag === 'textarea'
+        tag === 'custom_checkbox'
+          ? el.getAttribute('aria-checked') === 'true'
+            ? 'true'
+            : ''
+          : tag === 'textarea'
           ? (el as HTMLTextAreaElement).value || ''
           : tag === 'input'
           ? (el as HTMLInputElement).value || ''
@@ -194,6 +250,7 @@ export async function extractAndMapLiveDomFields(params: {
       controls.push({
         index: idx,
         selector,
+        labelSelector,
         tag,
         inputType,
         name,
@@ -285,7 +342,11 @@ export async function extractAndMapLiveDomFields(params: {
 
   for (const ctrl of domPayload.controls) {
     const normalizedTag: 'input' | 'select' | 'textarea' =
-      ctrl.tag === 'custom_combobox' ? 'select' : ctrl.tag;
+      ctrl.tag === 'custom_combobox'
+        ? 'select'
+        : ctrl.tag === 'custom_checkbox'
+        ? 'input'
+        : ctrl.tag;
 
     const scored = scoreSemanticFieldMapping({
       name: ctrl.name,
@@ -298,6 +359,7 @@ export async function extractAndMapLiveDomFields(params: {
       tag: normalizedTag,
       isHiddenOrOffscreen: ctrl.isHiddenOrOffscreen,
       tabIndex: ctrl.tabIndex,
+      required: ctrl.required,
     });
 
     const fieldKey = ctrl.name || ctrl.id || `field_${ctrl.index}`;
@@ -330,6 +392,7 @@ export async function extractAndMapLiveDomFields(params: {
     mappedFields.push({
       fieldKey,
       selector: ctrl.selector,
+      labelSelector: ctrl.labelSelector,
       tag: ctrl.tag,
       inputType: ctrl.inputType,
       name: ctrl.name,
@@ -464,17 +527,74 @@ export async function populateMappedFieldsOnPage(
         if ((await optLocator.count()) > 0) {
           await optLocator.click({ timeout: 2000 });
         }
+      } else if (field.tag === 'custom_checkbox') {
+        const shouldCheck = Boolean(val) && !/^(false|0|no|off|__unchecked__)$/i.test(val);
+        const ariaChecked = await locator.getAttribute('aria-checked');
+        if (shouldCheck && ariaChecked !== 'true') {
+          await locator.click({ timeout: 2000 });
+        } else if (
+          !shouldCheck &&
+          (val === 'false' || val === '__unchecked__') &&
+          ariaChecked === 'true'
+        ) {
+          await locator.click({ timeout: 2000 });
+        }
       } else if (field.inputType === 'checkbox') {
-        const shouldCheck = val === 'true' || val === '1' || val === 'on';
-        if (shouldCheck) {
-          await locator.check({ timeout: 2000 }).catch(async () => {
-            await locator.click({ timeout: 2000 });
+        const shouldCheck = Boolean(val) && !/^(false|0|no|off|__unchecked__)$/i.test(val);
+        const currentlyChecked = await locator.isChecked().catch(() => false);
+        if (shouldCheck && !currentlyChecked) {
+          await locator.check({ timeout: 1800 }).catch(async () => {
+            if (field.labelSelector) {
+              await page
+                .locator(field.labelSelector)
+                .first()
+                .click({ timeout: 1800 })
+                .catch(() => undefined);
+            }
+            const checkedAfterLabel = await locator.isChecked().catch(() => false);
+            if (!checkedAfterLabel) {
+              await locator.check({ force: true, timeout: 1500 }).catch(async () => {
+                await locator.evaluate((el: HTMLInputElement) => {
+                  el.checked = true;
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+              });
+            }
+          });
+        } else if (
+          !shouldCheck &&
+          (val === 'false' || val === '__unchecked__') &&
+          currentlyChecked
+        ) {
+          await locator.uncheck({ timeout: 1800 }).catch(async () => {
+            if (field.labelSelector) {
+              await page
+                .locator(field.labelSelector)
+                .first()
+                .click({ timeout: 1800 })
+                .catch(() => undefined);
+            }
+            const stillChecked = await locator.isChecked().catch(() => false);
+            if (stillChecked) {
+              await locator.uncheck({ force: true, timeout: 1500 }).catch(() => undefined);
+            }
           });
         }
       } else if (field.inputType === 'radio') {
         if (val === 'true' || val === field.plannedValue) {
-          await locator.check({ timeout: 2000 }).catch(async () => {
-            await locator.click({ timeout: 2000 });
+          await locator.check({ timeout: 1800 }).catch(async () => {
+            if (field.labelSelector) {
+              await page
+                .locator(field.labelSelector)
+                .first()
+                .click({ timeout: 1800 })
+                .catch(() => undefined);
+            } else {
+              await locator.check({ force: true, timeout: 1800 }).catch(async () => {
+                await locator.click({ force: true, timeout: 1800 });
+              });
+            }
           });
         }
       } else {

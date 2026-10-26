@@ -21,9 +21,9 @@ export const EMAIL_PROVIDER_PRESETS: Record<EmailProviderId, EmailProviderPreset
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,
-    credentialLabel: 'Google 16-Character App Password',
+    credentialLabel: 'Google 16-Letter App Code (Not Regular Password)',
     helpText:
-      'Generate a 16-character App Password in your Google Account (2-Step Verification must be enabled), or switch to the Google OAuth tab to sign in over HTTPS without an App Password.',
+      'Easy 2-step setup: Click "Get App Password" to create a one-time 16-letter mail code in Google (your main password stays private). Or choose "1-Click Webmail" above to send with zero password at all.',
     appPasswordUrl: 'https://myaccount.google.com/apppasswords',
   },
   outlook: {
@@ -33,9 +33,9 @@ export const EMAIL_PROVIDER_PRESETS: Record<EmailProviderId, EmailProviderPreset
     host: 'smtp.office365.com',
     port: 587,
     secure: false,
-    credentialLabel: 'Microsoft App Password',
+    credentialLabel: 'Microsoft App Code (Not Regular Password)',
     helpText:
-      'Create an App Password under Microsoft Account Security -> Advanced security options (with two-step verification & SMTP Authenticated Submission enabled), or use Instant Webmail Login for Outlook.com.',
+      'Click "Get App Password" to create a dedicated mail code in Microsoft Security, or choose "1-Click Webmail" above to open pre-written emails in Outlook.com with zero password setup.',
     appPasswordUrl: 'https://account.live.com/proofs/manage/additional',
   },
   yahoo: {
@@ -45,9 +45,9 @@ export const EMAIL_PROVIDER_PRESETS: Record<EmailProviderId, EmailProviderPreset
     host: 'smtp.mail.yahoo.com',
     port: 465,
     secure: true,
-    credentialLabel: 'Yahoo 16-Character App Password',
+    credentialLabel: 'Yahoo 16-Letter App Code',
     helpText:
-      'Generate a one-time Yahoo Mail App Password under Account Info -> Account Security -> Generate app password.',
+      'Click "Get App Password" -> Yahoo Account Security -> "Generate app password" to get a one-time code, or choose "1-Click Webmail" above with no password needed.',
     appPasswordUrl: 'https://login.yahoo.com/account/security',
   },
   icloud: {
@@ -59,31 +59,31 @@ export const EMAIL_PROVIDER_PRESETS: Record<EmailProviderId, EmailProviderPreset
     secure: false,
     credentialLabel: 'Apple App-Specific Password',
     helpText:
-      'Sign in to account.apple.com -> Sign-In and Security -> App-Specific Passwords to generate a dedicated mail password (format: xxxx-xxxx-xxxx-xxxx).',
+      'Click "Get App Password" -> Sign-In and Security -> "App-Specific Passwords" to create a mail code (xxxx-xxxx-xxxx-xxxx), or use "1-Click Webmail" with your default Mail app.',
     appPasswordUrl: 'https://account.apple.com/account/manage',
   },
   proton: {
     id: 'proton',
-    label: 'Proton Mail (SMTP Token)',
+    label: 'Proton Mail',
     shortLabel: 'Proton',
     host: 'smtp.protonmail.ch',
     port: 587,
     secure: false,
-    credentialLabel: 'Proton SMTP Submission Token',
+    credentialLabel: 'Proton Mail Submission Token',
     helpText:
-      'Use a Proton SMTP Submission Token generated in Proton Mail Settings -> IMAP/SMTP -> SMTP submission.',
+      'Paste a Proton Mail token from Proton Settings -> IMAP/SMTP, or choose "1-Click Webmail" above to open pre-written removal notices in your mail app.',
     appPasswordUrl: 'https://account.proton.me/u/0/mail/imap-smtp',
   },
   custom: {
     id: 'custom',
-    label: 'Custom Domain / Zoho / Fastmail / Any SMTP',
-    shortLabel: 'Custom SMTP',
+    label: 'Other Email Provider (Zoho, Fastmail, Custom Domain)',
+    shortLabel: 'Other Email',
     host: '',
     port: 587,
     secure: false,
-    credentialLabel: 'SMTP Password or App Token',
+    credentialLabel: 'Mail App Password',
     helpText:
-      'Enter your email provider’s public outbound SMTP hostname (e.g., smtp.fastmail.com, smtp.zoho.com, smtp.aol.com, mail.yourdomain.com), port, and password.',
+      'We auto-fill server settings for Zoho, Fastmail, AOL, GMX, AT&T, and Comcast when you type your email — or choose "1-Click Webmail" above with no server settings needed.',
   },
 };
 
@@ -199,7 +199,7 @@ export function classifySmtpAuthError(
     return {
       code: 'MICROSOFT_BASIC_AUTH_DISABLED',
       message:
-        'Microsoft disabled legacy password login for this Outlook/Hotmail mailbox. Generate a Microsoft 2FA App Password with SMTP Authenticated Submission enabled, or sign in via the Instant Webmail Login tab.',
+        'Microsoft blocks regular passwords for safety. Click "1-Click Webmail" below to send from Outlook.com right away with no password needed, or create a Microsoft App Password.',
       suggestOAuth: false,
       suggestWebmail: true,
     };
@@ -214,8 +214,8 @@ export function classifySmtpAuthError(
       code: 'APP_PASSWORD_REQUIRED',
       message:
         provider === 'gmail'
-          ? 'Google rejected the password. Gmail requires a 16-character Google App Password (not your regular login password), OR switch to the "Google OAuth (HTTPS)" or "Instant Webmail Login" tab.'
-          : 'Mail server rejected the password. Use a dedicated App Password from your email provider security settings (not your normal account password), or switch to Instant Webmail Login.',
+          ? 'Google protects your main password and requires a 16-letter Google App Password instead — OR click "1-Click Webmail" / "Sign in with Google" below to connect without an App Password.'
+          : 'Your email provider requires a one-time App Password instead of your regular login password — OR click "1-Click Webmail" below to send without any password.',
       suggestOAuth: provider === 'gmail',
       suggestWebmail: true,
     };
@@ -226,8 +226,8 @@ export function classifySmtpAuthError(
       code: 'SMTP_PORT_BLOCKED',
       message:
         provider === 'gmail'
-          ? 'Outbound SMTP ports (465/587) timed out or are blocked by this network/cloud container. Switch to "Google OAuth (HTTPS)" (uses port 443) or "Instant Webmail Login" to connect immediately.'
-          : 'Outbound SMTP ports (465/587) timed out or are blocked by this network environment. Use "Instant Webmail Login" (or Google OAuth for Gmail) to dispatch without SMTP port restrictions.',
+          ? 'This network blocks background mail ports. Click "Sign in with Google" or "1-Click Webmail" below — both work immediately on any network.'
+          : 'This network blocks background mail ports. Click "1-Click Webmail" below to send right away with no port setup.',
       suggestOAuth: provider === 'gmail',
       suggestWebmail: true,
     };
@@ -236,7 +236,7 @@ export function classifySmtpAuthError(
   if (/ENOTFOUND|EAI_AGAIN/i.test(raw)) {
     return {
       code: 'HOST_UNREACHABLE',
-      message: `Could not resolve outbound SMTP hostname (${raw.slice(0, 90)}). Check your SMTP server address.`,
+      message: `Could not reach that mail server address. Double-check the server name, or click "1-Click Webmail" below to send without server setup.`,
       suggestOAuth: false,
       suggestWebmail: true,
     };
@@ -246,7 +246,7 @@ export function classifySmtpAuthError(
     return {
       code: 'AUTH_FAILED',
       message:
-        'Authentication failed. Double-check your email address and verify you entered an App Password rather than your main login password.',
+        'Could not sign in with that code. Make sure you used a 16-letter App Password (not your regular login password), or click "1-Click Webmail" below to send with no password.',
       suggestOAuth: provider === 'gmail',
       suggestWebmail: true,
     };

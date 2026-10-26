@@ -725,19 +725,19 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6">
           <div className="space-y-2 max-w-3xl">
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
-              <span className="text-emerald-400 font-medium">Persistent Email Dispatcher</span>
+              <span className="text-emerald-400 font-semibold">Easy Email Removal</span>
               <span aria-hidden="true">·</span>
-              <span>{exposedBrokers.length} Exposed Broker Inboxes</span>
+              <span>{exposedBrokers.length} Broker Privacy Inboxes Ready</span>
               <span aria-hidden="true">·</span>
-              <span>{submittedBrokersCount} Verified Sent</span>
+              <span>{submittedBrokersCount} Removal Emails Sent</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight [text-wrap:balance]">
-              Send Opt-Out Demands From Your Own Email
+              Remove Your Records by Email — Written &amp; Sent For You
             </h1>
-            <p className="text-sm text-slate-400 leading-relaxed">
-              Connect your Gmail, Outlook, Yahoo, iCloud, Proton, or custom email once. Your
-              connection stays active across tabs so clicking <strong>Opt Out of All</strong>{' '}
-              anywhere in synOUT dispatches statutory deletion demands directly from your email.
+            <p className="text-sm text-slate-300 leading-relaxed">
+              Connecting your email takes less than a minute and stays saved across the site. Pick
+              whichever option below feels most comfortable — <strong>no technical setup required</strong>{' '}
+              — and synOUT will prepare and send legal deletion notices on your behalf.
             </p>
           </div>
 
@@ -749,7 +749,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 className="px-4 py-2.5 rounded-xl glass-card text-sky-300 hover:text-white text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
               >
                 <Inbox className="w-4 h-4 text-sky-400" />
-                <span>Inbox Harvester</span>
+                <span>Check Broker Replies</span>
               </button>
             )}
 
@@ -758,7 +758,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               className="px-4 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
             >
               <FileText className="w-4 h-4 text-emerald-400" />
-              <span>Power of Attorney</span>
+              <span>Authorize Agent (Optional)</span>
             </button>
 
             {onOpenNukeAll && (
@@ -774,43 +774,48 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
           </div>
         </div>
 
-        {/* Connection Mode Switcher */}
+        {/* Friendly Connection Mode Switcher */}
         <div className="pt-4 border-t border-white/[0.07] space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="inline-flex flex-wrap items-center gap-1 p-1 glass-subtle rounded-xl">
-              <button
-                type="button"
-                onClick={() => setEmailConnectionMode('smtp')}
-                className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  connectionMode === 'smtp'
-                    ? 'bg-emerald-400 text-slate-950'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                App Password / SMTP (Gmail, Outlook, Yahoo, iCloud)
-              </button>
-              <button
-                type="button"
-                onClick={() => setEmailConnectionMode('oauth')}
-                className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  connectionMode === 'oauth'
-                    ? 'bg-emerald-400 text-slate-950'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Google OAuth (HTTPS · Gmail API)
-              </button>
-              <button
-                type="button"
-                onClick={() => setEmailConnectionMode('webmail')}
-                className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  connectionMode === 'webmail'
-                    ? 'bg-emerald-400 text-slate-950'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Instant Webmail Login (No Password)
-              </button>
+            <div className="space-y-1.5">
+              <div className="text-xs font-semibold text-slate-300">
+                Choose how you want to send removal emails:
+              </div>
+              <div className="inline-flex flex-wrap items-center gap-1 p-1 glass-subtle rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setEmailConnectionMode('webmail')}
+                  className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    connectionMode === 'webmail'
+                      ? 'bg-emerald-400 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  1-Click Webmail (Easiest · No Password)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEmailConnectionMode('smtp')}
+                  className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    connectionMode === 'smtp'
+                      ? 'bg-emerald-400 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  Auto-Send in Background (2-Step App Code)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEmailConnectionMode('oauth')}
+                  className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    connectionMode === 'oauth'
+                      ? 'bg-emerald-400 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  Sign in with Google
+                </button>
+              </div>
             </div>
 
             {isAccountConnectedForDirectSend && exposedBrokers.length > 0 && (
@@ -823,42 +828,34 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 <Layers className="w-4 h-4" />
                 <span>
                   {pendingBrokers.length > 0
-                    ? `Send to All ${pendingBrokers.length} Pending Brokers on My Behalf`
+                    ? `Send to All ${pendingBrokers.length} Pending Brokers For Me`
                     : `Re-Send to All ${exposedBrokers.length} Exposed Brokers`}
                 </span>
               </button>
             )}
           </div>
 
-          {/* Mode 1: Universal Direct SMTP / App Password */}
+          {/* Mode 1: Auto-Send in Background (Guided 2-Step App Code) */}
           {connectionMode === 'smtp' && (
             <div className="space-y-4">
               {backendAvailable === false && !smtpConnection?.verified && (
                 <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200">
                   <div className="space-y-0.5">
                     <span className="font-semibold text-amber-300 block">
-                      Static Deployment Detected (No Server SMTP Socket)
+                      Browser-Only Mode Active — Use 1-Click Webmail Instead
                     </span>
                     <span className="text-slate-300">
-                      Browsers on static hosts (such as GitHub Pages) cannot open raw TCP ports
-                      465/587. Use <strong>Google OAuth (HTTPS)</strong> for automated Gmail API
-                      sending or <strong>Instant Webmail Login</strong> to connect immediately.
+                      This preview host doesn&apos;t run background mail servers. Switch to{' '}
+                      <strong>1-Click Webmail (No Password)</strong> to send right away in one click!
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => setEmailConnectionMode('oauth')}
-                      className="px-3 py-1.5 rounded-lg bg-white text-slate-900 font-bold cursor-pointer whitespace-nowrap"
-                    >
-                      Google OAuth (HTTPS)
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => setEmailConnectionMode('webmail')}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
+                      className="px-3.5 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
                     >
-                      Instant Webmail Login
+                      Use 1-Click Webmail (No Password)
                     </button>
                   </div>
                 </div>
@@ -873,11 +870,11 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         <div className="text-sm font-semibold text-white truncate">
                           Connected as {smtpConnection.userEmail}
                         </div>
-                        <div className="text-xs text-slate-400 font-mono tabular-nums">
-                          Verified outbound relay via {smtpConnection.resolvedHost}:{smtpConnection.resolvedPort} ·{' '}
+                        <div className="text-xs text-slate-400">
+                          Ready to send removal emails automatically on your behalf ·{' '}
                           {smtpConnection.rememberInBrowser
-                            ? 'Persistent across tabs & browser reloads'
-                            : 'Active for current browser tab'}
+                            ? 'Saved on this browser'
+                            : 'Saved for this tab'}
                         </div>
                       </div>
                     </div>
@@ -905,8 +902,32 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 </div>
               ) : (
                 <form onSubmit={handleVerifySmtp} className="space-y-4">
+                  {/* Calm 3-Step Visual Guide */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                    <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+                      <div className="font-bold text-white">1. Type Your Email</div>
+                      <p className="text-slate-400">
+                        We automatically detect Gmail, Outlook, Yahoo, iCloud, or Proton for you.
+                      </p>
+                    </div>
+                    <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+                      <div className="font-bold text-white">2. Copy a Safe App Code</div>
+                      <p className="text-slate-400">
+                        Click <strong className="text-emerald-400">Get 16-Letter App Code</strong>{' '}
+                        so you never share your main password.
+                      </p>
+                    </div>
+                    <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+                      <div className="font-bold text-white">3. Done — Hands-Free Sending</div>
+                      <p className="text-slate-400">
+                        synOUT sends every removal email automatically in the background for you.
+                      </p>
+                    </div>
+                  </div>
+
                   {/* Provider Selector */}
                   <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-slate-400 mr-1">Email provider:</span>
                     {(Object.keys(EMAIL_PROVIDER_PRESETS) as EmailProviderId[]).map((pid) => {
                       const preset = EMAIL_PROVIDER_PRESETS[pid];
                       const active = smtpProvider === pid;
@@ -930,7 +951,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
                     <div className="md:col-span-5 space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Your Email Address (Sender)
+                        Step 1: Your Email Address
                       </label>
                       <input
                         type="email"
@@ -945,16 +966,16 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     <div className="md:col-span-5 space-y-1.5">
                       <div className="flex items-center justify-between gap-2">
                         <label className="block text-xs font-semibold text-slate-300">
-                          {activePreset.credentialLabel}
+                          Step 2: {activePreset.credentialLabel}
                         </label>
                         {activePreset.appPasswordUrl && (
                           <a
                             href={activePreset.appPasswordUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-xs text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap shrink-0"
+                            className="text-xs text-emerald-400 hover:underline font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0"
                           >
-                            <span>Get App Password</span>
+                            <span>Get 16-Letter App Code</span>
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         )}
@@ -976,7 +997,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         <button
                           type="button"
                           onClick={() => setShowSmtpPassword((v) => !v)}
-                          aria-label={showSmtpPassword ? 'Hide password' : 'Show password'}
+                          aria-label={showSmtpPassword ? 'Hide code' : 'Show code'}
                           className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
                         >
                           {showSmtpPassword ? (
@@ -997,7 +1018,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         {isVerifyingSmtp ? (
                           <>
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>Verifying...</span>
+                            <span>Connecting...</span>
                           </>
                         ) : (
                           <>
@@ -1013,7 +1034,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                       <div className="space-y-1.5">
                         <label className="block text-xs font-semibold text-slate-300">
-                          Outbound SMTP Host{' '}
+                          Mail Server Address{' '}
                           {customProviderHint && (
                             <span className="text-emerald-400 font-normal">
                               ({customProviderHint})
@@ -1031,7 +1052,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       </div>
                       <div className="space-y-1.5">
                         <label className="block text-xs font-semibold text-slate-300">
-                          Submission Port
+                          Server Port
                         </label>
                         <select
                           value={customPort}
@@ -1042,9 +1063,9 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                           }}
                           className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono focus:outline-none focus:border-emerald-500/60"
                         >
-                          <option value={587}>587 (STARTTLS)</option>
-                          <option value={465}>465 (Implicit SSL/TLS)</option>
-                          <option value={2525}>2525 (Alternative TLS)</option>
+                          <option value={587}>587 (Standard)</option>
+                          <option value={465}>465 (SSL)</option>
+                          <option value={2525}>2525 (Alternate)</option>
                         </select>
                       </div>
                       <div className="flex items-end pb-1">
@@ -1055,7 +1076,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                             onChange={(e) => setCustomSecure(e.target.checked)}
                             className="rounded border-slate-700 bg-slate-900 text-emerald-500"
                           />
-                          <span>Use Implicit SSL/TLS (Port 465)</span>
+                          <span>Use SSL (Port 465)</span>
                         </label>
                       </div>
                     </div>
@@ -1069,14 +1090,16 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         onChange={(e) => setRememberInBrowser(e.target.checked)}
                         className="rounded border-slate-700 bg-slate-900 text-emerald-500"
                       />
-                      <span>Keep my email connected across tabs &amp; page refreshes on this browser</span>
+                      <span>Keep my email connected on this browser</span>
                     </label>
 
-                    {smtpProvider !== 'custom' && (
-                      <span className="text-xs font-mono text-slate-500 tabular-nums">
-                        Auto-Failover: {activePreset.host} (465 SSL / 587 STARTTLS)
-                      </span>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => setEmailConnectionMode('webmail')}
+                      className="text-xs text-sky-400 hover:text-sky-300 font-medium cursor-pointer"
+                    >
+                      Don&apos;t want to create an App Code? Use 1-Click Webmail instead →
+                    </button>
                   </div>
 
                   <p className="text-xs text-slate-400">{activePreset.helpText}</p>
@@ -1090,26 +1113,6 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     <span>{smtpError}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 pl-6">
-                    {smtpSuggestOAuth && (
-                      <button
-                        type="button"
-                        onClick={() => setEmailConnectionMode('oauth')}
-                        className="px-3 py-1.5 rounded-lg bg-white text-slate-950 font-bold hover:bg-slate-100 transition-colors cursor-pointer whitespace-nowrap"
-                      >
-                        Switch to Google OAuth (HTTPS)
-                      </button>
-                    )}
-                    {activePreset.appPasswordUrl && (
-                      <a
-                        href={activePreset.appPasswordUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap"
-                      >
-                        <span>Generate {activePreset.shortLabel} App Password</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
                     {(smtpSuggestWebmail || smtpEmail.includes('@')) && (
                       <button
                         type="button"
@@ -1123,8 +1126,28 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-colors cursor-pointer whitespace-nowrap"
                       >
                         {smtpEmail.includes('@')
-                          ? `Sign In Instantly via Webmail (${smtpEmail.trim()})`
-                          : 'Switch to Instant Webmail Login'}
+                          ? `Use 1-Click Webmail Instead (${smtpEmail.trim()})`
+                          : 'Switch to 1-Click Webmail (No Password)'}
+                      </button>
+                    )}
+                    {activePreset.appPasswordUrl && (
+                      <a
+                        href={activePreset.appPasswordUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap"
+                      >
+                        <span>Open {activePreset.shortLabel} App Code Page</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                    {smtpSuggestOAuth && oauthConfigured && (
+                      <button
+                        type="button"
+                        onClick={() => setEmailConnectionMode('oauth')}
+                        className="px-3 py-1.5 rounded-lg bg-white text-slate-950 font-bold hover:bg-slate-100 transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Sign in with Google
                       </button>
                     )}
                   </div>
@@ -1133,7 +1156,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             </div>
           )}
 
-          {/* Mode 2: Google Identity Services OAuth 2.0 (HTTPS Port 443 · Works on Static & Cloud Hosts) */}
+          {/* Mode 2: Sign in with Google */}
           {connectionMode === 'oauth' && (
             <div className="space-y-4">
               {oauthUser && accessToken && !oauthTokenExpired ? (
@@ -1144,8 +1167,8 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       <div className="text-sm font-semibold text-white truncate">
                         Connected as {oauthUser.email}
                       </div>
-                      <div className="text-xs text-slate-400 font-mono">
-                        Gmail REST API Authorized (HTTPS Port 443) · Send &amp; Inbox Reply Scanner Active
+                      <div className="text-xs text-slate-400">
+                        Google Account Connected · Automatic Gmail Sending &amp; Reply Checking Active
                       </div>
                     </div>
                   </div>
@@ -1177,8 +1200,8 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       Google Session Expired for {oauthUser.email}
                     </div>
                     <p className="text-xs text-slate-400">
-                      Google OAuth tokens expire hourly for security. Click Reconnect to refresh your
-                      Gmail session in one click.
+                      For your security, Google sign-in sessions refresh every hour. Click Reconnect
+                      Google to continue in one click.
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -1201,35 +1224,22 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-3.5 px-4 bg-slate-950 border border-slate-800 rounded-xl">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 py-4 px-4 bg-slate-950 border border-slate-800 rounded-xl">
                     <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-xs font-semibold text-white">
-                          Google Identity Services OAuth 2.0 (Gmail API over HTTPS)
-                        </span>
-                        <span className="text-[11px] font-mono text-emerald-400">
-                          {oauthConfigured
-                            ? `Ready (${oauthClientSource} Client ID)`
-                            : 'Client ID Setup Available Below'}
-                        </span>
+                      <div className="text-xs font-bold text-white">
+                        {oauthConfigured
+                          ? 'Sign in with Your Google Account'
+                          : 'Want to Send From Gmail Without Any Setup?'}
                       </div>
-                      <p className="text-xs text-slate-400">
-                        Works on both Cloud Run and static GitHub Pages without SMTP ports. Authorize
-                        Gmail to send statutory demands and scan incoming broker replies.
+                      <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
+                        {oauthConfigured
+                          ? 'Authorize Gmail in one click so synOUT can send removal emails and check for broker confirmation links on your behalf.'
+                          : 'Google Sign-In Popup requires an administrator Google Cloud ID on custom hosts. To use your @gmail.com address right away with zero technical setup, click 1-Click Gmail Webmail or 2-Step App Code.'}
                       </p>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setShowOAuthConfigDrawer((v) => !v)}
-                        className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                      >
-                        <Settings2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>{oauthConfigured ? 'OAuth Client ID' : 'Configure Client ID'}</span>
-                      </button>
-
-                      {oauthConfigured && (
+                      {oauthConfigured ? (
                         <button
                           type="button"
                           onClick={() => void handleGoogleOAuthSignIn(false)}
@@ -1260,131 +1270,158 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                           )}
                           <span>Sign in with Google</span>
                         </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setEmailConnectionMode('webmail')}
+                            className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold cursor-pointer whitespace-nowrap"
+                          >
+                            Use 1-Click Gmail Webmail
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSmtpProvider('gmail');
+                              setEmailConnectionMode('smtp');
+                            }}
+                            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold cursor-pointer whitespace-nowrap"
+                          >
+                            Use 2-Step Gmail App Code
+                          </button>
+                        </>
                       )}
+
+                      <button
+                        type="button"
+                        onClick={() => setShowOAuthConfigDrawer((v) => !v)}
+                        className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <Settings2 className="w-3.5 h-3.5" />
+                        <span>
+                          {showOAuthConfigDrawer ? 'Hide Advanced Setup' : 'Advanced Setup'}
+                        </span>
+                      </button>
                     </div>
                   </div>
 
-                  {/* Inline Google OAuth Client ID Setup Panel */}
-                  {(!oauthConfigured || showOAuthConfigDrawer) && (
-                    <form
-                      onSubmit={handleSaveOAuthClientId}
-                      className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-semibold text-white">
-                          Connect Your Own Google OAuth 2.0 Web Client ID (Zero Backend Needed)
-                        </span>
-                        <a
-                          href="https://console.cloud.google.com/apis/credentials"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
-                        >
-                          <span>Open Google Cloud Credentials</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </div>
-
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-slate-900 border border-slate-800 rounded-lg">
-                        <div className="text-slate-300">
-                          Authorized JavaScript Origin to add in Google Cloud:{' '}
-                          <code className="text-emerald-400 font-mono">{currentOrigin}</code>
+                  {/* Optional Advanced Developer Setup Drawer (Hidden by Default so Users Aren't Intimidated) */}
+                  {showOAuthConfigDrawer && (
+                    <div className="space-y-3">
+                      <form
+                        onSubmit={handleSaveOAuthClientId}
+                        className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 text-xs"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-semibold text-white">
+                            Optional Developer Setting: Custom Google OAuth Web Client ID
+                          </span>
+                          <a
+                            href="https://console.cloud.google.com/apis/credentials"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+                          >
+                            <span>Open Google Cloud Credentials</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
                         </div>
-                        <button
-                          type="button"
-                          onClick={handleCopyOrigin}
-                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
-                        >
-                          {originCopied ? (
-                            <>
-                              <Check className="w-3 h-3 text-emerald-400" />
-                              <span className="text-emerald-400">Copied Origin</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3 h-3" />
-                              <span>Copy Origin</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
 
-                      <div className="flex flex-col sm:flex-row gap-2">
-                        <input
-                          type="text"
-                          required
-                          value={oauthClientIdDraft}
-                          onChange={(e) => setOauthClientIdDraft(e.target.value)}
-                          placeholder="1234567890-abcdefg.apps.googleusercontent.com"
-                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
-                        />
-                        <button
-                          type="submit"
-                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-colors cursor-pointer whitespace-nowrap"
-                        >
-                          Save Client ID
-                        </button>
-                        {customOAuthClientId && (
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-slate-900 border border-slate-800 rounded-lg">
+                          <div className="text-slate-300">
+                            Authorized JavaScript Origin:{' '}
+                            <code className="text-emerald-400 font-mono">{currentOrigin}</code>
+                          </div>
                           <button
                             type="button"
-                            onClick={() => void handleClearOAuthClientId()}
-                            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold cursor-pointer whitespace-nowrap"
+                            onClick={handleCopyOrigin}
+                            className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
                           >
-                            Reset
+                            {originCopied ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-400" />
+                                <span className="text-emerald-400">Copied Origin</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy Origin</span>
+                              </>
+                            )}
                           </button>
-                        )}
-                      </div>
-                    </form>
-                  )}
+                        </div>
 
-                  {/* Direct Gmail OAuth Token Fallback for Popup-Restricted Sandboxes */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setShowTokenFallback((v) => !v)}
-                      className="text-slate-400 hover:text-emerald-400 inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <KeyRound className="w-3.5 h-3.5" />
-                      <span>
-                        {showTokenFallback
-                          ? 'Hide Direct Gmail OAuth Token Login'
-                          : 'Popup blocked by iframe/browser? Sign in with a Gmail OAuth Access Token'}
-                      </span>
-                    </button>
-                  </div>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="text"
+                            required
+                            value={oauthClientIdDraft}
+                            onChange={(e) => setOauthClientIdDraft(e.target.value)}
+                            placeholder="1234567890-abcdefg.apps.googleusercontent.com"
+                            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
+                          />
+                          <button
+                            type="submit"
+                            className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-colors cursor-pointer whitespace-nowrap"
+                          >
+                            Save Client ID
+                          </button>
+                          {customOAuthClientId && (
+                            <button
+                              type="button"
+                              onClick={() => void handleClearOAuthClientId()}
+                              className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold cursor-pointer whitespace-nowrap"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      </form>
 
-                  {showTokenFallback && (
-                    <form
-                      onSubmit={handleManualTokenSignIn}
-                      className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5 text-xs"
-                    >
-                      <p className="text-slate-400">
-                        Paste a short-lived Google OAuth 2.0 Bearer Access Token authorized for{' '}
-                        <code className="text-emerald-400 font-mono">
-                          https://www.googleapis.com/auth/gmail.send
-                        </code>{' '}
-                        (for example from Google OAuth Playground). synOUT verifies it directly
-                        against <code className="font-mono text-slate-300">gmail.googleapis.com</code>.
-                      </p>
-                      <div className="flex flex-col sm:flex-row gap-2">
-                        <input
-                          type="password"
-                          required
-                          autoComplete="off"
-                          value={manualAccessTokenDraft}
-                          onChange={(e) => setManualAccessTokenDraft(e.target.value)}
-                          placeholder="ya29.a0..."
-                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
-                        />
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                         <button
-                          type="submit"
-                          disabled={isAuthenticatingOAuth}
-                          className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                          type="button"
+                          onClick={() => setShowTokenFallback((v) => !v)}
+                          className="text-slate-400 hover:text-emerald-400 inline-flex items-center gap-1.5 cursor-pointer"
                         >
-                          {isAuthenticatingOAuth ? 'Verifying Token...' : 'Verify & Connect Gmail'}
+                          <KeyRound className="w-3.5 h-3.5" />
+                          <span>
+                            {showTokenFallback
+                              ? 'Hide Direct Token Input'
+                              : 'Popup blocked? Paste a temporary Google Access Token'}
+                          </span>
                         </button>
                       </div>
-                    </form>
+
+                      {showTokenFallback && (
+                        <form
+                          onSubmit={handleManualTokenSignIn}
+                          className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2.5 text-xs"
+                        >
+                          <p className="text-slate-400">
+                            Paste a temporary Google OAuth Access Token authorized for Gmail send:
+                          </p>
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                              type="password"
+                              required
+                              autoComplete="off"
+                              value={manualAccessTokenDraft}
+                              onChange={(e) => setManualAccessTokenDraft(e.target.value)}
+                              placeholder="Access token..."
+                              className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
+                            />
+                            <button
+                              type="submit"
+                              disabled={isAuthenticatingOAuth}
+                              className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {isAuthenticatingOAuth ? 'Verifying...' : 'Verify & Connect'}
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1405,7 +1442,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
             </div>
           )}
 
-          {/* Mode 3: Instant Webmail / Mail Client Sender Login (Zero Password, Zero Server Required) */}
+          {/* Mode 3: 1-Click Webmail (Easiest — No Password Needed) */}
           {connectionMode === 'webmail' && (
             <div className="space-y-3">
               {isWebmailConnected && webmailSender ? (
@@ -1414,14 +1451,14 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     <CheckCircle2 className="w-5 h-5 text-sky-400 shrink-0" />
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-white truncate">
-                        Signed in as {webmailSender.userEmail}
+                        Ready to Send From {webmailSender.userEmail}
                       </div>
                       <div className="text-xs text-slate-400">
-                        Instant Webmail Sender Mode · Launches pre-addressed statutory notices in{' '}
+                        1-Click Webmail Mode · Opens pre-written, pre-addressed removal emails in{' '}
                         <strong className="text-sky-300 uppercase">
                           {webmailSender.preferredLauncher}
                         </strong>{' '}
-                        (works on static GitHub Pages &amp; all browsers)
+                        so you just click Send (zero passwords shared)
                       </div>
                     </div>
                   </div>
@@ -1433,7 +1470,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                       >
                         <Flame className="w-3.5 h-3.5" />
-                        <span>Launch Mass BCC Batches</span>
+                        <span>Send Mass Batch Emails</span>
                       </button>
                     )}
                     <button
@@ -1441,25 +1478,29 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       onClick={handleDisconnectWebmailSender}
                       className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 cursor-pointer whitespace-nowrap"
                     >
-                      Sign Out
+                      Change Email
                     </button>
                   </div>
                 </div>
               ) : (
                 <form
                   onSubmit={(e) => handleConnectWebmailSender(e)}
-                  className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3"
+                  className="p-4 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-3"
                 >
-                  <p className="text-xs text-slate-300">
-                    Sign in with your sender email address (no password, no 2FA App Password, and no
-                    backend server needed). synOUT embeds your email into every legal notice and
-                    opens pre-addressed single or Mass BCC removal demands directly in your signed-in
-                    webmail or desktop mail client.
-                  </p>
+                  <div className="space-y-1">
+                    <div className="text-xs font-bold text-emerald-300">
+                      Easiest Option — No Password or Codes Needed
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Just enter your email address below and choose which email app you normally
+                      use. synOUT writes the entire legal removal letter for you and opens it
+                      ready-to-send in one click.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
                     <div className="md:col-span-6 space-y-1">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Your Sender Email Address
+                        Your Email Address
                       </label>
                       <input
                         type="email"
@@ -1471,23 +1512,23 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                             setWebmailLauncher(detectWebmailLauncherFromEmail(e.target.value));
                           }
                         }}
-                        placeholder="synovamedia@gmail.com"
+                        placeholder="you@gmail.com"
                         className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
                       />
                     </div>
                     <div className="md:col-span-3 space-y-1">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Preferred Mail Client
+                        Open Emails In
                       </label>
                       <select
                         value={webmailLauncher}
                         onChange={(e) => setWebmailLauncher(e.target.value as WebmailLauncherId)}
                         className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500/60"
                       >
-                        <option value="gmail">Gmail Web</option>
-                        <option value="outlook">Outlook.com Web</option>
-                        <option value="yahoo">Yahoo Mail Web</option>
-                        <option value="mailto">Default Desktop/Mobile Mail App</option>
+                        <option value="gmail">Gmail (Web)</option>
+                        <option value="outlook">Outlook (Web)</option>
+                        <option value="yahoo">Yahoo Mail (Web)</option>
+                        <option value="mailto">My Default Mail App</option>
                       </select>
                     </div>
                     <div className="md:col-span-3">
@@ -1496,7 +1537,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         className="w-full px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
                       >
                         <Mail className="w-3.5 h-3.5" />
-                        <span>Sign In with Email</span>
+                        <span>Use This Email</span>
                       </button>
                     </div>
                   </div>
@@ -1786,7 +1827,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isCheckingMx ? 'animate-spin' : ''}`} />
-                      <span>{isCheckingMx ? 'Checking MX...' : 'Check MX'}</span>
+                      <span>{isCheckingMx ? 'Verifying Inbox...' : 'Verify Inbox'}</span>
                     </button>
                     <button
                       type="button"
@@ -1798,7 +1839,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                     >
                       <Edit3 className="w-3.5 h-3.5 text-sky-400" />
-                      <span>{isEditingRecipient ? 'Close DPO Editor' : 'Edit DPO Email'}</span>
+                      <span>{isEditingRecipient ? 'Close Editor' : 'Change Recipient'}</span>
                     </button>
                     <a
                       href={activeBroker.optOutUrl}
@@ -1806,7 +1847,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       rel="noopener noreferrer"
                       className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
                     >
-                      <span>Opt-Out Portal</span>
+                      <span>Online Form</span>
                       <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
                     </a>
                     <a
@@ -1816,7 +1857,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       className="px-3 py-2 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
                     >
                       <Search className="w-3.5 h-3.5 text-sky-400" />
-                      <span>Verify Listing</span>
+                      <span>Check Listing</span>
                     </a>
                   </div>
                 </div>
@@ -1826,15 +1867,16 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                   <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200">
                     <div className="space-y-0.5">
                       <span className="font-semibold text-amber-300 block">
-                        Hybrid Channel Advisory · Web Portal + Statutory Email
+                        Tip: Best Removed Using Both Online Form + Email
                       </span>
                       <span className="text-slate-300">
-                        {activeBroker.name} processes instant automated suppressions through its web
-                        portal while accepting statutory CCPA/CPRA legal notices at{' '}
+                        {activeBroker.name} uses an online opt-out form alongside its privacy email{' '}
                         <span className="font-mono text-white">
                           {activeContact.effectivePrimaryEmail}
                         </span>
-                        . Submit both for fastest removal and binding legal proof.
+                        . Send this legal email here, and let our{' '}
+                        <strong>Online Forms</strong> tool fill &amp; check {activeBroker.name}&apos;s
+                        form boxes for you too!
                       </span>
                     </div>
                     <a
@@ -1843,7 +1885,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       rel="noopener noreferrer"
                       className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap"
                     >
-                      <span>Open Official Portal</span>
+                      <span>Open Online Form</span>
                       <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
@@ -2034,7 +2076,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               <div className="space-y-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-300">
-                    Statutory Subject Line
+                    Email Subject Line (Pre-Written For You)
                   </label>
                   <input
                     type="text"
@@ -2047,7 +2089,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-semibold text-slate-300">
-                      Binding Legal Expungement Demand (Sent on Your Behalf)
+                      Legal Removal Email (Pre-Written &amp; Ready to Send For You)
                     </label>
                     <button
                       type="button"
@@ -2062,13 +2104,13 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       ) : (
                         <>
                           <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Notice</span>
+                          <span>Copy Letter</span>
                         </>
                       )}
                     </button>
                   </div>
                   <textarea
-                    rows={12}
+                    rows={11}
                     value={customBody}
                     onChange={(e) => setCustomBody(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs text-slate-200 font-mono leading-relaxed focus:outline-none focus:border-emerald-500/50 resize-y"
@@ -2088,7 +2130,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         className="rounded border-slate-700 bg-slate-950 text-emerald-500"
                       />
                       <span>
-                        CC verified backup / parent DPO (
+                        Also copy backup privacy inbox (
                         <span className="font-mono text-sky-300">
                           {activeContact.recommendedCcEmails.join(', ')}
                         </span>
@@ -2105,7 +2147,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         onChange={(e) => setBccSelf(e.target.checked)}
                         className="rounded border-slate-700 bg-slate-950 text-emerald-500"
                       />
-                      <span>BCC a copy to {activeSenderEmail}</span>
+                      <span>Send a copy to my own inbox ({activeSenderEmail})</span>
                     </label>
                   )}
                 </div>
@@ -2125,14 +2167,49 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         ) : (
                           <Inbox className="w-3.5 h-3.5 text-sky-400" />
                         )}
-                        <span>Check Gmail for Broker Replies &amp; Bounces</span>
+                        <span>Check Gmail for Broker Replies</span>
                       </button>
                     )}
                   </div>
 
                   {/* Primary Send Button */}
                   <div className="flex flex-wrap items-center gap-2.5">
-                    {connectionMode !== 'webmail' && (
+                    {connectionMode === 'webmail' && webmailLinks ? (
+                      <a
+                        href={
+                          webmailSender?.preferredLauncher === 'outlook'
+                            ? webmailLinks.outlookUrl
+                            : webmailSender?.preferredLauncher === 'yahoo'
+                            ? webmailLinks.yahooUrl
+                            : webmailSender?.preferredLauncher === 'mailto'
+                            ? webmailLinks.mailtoUrl
+                            : webmailLinks.gmailUrl
+                        }
+                        target={webmailSender?.preferredLauncher === 'mailto' ? undefined : '_blank'}
+                        rel="noopener noreferrer"
+                        onClick={() =>
+                          onMarkDispatched(
+                            activeBroker.id,
+                            `WEB-${(webmailSender?.preferredLauncher || 'GMAIL').toUpperCase()}-${Date.now()
+                              .toString(36)
+                              .toUpperCase()}`
+                          )
+                        }
+                        className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-2 transition-colors whitespace-nowrap"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>
+                          Open Pre-Filled Removal Email in{' '}
+                          {webmailSender?.preferredLauncher === 'outlook'
+                            ? 'Outlook'
+                            : webmailSender?.preferredLauncher === 'yahoo'
+                            ? 'Yahoo Mail'
+                            : webmailSender?.preferredLauncher === 'mailto'
+                            ? 'Mail App'
+                            : 'Gmail'}
+                        </span>
+                      </a>
+                    ) : (
                       <button
                         type="button"
                         onClick={requestSingleSendConfirmation}
@@ -2142,15 +2219,15 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         {isSending ? (
                           <>
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>Verifying MX &amp; Sending...</span>
+                            <span>Sending Removal Email...</span>
                           </>
                         ) : (
                           <>
                             <Send className="w-3.5 h-3.5" />
                             <span>
                               {isAccountConnectedForDirectSend
-                                ? `Send from ${activeSenderEmail}`
-                                : 'Connect Email Above to Send Directly'}
+                                ? `Send Removal Email From ${activeSenderEmail}`
+                                : 'Connect Email Above to Auto-Send'}
                             </span>
                           </>
                         )}
