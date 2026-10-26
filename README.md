@@ -2,6 +2,10 @@
 
 **synOUT** is an autonomous personal data broker removal and deep/dark web exposure neutralization platform. Scan 700+ data brokers with jurisdiction-aware false-positive filtering, generate direct deep/dark web verification links with source-specific manual removal guides, and dispatch statutory deletion demands (CCPA, CPRA, GDPR, VCDPA, Delete Act) directly from your own connected email account.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LILSYNNOFFICIAL/synOUT/refs/heads/main/src/assets/images/synOUT_Logo_Sm.png" alt="synOUT logo" width="640" height="320">
+</p>
+
 ## Core Capabilities
 
 - **Jurisdiction-Aware Broker Audit Engine**: Cross-references residency history, phone numbers, and age anchors across 700+ public-record aggregators, people-search directories, skip-trace syndicates, and court registries while disqualifying homonym false positives.
