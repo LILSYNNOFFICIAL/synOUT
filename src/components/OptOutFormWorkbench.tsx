@@ -1769,11 +1769,11 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                     <button
                       type="button"
                       onClick={() => setShowTraceLog((v) => !v)}
-                      className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-mono text-[11px] cursor-pointer"
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-mono text-[11px] cursor-pointer whitespace-nowrap"
                     >
                       {showTraceLog
-                        ? 'Hide Trace'
-                        : `Execution Trace (${activeWorkflowJob.steps.length})`}
+                        ? 'Hide Activity'
+                        : `Step-by-Step Activity (${activeWorkflowJob.steps.length})`}
                     </button>
 
                     {(activeWorkflowJob.state === 'awaiting_broker_processing' ||
@@ -2133,12 +2133,12 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
                   <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl space-y-2">
                     <div className="font-semibold text-white flex items-center gap-1.5">
                       <Link2 className="w-3.5 h-3.5 text-sky-400" />
-                      <span>Complete Inbound Email Opt-Out Confirmation Link</span>
+                      <span>Click Email Confirmation Link For Me</span>
                     </div>
                     <p className="text-[11px] text-slate-400">
-                      If {activeBroker.name} emailed a confirmation link, paste it below. synOUT
-                      strips tracking parameters, verifies domain ownership against phishing, and
-                      completes the confirmation step in headless Chromium.
+                      If {activeBroker.name} emailed you a confirmation link, paste it below. synOUT
+                      removes tracking codes, checks that the link is safe, and clicks any final
+                      confirmation boxes on your behalf.
                     </p>
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                       <input
@@ -2328,11 +2328,11 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-bold text-white">
-                  Browser Auto-Fill Bookmarklet &amp; Static HTML Form Inspector
+                  1-Click Browser Auto-Fill Helper (For CAPTCHA Pages)
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Client-side fallback for CAPTCHA/WAF-protected portals: fills inputs in your
-                  own browser tab while skipping honeypots, SSN/ID fields, and marketing checkboxes.
+                  If a site asks for a human CAPTCHA check, this helper fills your details and checks
+                  required privacy boxes right in your browser tab while skipping marketing spam.
                 </p>
               </div>
 
@@ -2650,11 +2650,11 @@ export const OptOutFormWorkbench: React.FC<OptOutFormWorkbenchProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-base font-bold text-white">
-                  Dual-Channel Completion: Log Genuine Broker Ticket &amp; Send Statutory Email
+                  Save Confirmation Code &amp; Optional Backup Removal Email
                 </h3>
                 <p className="text-slate-400">
-                  Leave the ticket box blank if the broker did not display a confirmation code —
-                  synOUT tracks unconfirmed submissions honestly without inventing fake tickets.
+                  Leave the code box blank if the site didn&apos;t show a confirmation number —
+                  synOUT tracks your submission either way.
                 </p>
               </div>
               <div className="flex items-center gap-2 font-mono text-[11px]">

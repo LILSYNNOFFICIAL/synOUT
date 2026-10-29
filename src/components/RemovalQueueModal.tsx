@@ -30,6 +30,7 @@ import {
   useBrokerContactOverrides,
   verifyRecipientDeliverabilityClient,
 } from '../utils/brokerContactResolver';
+import { startWorkflowClient } from '../services/optOutDiscoveryClient';
 import {
   X,
   Send,
@@ -54,6 +55,18 @@ interface RemovalQueueModalProps {
   profile: UserProfile;
   onClose: () => void;
   onBrokerDispatched: (brokerId: string, messageId: string, silent?: boolean) => void;
+  onBrokerFormSubmitted?: (params: {
+    broker: DataBroker;
+    confirmationCode?: string;
+    optOutUrl?: string;
+    discoveredTitle?: string;
+    workflowJobId?: string;
+    workflowState?: ScanResult['workflowState'];
+    internalSubmissionId?: string;
+    brokerConfirmedReceipt?: string | null;
+    submissionEvidenceHash?: string;
+    verifiedRemoved?: boolean;
+  }) => void;
   onComplete: (sentCount: number, senderEmail: string) => void;
   onOpenEmailWorkspace?: () => void;
   onOpenAutomatedNavigator?: (broker: DataBroker, result: ScanResult) => void;
@@ -68,7 +81,7 @@ interface DeliveryReceiptItem {
   ccDelivered: string[];
   usedFallback: boolean;
   requiresPortalFollowup: boolean;
-  status: 'sent' | 'failed' | 'portal_redirect';
+  status: 'sent' | 'form_auto_submitted' | 'failed' | 'portal_redirect';
   detail: string;
 }
 
@@ -77,6 +90,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
   profile,
   onClose,
   onBrokerDispatched,
+  onBrokerFormSubmitted,
   onComplete,
   onOpenEmailWorkspace,
   onOpenAutomatedNavigator,
@@ -116,6 +130,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
   const [bccSelf, setBccSelf] = useState<boolean>(false);
   const [ccBackupDpo, setCcBackupDpo] = useState<boolean>(true);
   const [skipPortalPrimary, setSkipPortalPrimary] = useState<boolean>(false);
+  const [autoFillFormsFallback, setAutoFillFormsFallback] = useState<boolean>(true);
   const [showSamplePreview, setShowSamplePreview] = useState<boolean>(queue.length === 1);
 
   // Per-broker inline address override & live MX pre-flight map
@@ -128,14 +143,14 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
   >({});
   const [mxSummaryBanner, setMxSummaryBanner] = useState<string | null>(null);
 
-  // Resolved broker targets with contact mitigation profile
+  // Resolved broker targets (includes form-only brokers without email so they auto-fill via form!)
   const allTargets = useMemo(() => {
     return queue
       .map((result) => {
         const broker = findBrokerById(result.brokerId);
         if (!broker) return null;
         const contact = resolveBrokerContactProfile(broker, contactOverrides);
-        return contact.effectivePrimaryEmail ? { broker, result, contact } : null;
+        return { broker, result, contact };
       })
       .filter(
         (
@@ -162,6 +177,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
 
   const portalOnlyTargets = useMemo(() => {
     return candidateTargets.filter(({ broker, contact }) => {
+      if (!contact.effectivePrimaryEmail) return true;
       const mx = mxResultsByBroker[broker.id];
       if (mx && !mx.valid) return true;
       if (skipPortalPrimary && contact.requiresPortalWarning && !contact.hasCustomOverride) {
@@ -206,7 +222,9 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
   // Real sending progress & receipt summary
   const [isSending, setIsSending] = useState<boolean>(false);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
+  const [totalWorkItems, setTotalWorkItems] = useState<number>(0);
   const [currentBrokerName, setCurrentBrokerName] = useState<string>('');
+  const [currentActionLabel, setCurrentActionLabel] = useState<string>('');
   const [receipts, setReceipts] = useState<DeliveryReceiptItem[]>([]);
   const [dispatchFinished, setDispatchFinished] = useState<boolean>(false);
   const [dispatchError, setDispatchError] = useState<string | null>(null);
@@ -367,19 +385,139 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
     }
   };
 
+  const executeAutomaticFormFallbackForBroker = async (
+    broker: DataBroker,
+    recipientEmailHint: string,
+    fallbackReason: string
+  ): Promise<DeliveryReceiptItem> => {
+    try {
+      const senderAddr =
+        activeConnectedEmail ||
+        emailInput ||
+        profile.emails.find((e) => Boolean(e && e.trim())) ||
+        undefined;
+      const job = await startWorkflowClient({
+        broker,
+        brokerId: broker.id,
+        brokerName: broker.name,
+        brokerDomain: broker.domain,
+        targetUrl: broker.optOutUrl,
+        profile,
+        senderEmail: senderAddr,
+        mode: 'autonomous_auto_submit',
+      });
+
+      const isSubmittedState =
+        job.state === 'awaiting_broker_processing' ||
+        job.state === 'awaiting_email_verification' ||
+        job.state === 'submitted_unconfirmed' ||
+        job.state === 'removal_verified';
+
+      if (isSubmittedState) {
+        onBrokerFormSubmitted?.({
+          broker,
+          confirmationCode: job.brokerConfirmationCode || undefined,
+          optOutUrl: job.currentUrl || broker.optOutUrl,
+          discoveredTitle: job.discoveredTitle,
+          workflowJobId: job.jobId,
+          workflowState: job.state,
+          internalSubmissionId: job.internalSubmissionId,
+          brokerConfirmedReceipt: job.brokerConfirmationCode,
+          submissionEvidenceHash: job.evidence?.evidenceManifestSha256,
+          verifiedRemoved: job.state === 'removal_verified',
+        });
+        return {
+          brokerId: broker.id,
+          brokerName: broker.name,
+          optOutUrl: broker.optOutUrl,
+          recipientEmail: recipientEmailHint || broker.optOutUrl,
+          ccDelivered: [],
+          usedFallback: true,
+          requiresPortalFollowup: job.state === 'awaiting_email_verification',
+          status: 'form_auto_submitted',
+          detail:
+            job.state === 'awaiting_email_verification'
+              ? 'Form filled & boxes checked · Check email for confirmation link'
+              : job.brokerConfirmationCode
+              ? `Form filled & boxes checked (${job.brokerConfirmationCode})`
+              : 'Form filled, boxes checked & submitted for you',
+        };
+      }
+
+      return {
+        brokerId: broker.id,
+        brokerName: broker.name,
+        optOutUrl: broker.optOutUrl,
+        recipientEmail: recipientEmailHint || broker.optOutUrl,
+        ccDelivered: [],
+        usedFallback: false,
+        requiresPortalFollowup: true,
+        status: 'portal_redirect',
+        detail: job.blocker?.summary || fallbackReason,
+      };
+    } catch {
+      return {
+        brokerId: broker.id,
+        brokerName: broker.name,
+        optOutUrl: broker.optOutUrl,
+        recipientEmail: recipientEmailHint || broker.optOutUrl,
+        ccDelivered: [],
+        usedFallback: false,
+        requiresPortalFollowup: true,
+        status: 'portal_redirect',
+        detail: fallbackReason,
+      };
+    }
+  };
+
+  const handleAutoRunFormsWithoutEmail = async () => {
+    if (candidateTargets.length === 0) return;
+    setIsSending(true);
+    setDispatchError(null);
+    setReceipts([]);
+    setTotalWorkItems(candidateTargets.length);
+
+    const collectedReceipts: DeliveryReceiptItem[] = [];
+    for (let i = 0; i < candidateTargets.length; i++) {
+      const { broker, contact } = candidateTargets[i];
+      setCurrentIndex(i + 1);
+      setCurrentBrokerName(broker.name);
+      setCurrentActionLabel(`Filling online form & checking boxes for ${broker.name}...`);
+      const receipt = await executeAutomaticFormFallbackForBroker(
+        broker,
+        contact.effectivePrimaryEmail,
+        'Open online removal form to finish quick security step'
+      );
+      collectedReceipts.push(receipt);
+      setReceipts([...collectedReceipts]);
+    }
+
+    setIsSending(false);
+    setDispatchFinished(true);
+  };
+
   const handleConfirmAndSendEmails = async () => {
+    if (activeTargets.length === 0 && portalOnlyTargets.length > 0 && autoFillFormsFallback) {
+      await handleAutoRunFormsWithoutEmail();
+      return;
+    }
     if (!isDirectSendConnected || !activeConnectedEmail) {
-      setDispatchError('Connect your email account first so synOUT can send these emails for you.');
+      setDispatchError(
+        'Connect your email above to send emails — or click "Auto-Fill Online Forms For Me" so synOUT submits their web forms without email.'
+      );
       return;
     }
     if (activeTargets.length === 0 && portalOnlyTargets.length === 0) {
-      setDispatchError('No broker privacy email addresses are queued.');
+      setDispatchError('No broker targets are queued.');
       return;
     }
 
     setIsSending(true);
     setDispatchError(null);
     setReceipts([]);
+    const totalCount =
+      activeTargets.length + (autoFillFormsFallback ? portalOnlyTargets.length : 0);
+    setTotalWorkItems(Math.max(1, totalCount));
     let sentCount = 0;
     const collectedReceipts: DeliveryReceiptItem[] = [];
     const senderFullName =
@@ -389,6 +527,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
       const { broker, contact } = activeTargets[i];
       setCurrentIndex(i + 1);
       setCurrentBrokerName(broker.name);
+      setCurrentActionLabel(`Sending legal removal email to ${broker.name}...`);
 
       const notice =
         activeTargets.length === 1
@@ -428,51 +567,92 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
           detail: res.messageId,
         });
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'SMTP delivery failed';
-        collectedReceipts.push({
-          brokerId: broker.id,
-          brokerName: broker.name,
-          optOutUrl: broker.optOutUrl,
-          recipientEmail: contact.effectivePrimaryEmail,
-          ccDelivered: [],
-          usedFallback: false,
-          requiresPortalFollowup: true,
-          status: 'failed',
-          detail: errMsg,
-        });
+        const errMsg = err instanceof Error ? err.message : 'Email delivery unavailable';
+        if (autoFillFormsFallback && broker.optOutUrl) {
+          setCurrentActionLabel(
+            `Email unavailable for ${broker.name} — auto-filling online form & checking boxes...`
+          );
+          const formReceipt = await executeAutomaticFormFallbackForBroker(
+            broker,
+            contact.effectivePrimaryEmail,
+            errMsg
+          );
+          collectedReceipts.push(formReceipt);
+        } else {
+          collectedReceipts.push({
+            brokerId: broker.id,
+            brokerName: broker.name,
+            optOutUrl: broker.optOutUrl,
+            recipientEmail: contact.effectivePrimaryEmail,
+            ccDelivered: [],
+            usedFallback: false,
+            requiresPortalFollowup: true,
+            status: 'failed',
+            detail: errMsg,
+          });
+        }
       }
       setReceipts([...collectedReceipts]);
     }
 
-    // Append any portal-redirected brokers so user has 1-click portal links in the summary
-    for (const { broker, contact } of portalOnlyTargets) {
+    // Automatically fill & check boxes on form-only / dead-MX / portal-preferred brokers!
+    for (let j = 0; j < portalOnlyTargets.length; j++) {
+      const { broker, contact } = portalOnlyTargets[j];
       const mx = mxResultsByBroker[broker.id];
-      collectedReceipts.push({
-        brokerId: broker.id,
-        brokerName: broker.name,
-        optOutUrl: broker.optOutUrl,
-        recipientEmail: contact.effectivePrimaryEmail,
-        ccDelivered: [],
-        usedFallback: false,
-        requiresPortalFollowup: true,
-        status: 'portal_redirect',
-        detail:
-          mx && !mx.valid
-            ? 'Blocked dead MX domain from bouncing — complete via official web portal'
-            : 'Skipped email per Web-Portal-Primary preference — open portal',
-      });
+      if (autoFillFormsFallback && broker.optOutUrl) {
+        setCurrentIndex(activeTargets.length + j + 1);
+        setCurrentBrokerName(broker.name);
+        setCurrentActionLabel(
+          `Filling online removal form & checking boxes for ${broker.name}...`
+        );
+        const formReceipt = await executeAutomaticFormFallbackForBroker(
+          broker,
+          contact.effectivePrimaryEmail,
+          !contact.effectivePrimaryEmail
+            ? 'Online form required — open portal to complete'
+            : mx && !mx.valid
+            ? 'Email inbox inactive — open online form'
+            : 'Online form preferred — open portal'
+        );
+        collectedReceipts.push(formReceipt);
+        setReceipts([...collectedReceipts]);
+      } else {
+        collectedReceipts.push({
+          brokerId: broker.id,
+          brokerName: broker.name,
+          optOutUrl: broker.optOutUrl,
+          recipientEmail: contact.effectivePrimaryEmail || broker.optOutUrl,
+          ccDelivered: [],
+          usedFallback: false,
+          requiresPortalFollowup: true,
+          status: 'portal_redirect',
+          detail:
+            mx && !mx.valid
+              ? 'Email inbox inactive — complete via official online form'
+              : 'Skipped email — complete via official online form',
+        });
+      }
     }
     setReceipts([...collectedReceipts]);
 
     setIsSending(false);
     setDispatchFinished(true);
 
-    if (sentCount === 0 && activeTargets.length > 0 && collectedReceipts.length > 0) {
+    const autoFormCount = collectedReceipts.filter(
+      (r) => r.status === 'form_auto_submitted'
+    ).length;
+    if (
+      sentCount === 0 &&
+      autoFormCount === 0 &&
+      activeTargets.length > 0 &&
+      collectedReceipts.length > 0
+    ) {
       setDispatchError(collectedReceipts[0].detail);
     }
   };
 
   const sentReceiptsCount = receipts.filter((r) => r.status === 'sent').length;
+  const formAutoSubmittedCount = receipts.filter((r) => r.status === 'form_auto_submitted').length;
   const failedReceiptsCount = receipts.filter((r) => r.status === 'failed').length;
   const portalRedirectCount = receipts.filter((r) => r.status === 'portal_redirect').length;
   const preset = EMAIL_PROVIDER_PRESETS[provider];
@@ -494,15 +674,15 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
               className="text-xl font-bold text-white tracking-tight tabular-nums"
             >
               {dispatchFinished
-                ? 'Legal Removal Email Summary'
+                ? 'Removal Summary (Email & Automatic Forms)'
                 : isSingleMode
-                ? `Send Legal Removal Email to ${candidateTargets[0]?.broker.name}`
-                : `Send ${activeTargets.length} Legal Removal Emails For You`}
+                ? `Remove Your Record from ${candidateTargets[0]?.broker.name}`
+                : `Remove Your Records (${candidateTargets.length} Brokers)`}
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
               {dispatchFinished
-                ? `Finished sending your removal notices from ${activeConnectedEmail}.`
-                : 'synOUT writes every legal deletion email for you, checks that each broker inbox is active so nothing bounces, and sends directly from your email.'}
+                ? 'Completed your removal run. Every sent email and auto-submitted form is logged in your Tracker.'
+                : 'synOUT writes & sends your legal removal emails for you — and automatically fills out the online removal form (checking required & pop-up boxes) whenever email is not an option.'}
             </p>
           </div>
 
@@ -611,28 +791,40 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                     <div className="text-xs font-bold text-white flex items-center gap-2 tabular-nums">
                       <Mail className="w-4 h-4 text-emerald-400 shrink-0" />
                       <span>
-                        Quick Email Setup — Pick Whichever Way Feels Easiest ({activeTargets.length}{' '}
-                        {activeTargets.length === 1 ? 'Email' : 'Emails'})
+                        Simple Email Setup — Or Let synOUT Auto-Fill Online Forms Instead
                       </span>
                     </div>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Data brokers only honor deletion requests that come from you. Choose{' '}
-                      <strong className="text-slate-200">1-Click Webmail</strong> (zero passwords) or{' '}
-                      <strong className="text-slate-200">Auto-Send in Background</strong>.
+                      Want to send by email? Pick <strong className="text-slate-200">1-Click Webmail</strong>{' '}
+                      (easiest — no password needed) or <strong className="text-slate-200">Auto-Send</strong>.
+                      Don&apos;t want to connect email? Click{' '}
+                      <strong className="text-sky-300">Auto-Fill Online Forms For Me</strong> below and
+                      synOUT will fill out the forms &amp; check boxes for you!
                     </p>
                   </div>
-                  {onOpenEmailWorkspace && (
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => {
-                        onClose();
-                        onOpenEmailWorkspace();
-                      }}
-                      className="text-[11px] text-emerald-400 hover:underline cursor-pointer whitespace-nowrap"
+                      onClick={handleAutoRunFormsWithoutEmail}
+                      disabled={isSending || candidateTargets.length === 0}
+                      className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                     >
-                      More Email Options
+                      <Bot className="w-3.5 h-3.5" />
+                      <span>Auto-Fill Online Forms For Me</span>
                     </button>
-                  )}
+                    {onOpenEmailWorkspace && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onOpenEmailWorkspace();
+                        }}
+                        className="text-[11px] text-emerald-400 hover:underline cursor-pointer whitespace-nowrap"
+                      >
+                        Full Email Page
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Friendly 2-Way Method Chooser */}
@@ -973,8 +1165,10 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                             </span>
                             <span
                               className={`text-[11px] ${
-                                mx && !mx.valid
-                                  ? 'text-rose-400'
+                                !contact.effectivePrimaryEmail
+                                  ? 'text-sky-300'
+                                  : mx && !mx.valid
+                                  ? 'text-amber-300'
                                   : contact.hasCustomOverride || contact.reroutedFromBounced
                                   ? 'text-sky-400'
                                   : contact.requiresPortalWarning
@@ -982,10 +1176,12 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                                   : 'text-slate-400'
                               }`}
                             >
-                              {mx && !mx.valid
-                                ? 'No MX Server — Use Web Portal'
+                              {!contact.effectivePrimaryEmail
+                                ? 'Online Form Only · synOUT Fills Automatically'
+                                : mx && !mx.valid
+                                ? 'Email Inactive · synOUT Will Auto-Fill Form'
                                 : mx?.mxVerified
-                                ? `MX Verified (${mx.mxHosts[0] || broker.domain})`
+                                ? 'Inbox Verified'
                                 : contact.deliverabilityLabel}
                             </span>
                           </div>
@@ -993,12 +1189,12 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                           <div className="text-[11px] font-mono flex flex-wrap items-center gap-1.5">
                             <span
                               className={
-                                isSkippedToPortal
+                                isSkippedToPortal && contact.effectivePrimaryEmail
                                   ? 'text-slate-500 line-through'
                                   : 'text-emerald-400'
                               }
                             >
-                              {contact.effectivePrimaryEmail}
+                              {contact.effectivePrimaryEmail || broker.optOutUrl}
                             </span>
                             {ccBackupDpo &&
                               !isSkippedToPortal &&
@@ -1148,8 +1344,22 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
               </div>
             )}
 
-            {/* Multi-Address Redundancy & Portal Routing Options */}
+            {/* Automatic Form Fallback + Redundancy Options */}
             <div className="space-y-2 pt-1">
+              <label className="flex items-start gap-2.5 text-xs text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoFillFormsFallback}
+                  onChange={(e) => setAutoFillFormsFallback(e.target.checked)}
+                  className="mt-0.5 rounded border-white/20 bg-slate-950/60 text-emerald-500"
+                />
+                <span>
+                  <strong className="text-emerald-300">Automatic Online Form Fallback:</strong>{' '}
+                  Automatically fill out the online removal form &amp; check required pop-up boxes
+                  for me whenever email is not an option
+                </span>
+              </label>
+
               <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer">
                 <input
                   type="checkbox"
@@ -1158,9 +1368,9 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                   className="mt-0.5 rounded border-white/20 bg-slate-950/60 text-emerald-500"
                 />
                 <span>
-                  Also CC the parent company&apos;s privacy team when available{' '}
+                  Also copy (CC) the parent company&apos;s privacy team when available{' '}
                   <span className="text-slate-500">
-                    (helps make sure your email is read even if a smaller site&apos;s inbox is slow)
+                    (helps make sure your email is read faster)
                   </span>
                 </span>
               </label>
@@ -1174,8 +1384,8 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                     className="mt-0.5 rounded border-white/20 bg-slate-950/60 text-emerald-500"
                   />
                   <span>
-                    Skip {portalPrimaryCount} site(s) that prefer an online form and show their
-                    direct form link instead
+                    Use online forms directly for {portalPrimaryCount} site(s) that prefer web
+                    forms over email
                   </span>
                 </label>
               )}
@@ -1189,7 +1399,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                     className="mt-0.5 rounded border-white/20 bg-slate-950/60 text-emerald-500"
                   />
                   <span>
-                    Send a blind copy (BCC) of each removal email to{' '}
+                    Send a copy (BCC) of each removal email to{' '}
                     <strong className="font-mono text-white">{activeConnectedEmail}</strong> for my
                     records
                   </span>
@@ -1199,16 +1409,16 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
           </div>
         )}
 
-        {/* Live Transmission Progress */}
+        {/* Live Progress */}
         {isSending && (
           <div className="p-5 glass-subtle border-emerald-500/30 rounded-2xl space-y-3">
             <div className="flex items-center justify-between text-xs tabular-nums">
               <span className="text-white font-semibold flex items-center gap-2">
                 <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
-                <span>Verifying MX &amp; sending to {currentBrokerName}...</span>
+                <span>{currentActionLabel || `Working on ${currentBrokerName}...`}</span>
               </span>
               <span className="text-emerald-400 font-mono font-bold">
-                {currentIndex} / {activeTargets.length}
+                {currentIndex} / {Math.max(1, totalWorkItems)}
               </span>
             </div>
 
@@ -1218,16 +1428,15 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                 style={{
                   transform: `scaleX(${Math.max(
                     0.04,
-                    currentIndex / Math.max(1, activeTargets.length)
+                    currentIndex / Math.max(1, totalWorkItems)
                   )})`,
                 }}
               />
             </div>
 
             <p className="text-[11px] text-slate-400">
-              Transmitting over authenticated outbound TLS from{' '}
-              <span className="font-mono text-slate-200">{activeConnectedEmail}</span> with
-              automatic backup DPO failover...
+              synOUT is handling your emails and online removal forms (including checking required
+              consent &amp; pop-up boxes) automatically on your behalf.
             </p>
           </div>
         )}
@@ -1237,36 +1446,43 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
           <div className="space-y-4">
             <div
               className={`p-4 rounded-2xl border text-xs flex items-start gap-3 ${
-                sentReceiptsCount > 0 || portalRedirectCount > 0
+                sentReceiptsCount > 0 || formAutoSubmittedCount > 0 || portalRedirectCount > 0
                   ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
                   : 'bg-rose-500/10 border-rose-500/30 text-rose-200'
               }`}
             >
-              {sentReceiptsCount > 0 || portalRedirectCount > 0 ? (
+              {sentReceiptsCount > 0 || formAutoSubmittedCount > 0 || portalRedirectCount > 0 ? (
                 <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
               ) : (
                 <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
               )}
               <div className="space-y-1">
                 <div className="font-bold text-sm text-white tabular-nums">
-                  {sentReceiptsCount > 0
-                    ? `Sent ${sentReceiptsCount} Verified Statutory Opt-Out Email${
+                  {sentReceiptsCount > 0 && formAutoSubmittedCount > 0
+                    ? `Sent ${sentReceiptsCount} Removal Email${sentReceiptsCount === 1 ? '' : 's'} & Auto-Submitted ${formAutoSubmittedCount} Online Form${formAutoSubmittedCount === 1 ? '' : 's'}`
+                    : sentReceiptsCount > 0
+                    ? `Sent ${sentReceiptsCount} Legal Removal Email${
                         sentReceiptsCount === 1 ? '' : 's'
                       }`
+                    : formAutoSubmittedCount > 0
+                    ? `Auto-Filled & Submitted ${formAutoSubmittedCount} Online Removal Form${
+                        formAutoSubmittedCount === 1 ? '' : 's'
+                      }`
                     : portalRedirectCount > 0
-                    ? `${portalRedirectCount} Broker(s) Routed to Official Web Opt-Out Portals`
-                    : 'Outbound Email Transmission Blocked / Failed'}
+                    ? `${portalRedirectCount} Site(s) Ready for Quick Security Check`
+                    : 'Could Not Complete Removal Request'}
                 </div>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  {sentReceiptsCount > 0
-                    ? `Every delivered legal demand is saved in the "Sent" folder of ${activeConnectedEmail}. For any hybrid/portal-primary broker below, you can also launch its direct web opt-out form in one click.`
+                  {sentReceiptsCount > 0 || formAutoSubmittedCount > 0
+                    ? 'Your removal requests have been submitted and logged in your Removal Tracker.'
                     : dispatchError ||
-                      'Recipient domain rejected inbound mail. Use the official opt-out portal link(s) below.'}
+                      'A site requested a quick human CAPTCHA check. Click Auto-Fill Form For Me below to finish in one click.'}
                 </p>
                 {failedReceiptsCount > 0 && (
                   <p className="text-xs text-amber-300">
-                    {failedReceiptsCount} recipient(s) rejected inbound email — use their direct
-                    Opt-Out Portal button below so your removal still completes.
+                    {failedReceiptsCount} site(s) rejected email — click{' '}
+                    <strong>Auto-Fill Form For Me</strong> below so synOUT fills out their online
+                    form instead.
                   </p>
                 )}
               </div>
@@ -1281,9 +1497,9 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                   <div className="min-w-0 space-y-0.5">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-semibold text-white truncate">{item.brokerName}</span>
-                      {item.usedFallback && (
+                      {item.status === 'sent' && item.usedFallback && (
                         <span className="text-[11px] text-sky-400">
-                          · Auto-routed to verified backup DPO
+                          · Sent via backup privacy address
                         </span>
                       )}
                     </div>
@@ -1296,20 +1512,25 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                   <div className="flex items-center gap-2 shrink-0">
                     {item.status === 'sent' ? (
                       <span className="text-emerald-400 font-mono text-[11px] truncate max-w-[180px]">
-                        Sent · {item.detail}
+                        Email Sent · {item.detail}
+                      </span>
+                    ) : item.status === 'form_auto_submitted' ? (
+                      <span className="text-emerald-400 text-[11px] font-semibold truncate max-w-[230px]">
+                        {item.detail}
                       </span>
                     ) : item.status === 'portal_redirect' ? (
-                      <span className="text-amber-300 text-[11px]">Portal Required</span>
+                      <span className="text-amber-300 text-[11px]">Needs Quick Check</span>
                     ) : (
                       <span
                         className="text-rose-400 text-[11px] truncate max-w-[170px]"
                         title={item.detail}
                       >
-                        Blocked Bounce · Use Portal
+                        Email Rejected · Use Form
                       </span>
                     )}
 
-                    {(item.status !== 'sent' || item.requiresPortalFollowup) &&
+                    {item.status !== 'sent' &&
+                      item.status !== 'form_auto_submitted' &&
                       (onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
                         <button
                           type="button"
@@ -1331,17 +1552,19 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                         </button>
                       )}
 
-                    {(item.status !== 'sent' || item.requiresPortalFollowup) && item.optOutUrl && (
-                      <a
-                        href={item.optOutUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-emerald-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap text-[11px]"
-                      >
-                        <span>Open Portal</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
+                    {item.status !== 'sent' &&
+                      item.status !== 'form_auto_submitted' &&
+                      item.optOutUrl && (
+                        <a
+                          href={item.optOutUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-emerald-300 font-semibold inline-flex items-center gap-1 whitespace-nowrap text-[11px]"
+                        >
+                          <span>Open Form</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
                   </div>
                 </div>
               ))}
@@ -1383,16 +1606,19 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                 >
                   Close
                 </button>
-                {sentReceiptsCount > 0 && (
+                {(sentReceiptsCount > 0 || formAutoSubmittedCount > 0) && (
                   <button
                     type="button"
                     onClick={() => {
-                      onComplete(sentReceiptsCount, activeConnectedEmail || '');
+                      onComplete(
+                        sentReceiptsCount + formAutoSubmittedCount,
+                        activeConnectedEmail || 'Automatic Form Runner'
+                      );
                       onClose();
                     }}
                     className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer whitespace-nowrap"
                   >
-                    View Sent Removals in Tracker
+                    View Removals in Tracker
                   </button>
                 )}
               </>
@@ -1462,6 +1688,22 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                       </a>
                     );
                   })()
+                ) : activeTargets.length === 0 && portalOnlyTargets.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={handleAutoRunFormsWithoutEmail}
+                    disabled={isSending}
+                    className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 font-bold text-xs flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
+                  >
+                    <Bot className="w-4 h-4" />
+                    <span>
+                      {isSending
+                        ? 'Filling Forms & Checking Boxes...'
+                        : `Auto-Fill & Submit ${portalOnlyTargets.length} Online Form${
+                            portalOnlyTargets.length === 1 ? '' : 's'
+                          }`}
+                    </span>
+                  </button>
                 ) : (
                   <button
                     type="button"
@@ -1476,19 +1718,17 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                     {isSending ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Sending Emails...</span>
+                        <span>Working For You...</span>
                       </>
                     ) : (
                       <>
                         <Send className="w-4 h-4" />
                         <span>
                           {isDirectSendConnected
-                            ? activeTargets.length === 0
-                              ? `Review ${portalOnlyTargets.length} Portal Opt-Out(s)`
-                              : activeTargets.length === 1
-                              ? `Confirm & Send Email`
+                            ? activeTargets.length === 1
+                              ? 'Confirm & Send Email'
                               : `Confirm & Send ${activeTargets.length} Emails`
-                            : 'Connect Email Above to Send'}
+                            : 'Connect Email Above (or Use Auto-Fill Forms)'}
                         </span>
                       </>
                     )}

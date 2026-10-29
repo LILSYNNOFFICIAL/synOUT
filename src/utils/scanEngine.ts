@@ -157,7 +157,9 @@ export function runBrokerScan(profile: UserProfile): ScanResult[] {
           evidenceBasis = `County real property assessment record indexed for parcel at ${profile.currentStreet}, ${profile.currentCity}, ${currentStateCode}.`;
         }
       } else if (broker.category === 'Financial & Credit Marketing') {
-        const hasCreditAnchors = profile.phoneNumbers.length > 0 && profile.emails.length > 0;
+        const validPhones = (profile.phoneNumbers || []).filter((p) => Boolean(p && p.trim()));
+        const validEmails = (profile.emails || []).filter((e) => Boolean(e && e.trim()));
+        const hasCreditAnchors = validPhones.length > 0 && validEmails.length > 0;
         if (!hasCreditAnchors) {
           isExposed = false;
           matchConfidence = 'NO_RECORD';
@@ -212,6 +214,23 @@ export function runBrokerScan(profile: UserProfile): ScanResult[] {
   });
 }
 
+export function computeInitialBaselineExposureScore(results: ScanResult[]): number {
+  const total = results.length;
+  if (total === 0) return 0;
+
+  const exposed = results.filter((r) => r.status === 'exposed');
+  if (exposed.length === 0) return 0;
+
+  const critical = exposed.filter((r) => r.mockListingData.riskLevel === 'Critical').length;
+  const high = exposed.filter((r) => r.mockListingData.riskLevel === 'High').length;
+  const medium = exposed.filter((r) => r.mockListingData.riskLevel === 'Medium').length;
+
+  const rawScore = critical * 8 + high * 4 + medium * 2;
+  let score = Math.min(100, Math.round((rawScore / (total * 0.4 || 1)) * 100));
+  if (exposed.length > 0 && score < 25) score = 25;
+  return score;
+}
+
 export function computeScanStats(results: ScanResult[]): ScanStats {
   const exposed = results.filter((r) => r.status === 'exposed');
   const clean = results.filter((r) => r.status === 'clean');
@@ -226,10 +245,35 @@ export function computeScanStats(results: ScanResult[]): ScanStats {
   const removedBrokers = results.filter((r) => r.removalStatus === 'removed').length;
 
   let exposureScore = 0;
-  if (total > 0) {
-    const rawScore = (criticalBrokers * 8 + highRiskBrokers * 4 + mediumRiskBrokers * 2);
-    exposureScore = Math.min(100, Math.round((rawScore / (total * 0.4 || 1)) * 100));
-    if (exposed.length > 0 && exposureScore < 25) exposureScore = 25;
+  if (total > 0 && exposed.length > 0) {
+    let weightedRaw = 0;
+    let totalInitialWeight = 0;
+
+    for (const item of exposed) {
+      const baseWeight =
+        item.mockListingData.riskLevel === 'Critical'
+          ? 8
+          : item.mockListingData.riskLevel === 'High'
+          ? 4
+          : 2;
+      totalInitialWeight += baseWeight;
+
+      if (item.removalStatus === 'removed') {
+        weightedRaw += 0;
+      } else if (item.removalStatus === 'submitted') {
+        weightedRaw += baseWeight * 0.45;
+      } else {
+        weightedRaw += baseWeight;
+      }
+    }
+
+    const baselineScore = computeInitialBaselineExposureScore(results);
+    if (inProgressRemovals === 0 && removedBrokers === 0) {
+      exposureScore = baselineScore;
+    } else if (totalInitialWeight > 0) {
+      const residualRatio = weightedRaw / totalInitialWeight;
+      exposureScore = Math.min(100, Math.max(0, Math.round(baselineScore * residualRatio)));
+    }
   }
 
   return {

@@ -488,6 +488,13 @@ export async function approveAndSubmitWorkflowClient(params: {
     }
   );
 
+  const contentType = res.headers.get('content-type') || '';
+  if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+    throw new Error(
+      'Server-side form submission is unavailable on this static host. Open the opt-out page and run the 1-Click Auto-Fill Bookmarklet.'
+    );
+  }
+
   const data = await res.json();
   if (!res.ok || !data.job) {
     throw new Error(data.error || 'Workflow approval & submission failed.');
@@ -512,6 +519,13 @@ export async function completeWorkflowEmailVerificationClient(params: {
     }
   );
 
+  const contentType = res.headers.get('content-type') || '';
+  if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+    throw new Error(
+      'Automatic server link clicking is unavailable on this static host. Open the confirmation link directly in a new tab to complete verification.'
+    );
+  }
+
   const data = await res.json();
   if (!res.ok || !data.job) {
     throw new Error(data.error || 'Email verification link check failed.');
@@ -531,6 +545,13 @@ export async function recheckWorkflowRemovalClient(params: {
       body: JSON.stringify({ checkUrl: params.checkUrl }),
     }
   );
+
+  const contentType = res.headers.get('content-type') || '';
+  if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+    throw new Error(
+      'Automated server re-checking is unavailable on this static host. Open the broker portal directly to verify removal.'
+    );
+  }
 
   const data = await res.json();
   if (!res.ok || !data.job) {
@@ -556,6 +577,11 @@ export async function recordManualHandoffClient(params: {
     }
   );
 
+  const contentType = res.headers.get('content-type') || '';
+  if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+    throw new Error('Backend workflow storage is unavailable on this static host.');
+  }
+
   const data = await res.json();
   if (!res.ok || !data.job) {
     throw new Error(data.error || 'Could not record manual browser handoff.');
@@ -568,6 +594,12 @@ export async function cancelWorkflowClient(jobId: string): Promise<ClientRemoval
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
   });
+
+  const contentType = res.headers.get('content-type') || '';
+  if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+    throw new Error('Backend workflow runner is unavailable on this static host.');
+  }
+
   const data = await res.json();
   if (!res.ok || !data.job) {
     throw new Error(data.error || 'Could not cancel workflow.');
@@ -587,7 +619,9 @@ export async function runLivePortalProbeClient(params: {
 
   const contentType = res.headers.get('content-type') || '';
   if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
-    throw new Error('Live server portal probe requires the synOUT backend server.');
+    throw new Error(
+      'Live server portal probing requires the full-stack synOUT backend. Click "Open Portal" to inspect the broker directly.'
+    );
   }
 
   const data = await res.json();

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { DataBroker, ScanResult, UserProfile } from '../types';
+import { DataBroker, RemovalWorkflowState, ScanResult, UserProfile } from '../types';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
 import { getExhaustiveBrokerRegistry } from '../utils/dynamicBrokerRegistry';
 import {
@@ -44,6 +44,8 @@ import {
   verifyRecipientDeliverabilityClient,
   RecipientDeliverabilityVerification,
 } from '../utils/brokerContactResolver';
+import { hasWebFormSubmission } from '../utils/optOutFormEngine';
+import { startWorkflowClient } from '../services/optOutDiscoveryClient';
 import {
   Mail,
   Send,
@@ -69,16 +71,32 @@ import {
   EyeOff,
   KeyRound,
   Settings2,
+  Bot,
+  CheckSquare,
 } from 'lucide-react';
 
 interface GmailDispatchCenterProps {
   results: ScanResult[];
   profile: UserProfile;
   onMarkDispatched: (brokerId: string, messageId: string, silent?: boolean) => void;
+  onBrokerFormSubmitted?: (payload: {
+    broker: DataBroker;
+    confirmationCode?: string;
+    optOutUrl?: string;
+    discoveredTitle?: string;
+    workflowJobId?: string;
+    workflowState?: RemovalWorkflowState;
+    internalSubmissionId?: string;
+    brokerConfirmedReceipt?: string | null;
+    submissionEvidenceHash?: string;
+    verifiedRemoved?: boolean;
+  }) => void;
+  onOpenAutomatedNavigator?: (broker: DataBroker, result?: ScanResult) => void;
   onOpenPowerOfAttorney: () => void;
   onStartScan?: () => void;
   onOpenNukeAll?: () => void;
   onOpenInboxHarvester?: () => void;
+  onOpenWebForms?: () => void;
 }
 
 interface PendingSendConfirmation {
@@ -98,10 +116,13 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   results,
   profile,
   onMarkDispatched,
+  onBrokerFormSubmitted,
+  onOpenAutomatedNavigator,
   onOpenPowerOfAttorney,
   onStartScan,
   onOpenNukeAll,
   onOpenInboxHarvester,
+  onOpenWebForms,
 }) => {
   const {
     mode: connectionMode,
@@ -192,9 +213,11 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   const [isSearchingInbox, setIsSearchingInbox] = useState<boolean>(false);
   const [inboxSearched, setInboxSearched] = useState<boolean>(false);
 
-  // Recipient DPO Mitigation, Custom Override & Live DNS MX Check State
+  // Recipient Override, Live Inbox Check & Automatic Form Fallback State
   const contactOverrides = useBrokerContactOverrides();
   const [ccBackupDpo, setCcBackupDpo] = useState<boolean>(true);
+  const [autoFallbackToWebForms, setAutoFallbackToWebForms] = useState<boolean>(true);
+  const [isAutoFillingActiveForm, setIsAutoFillingActiveForm] = useState<boolean>(false);
   const [isEditingRecipient, setIsEditingRecipient] = useState<boolean>(false);
   const [recipientDraft, setRecipientDraft] = useState<string>('');
   const [recipientOverrideError, setRecipientOverrideError] = useState<string | null>(null);
@@ -209,7 +232,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     );
     const registry = getExhaustiveBrokerRegistry();
     return registry
-      .filter((b) => exposedMap.has(b.id) && b.privacyEmail)
+      .filter((b) => exposedMap.has(b.id))
       .map((b) => ({
         broker: b,
         result: exposedMap.get(b.id)!,
@@ -217,11 +240,15 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   }, [results]);
 
   const pendingBrokers = useMemo(() => {
-    return exposedBrokers.filter(({ result }) => !hasVerifiedEmailReceipt(result));
+    return exposedBrokers.filter(
+      ({ result }) => !hasVerifiedEmailReceipt(result) && !hasWebFormSubmission(result)
+    );
   }, [exposedBrokers]);
 
   const submittedBrokersCount = useMemo(() => {
-    return exposedBrokers.filter(({ result }) => hasVerifiedEmailReceipt(result)).length;
+    return exposedBrokers.filter(
+      ({ result }) => hasVerifiedEmailReceipt(result) || hasWebFormSubmission(result)
+    ).length;
   }, [exposedBrokers]);
 
   const filteredQueue = useMemo(() => {
@@ -234,12 +261,12 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
         resolved.effectivePrimaryEmail.toLowerCase().includes(q) ||
         (broker.privacyEmail || '').toLowerCase().includes(q);
       if (!matchesSearch) return false;
-      const verifiedSent = hasVerifiedEmailReceipt(result);
+      const verifiedDone = hasVerifiedEmailReceipt(result) || hasWebFormSubmission(result);
       if (queueFilter === 'pending') {
-        return !verifiedSent;
+        return !verifiedDone;
       }
       if (queueFilter === 'submitted') {
-        return verifiedSent;
+        return verifiedDone;
       }
       return true;
     });
@@ -520,13 +547,102 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     }
   };
 
+  const runAutoFormFallbackForBroker = async (
+    broker: DataBroker
+  ): Promise<{ handled: boolean; checkedBoxes: number; receipt: string }> => {
+    const resolved = resolveBrokerContactProfile(broker, contactOverrides);
+    const targetUrl = resolved.optOutUrl || broker.optOutUrl;
+    if (!targetUrl) {
+      return { handled: false, checkedBoxes: 0, receipt: '' };
+    }
+    try {
+      const job = await startWorkflowClient({
+        broker,
+        brokerId: broker.id,
+        brokerName: broker.name,
+        brokerDomain: broker.domain,
+        targetUrl,
+        profile,
+        senderEmail: activeSenderEmail || undefined,
+        mode: 'autonomous_auto_submit',
+      });
+      const submittedOk =
+        job.state === 'awaiting_broker_processing' ||
+        job.state === 'awaiting_email_verification' ||
+        job.state === 'submitted_unconfirmed' ||
+        job.state === 'removal_verified';
+
+      const checkedBoxes = (job.mappedFields || []).filter(
+        (m) =>
+          (m.inputType === 'checkbox' ||
+            m.tag === 'custom_checkbox' ||
+            m.semanticRole === 'consent_checkbox') &&
+          m.disclosureAllowed &&
+          m.semanticRole !== 'marketing_opt_in' &&
+          m.plannedValue !== 'false' &&
+          m.plannedValue !== '__unchecked__'
+      ).length;
+
+      if (submittedOk) {
+        onBrokerFormSubmitted?.({
+          broker,
+          confirmationCode: job.brokerConfirmationCode || undefined,
+          optOutUrl: job.currentUrl || targetUrl,
+          discoveredTitle: job.discoveredTitle,
+          workflowJobId: job.jobId,
+          workflowState: job.state,
+          internalSubmissionId: job.internalSubmissionId,
+          brokerConfirmedReceipt: job.brokerConfirmationCode,
+          submissionEvidenceHash: job.evidence?.evidenceManifestSha256,
+          verifiedRemoved: job.state === 'removal_verified',
+        });
+        return {
+          handled: true,
+          checkedBoxes,
+          receipt: job.brokerConfirmationCode || job.internalSubmissionId,
+        };
+      }
+    } catch {
+      // Handled below if form requires human CAPTCHA handoff
+    }
+    return { handled: false, checkedBoxes: 0, receipt: '' };
+  };
+
+  const handleTriggerAutoFormForActiveBroker = async () => {
+    if (!activeBroker) return;
+    if (onOpenAutomatedNavigator) {
+      onOpenAutomatedNavigator(activeBroker, activeResult);
+      return;
+    }
+    setIsAutoFillingActiveForm(true);
+    setSendErrorMsg(null);
+    setSendSuccessMsg(null);
+    try {
+      const autoRes = await runAutoFormFallbackForBroker(activeBroker);
+      if (autoRes.handled) {
+        setSendSuccessMsg(
+          `Automatically filled out ${activeBroker.name}'s online removal form${
+            autoRes.checkedBoxes > 0 ? `, checked ${autoRes.checkedBoxes} required box(es),` : ''
+          } and submitted it on your behalf · Reference: ${autoRes.receipt}`
+        );
+      } else if (onOpenWebForms) {
+        onOpenWebForms();
+      }
+    } finally {
+      setIsAutoFillingActiveForm(false);
+    }
+  };
+
   const requestSingleSendConfirmation = () => {
-    if (!activeBroker || !activeContact?.effectivePrimaryEmail) {
-      setSendErrorMsg('Selected broker does not publish a statutory opt-out email address.');
+    if (!activeBroker) return;
+    if (!activeContact?.effectivePrimaryEmail) {
+      void handleTriggerAutoFormForActiveBroker();
       return;
     }
     if (!isAccountConnectedForDirectSend) {
-      setSendErrorMsg('Connect your email account in the panel above before sending on your behalf.');
+      setSendErrorMsg(
+        'Connect your email above to auto-send in the background — or click "Auto-Fill Form For Me" so synOUT submits the online form for you.'
+      );
       return;
     }
 
@@ -547,13 +663,18 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
   };
 
   const requestBatchSendConfirmation = () => {
-    if (!isAccountConnectedForDirectSend) {
-      setSendErrorMsg('Connect and verify your email account above first to batch-send on your behalf.');
-      return;
-    }
     const targetPool = pendingBrokers.length > 0 ? pendingBrokers : exposedBrokers;
     if (targetPool.length === 0) {
-      setSendErrorMsg('Run an exposure scan first to populate your broker opt-out queue.');
+      setSendErrorMsg('Run an exposure scan first to populate your broker removal queue.');
+      return;
+    }
+    const hasEmailTargets = targetPool.some(
+      ({ broker }) => Boolean(resolveBrokerContactProfile(broker, contactOverrides).effectivePrimaryEmail)
+    );
+    if (hasEmailTargets && !isAccountConnectedForDirectSend) {
+      setSendErrorMsg(
+        'Connect your email above first to batch-send removal emails on your behalf.'
+      );
       return;
     }
 
@@ -589,6 +710,9 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
     if (confirmation.type === 'single') {
       const target = confirmation.targets[0];
       try {
+        if (!target.recipientEmail) {
+          throw new Error('No email address published — switching to automatic online form.');
+        }
         const res = await sendEmailViaConnectedAccount({
           recipientEmail: target.recipientEmail,
           fallbackRecipientEmails: target.fallbackEmails,
@@ -608,14 +732,28 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
         onMarkDispatched(target.broker.id, res.messageId, false);
         setSendSuccessMsg(
           `Sent from ${res.sentFrom} to ${actualRecipient}${
-            res.usedFallback ? ' (auto-rerouted via verified backup DPO)' : ''
+            res.usedFallback ? ' (routed via verified backup privacy email)' : ''
           }${
             res.ccDelivered && res.ccDelivered.length > 0
               ? ` · CC: ${res.ccDelivered.join(', ')}`
               : ''
-          } · Message Receipt: ${res.messageId}`
+          } · Receipt: ${res.messageId}`
         );
       } catch (err) {
+        if (autoFallbackToWebForms) {
+          const autoRes = await runAutoFormFallbackForBroker(target.broker);
+          if (autoRes.handled) {
+            setSendSuccessMsg(
+              `Email wasn't accepted by ${target.broker.name}, so synOUT automatically filled out its online removal form${
+                autoRes.checkedBoxes > 0
+                  ? `, checked ${autoRes.checkedBoxes} required box(es),`
+                  : ''
+              } and submitted it on your behalf · Reference: ${autoRes.receipt}`
+            );
+            setIsSending(false);
+            return;
+          }
+        }
         setSendErrorMsg(err instanceof Error ? err.message : 'Failed to send email on your behalf.');
       } finally {
         setIsSending(false);
@@ -623,9 +761,11 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
       return;
     }
 
-    // Batch send across all pending exposed brokers
+    // Batch send across all pending exposed brokers (with automatic Online Form + Checkbox fallback!)
     let sentCount = 0;
     let reroutedCount = 0;
+    let autoFormCount = 0;
+    let totalBoxesChecked = 0;
     const failures: string[] = [];
     const total = confirmation.targets.length;
 
@@ -634,8 +774,23 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
       setBatchProgress({
         sent: i + 1,
         total,
-        currentBroker: target.broker.name,
+        currentBroker: target.recipientEmail
+          ? target.broker.name
+          : `${target.broker.name} (Auto-Filling Form & Boxes)`,
       });
+
+      if (!target.recipientEmail) {
+        if (autoFallbackToWebForms) {
+          const autoRes = await runAutoFormFallbackForBroker(target.broker);
+          if (autoRes.handled) {
+            autoFormCount++;
+            totalBoxesChecked += autoRes.checkedBoxes;
+            continue;
+          }
+        }
+        failures.push(`${target.broker.name}: Online form requires quick CAPTCHA check`);
+        continue;
+      }
 
       try {
         const res = await sendEmailViaConnectedAccount({
@@ -657,30 +812,52 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
         sentCount++;
         onMarkDispatched(target.broker.id, res.messageId, true);
       } catch (err) {
-        failures.push(
-          `${target.broker.name}: ${err instanceof Error ? err.message : 'Dispatch error'}`
-        );
+        let handledViaForm = false;
+        if (autoFallbackToWebForms) {
+          setBatchProgress({
+            sent: i + 1,
+            total,
+            currentBroker: `${target.broker.name} (Auto-Filling Online Form Fallback)`,
+          });
+          const autoRes = await runAutoFormFallbackForBroker(target.broker);
+          if (autoRes.handled) {
+            handledViaForm = true;
+            autoFormCount++;
+            totalBoxesChecked += autoRes.checkedBoxes;
+          }
+        }
+        if (!handledViaForm) {
+          failures.push(
+            `${target.broker.name}: ${err instanceof Error ? err.message : 'Needs quick check'}`
+          );
+        }
       }
     }
 
     setBatchProgress(null);
     setIsSending(false);
 
-    if (sentCount > 0 && failures.length === 0) {
+    if ((sentCount > 0 || autoFormCount > 0) && failures.length === 0) {
       setSendSuccessMsg(
-        `Sent all ${sentCount} statutory opt-out emails directly from ${activeSenderEmail}${
-          reroutedCount > 0 ? ` (${reroutedCount} auto-rerouted to verified backup DPO)` : ''
-        }. Copies are in your Sent folder.`
-      );
-    } else if (sentCount > 0 && failures.length > 0) {
-      setSendSuccessMsg(
-        `Sent ${sentCount} of ${total} notices from ${activeSenderEmail}${
-          reroutedCount > 0 ? ` (${reroutedCount} auto-rerouted)` : ''
+        `Completed all ${sentCount + autoFormCount} removals for you${
+          sentCount > 0 ? `: ${sentCount} legal email(s) sent from ${activeSenderEmail}` : ''
+        }${reroutedCount > 0 ? ` (${reroutedCount} routed to backup privacy inbox)` : ''}${
+          autoFormCount > 0
+            ? `${sentCount > 0 ? ' · ' : ': '}${autoFormCount} online form(s) auto-filled${
+                totalBoxesChecked > 0 ? ` (${totalBoxesChecked} box(es) checked for you)` : ''
+              }`
+            : ''
         }.`
       );
-      setSendErrorMsg(`${failures.length} require manual portal action: ${failures[0]}`);
+    } else if (sentCount > 0 || autoFormCount > 0) {
+      setSendSuccessMsg(
+        `Completed ${sentCount + autoFormCount} of ${total} removals (${sentCount} email(s) sent${
+          autoFormCount > 0 ? `, ${autoFormCount} online form(s) auto-filled & boxes checked` : ''
+        }).`
+      );
+      setSendErrorMsg(`${failures.length} site(s) asked for a quick human CAPTCHA check: ${failures[0]}`);
     } else {
-      setSendErrorMsg(failures[0] || 'Batch email dispatch failed.');
+      setSendErrorMsg(failures[0] || 'Batch removal encountered an error.');
     }
   };
 
@@ -776,6 +953,28 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
         {/* Friendly Connection Mode Switcher */}
         <div className="pt-4 border-t border-white/[0.07] space-y-5">
+          <div className="p-4 rounded-xl bg-slate-950/70 border border-white/[0.08] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="space-y-0.5">
+              <div className="font-bold text-white">
+                No complicated setup — pick whichever way feels easiest:
+              </div>
+              <p className="text-slate-300 leading-relaxed">
+                Start with <strong className="text-emerald-300">1-Click Webmail (Easiest — No Password Needed)</strong>{' '}
+                to send pre-written removal letters without sharing any password — or let synOUT fill
+                out online removal forms and check boxes for you automatically.
+              </p>
+            </div>
+            {onOpenWebForms && (
+              <button
+                type="button"
+                onClick={onOpenWebForms}
+                className="px-3.5 py-2 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-sky-300 font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Use Automatic Online Forms Instead →
+              </button>
+            )}
+          </div>
+
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="space-y-1.5">
               <div className="text-xs font-semibold text-slate-300">
@@ -791,7 +990,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       : 'text-slate-300 hover:text-white'
                   }`}
                 >
-                  1-Click Webmail (Easiest · No Password)
+                  1-Click Webmail (Easiest — No Password Needed)
                 </button>
                 <button
                   type="button"
@@ -1663,7 +1862,9 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
           <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
             {filteredQueue.map(({ broker, result }) => {
               const isSelected = broker.id === selectedBrokerId;
-              const isSubmitted = hasVerifiedEmailReceipt(result);
+              const emailDone = hasVerifiedEmailReceipt(result);
+              const formDone = hasWebFormSubmission(result);
+              const isSubmitted = emailDone || formDone;
               const rowContact = resolveBrokerContactProfile(broker, contactOverrides);
               return (
                 <button
@@ -1693,11 +1894,19 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                             : 'text-slate-400'
                         }
                       >
-                        {isSubmitted ? 'Email Sent' : `${broker.risk} Risk`}
+                        {emailDone && formDone
+                          ? 'Form + Email Sent'
+                          : formDone
+                          ? 'Form Submitted'
+                          : emailDone
+                          ? 'Email Sent'
+                          : `${broker.risk} Risk`}
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-400 font-mono truncate flex items-center gap-1.5">
-                      <span className="truncate">{rowContact.effectivePrimaryEmail}</span>
+                      <span className="truncate">
+                        {rowContact.effectivePrimaryEmail || 'Online Form Only — synOUT Auto-Fills'}
+                      </span>
                       {rowContact.hasCustomOverride && (
                         <>
                           <span aria-hidden="true" className="text-slate-600">
@@ -1711,7 +1920,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                           <span aria-hidden="true" className="text-slate-600">
                             ·
                           </span>
-                          <span className="text-amber-400 font-sans shrink-0">Rerouted</span>
+                          <span className="text-amber-400 font-sans shrink-0">Backup Email</span>
                         </>
                       )}
                     </div>
@@ -1801,7 +2010,11 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     </div>
                     <div className="text-xs text-emerald-400 font-mono flex flex-wrap items-center gap-1.5 pt-0.5">
                       <Mail className="w-3.5 h-3.5 shrink-0" />
-                      <span>To: {activeContact.effectivePrimaryEmail}</span>
+                      <span>
+                        {activeContact.effectivePrimaryEmail
+                          ? `To: ${activeContact.effectivePrimaryEmail}`
+                          : 'Online Form Only (No Privacy Email Listed)'}
+                      </span>
                       {ccBackupDpo && activeContact.recommendedCcEmails.length > 0 && (
                         <>
                           <span className="text-slate-600">·</span>
@@ -1822,13 +2035,29 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={handleCheckActiveRecipientMx}
-                      disabled={isCheckingMx}
-                      className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                      onClick={() => void handleTriggerAutoFormForActiveBroker()}
+                      disabled={isAutoFillingActiveForm}
+                      className="px-3 py-2 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                      title="Let synOUT automatically fill out this broker's online form and check required pop-up boxes for you"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isCheckingMx ? 'animate-spin' : ''}`} />
-                      <span>{isCheckingMx ? 'Verifying Inbox...' : 'Verify Inbox'}</span>
+                      <Bot className="w-3.5 h-3.5" />
+                      <span>
+                        {isAutoFillingActiveForm ? 'Auto-Filling Form...' : 'Auto-Fill Form For Me'}
+                      </span>
                     </button>
+                    {activeContact.effectivePrimaryEmail && (
+                      <button
+                        type="button"
+                        onClick={handleCheckActiveRecipientMx}
+                        disabled={isCheckingMx}
+                        className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 text-emerald-400 ${isCheckingMx ? 'animate-spin' : ''}`}
+                        />
+                        <span>{isCheckingMx ? 'Checking Inbox...' : 'Check Inbox'}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={
@@ -1839,17 +2068,8 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
                     >
                       <Edit3 className="w-3.5 h-3.5 text-sky-400" />
-                      <span>{isEditingRecipient ? 'Close Editor' : 'Change Recipient'}</span>
+                      <span>{isEditingRecipient ? 'Close Editor' : 'Change Email'}</span>
                     </button>
-                    <a
-                      href={activeBroker.optOutUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
-                    >
-                      <span>Online Form</span>
-                      <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
-                    </a>
                     <a
                       href={getBrokerRecordSearchUrl(activeBroker, profile)}
                       target="_blank"
@@ -1862,8 +2082,33 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                   </div>
                 </div>
 
+                {/* Form-Only Broker Banner (Email Not an Option) */}
+                {!activeContact.effectivePrimaryEmail && (
+                  <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-100">
+                    <div className="space-y-0.5">
+                      <span className="font-bold text-emerald-300 block">
+                        Email Isn&apos;t Offered by {activeBroker.name} — synOUT Fills the Online Form For You
+                      </span>
+                      <span className="text-slate-300">
+                        Click <strong>Auto-Fill &amp; Submit Form For Me</strong> and synOUT will
+                        automatically fill out {activeBroker.name}&apos;s removal form, check any
+                        required or pop-up boxes as they appear, and submit on your behalf.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleTriggerAutoFormForActiveBroker()}
+                      disabled={isAutoFillingActiveForm}
+                      className="px-4 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-extrabold inline-flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
+                    >
+                      <CheckSquare className="w-3.5 h-3.5" />
+                      <span>Auto-Fill &amp; Submit Form For Me</span>
+                    </button>
+                  </div>
+                )}
+
                 {/* Portal-Primary Advisory */}
-                {activeContact.requiresPortalWarning && (
+                {activeContact.effectivePrimaryEmail && activeContact.requiresPortalWarning && (
                   <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200">
                     <div className="space-y-0.5">
                       <span className="font-semibold text-amber-300 block">
@@ -1874,24 +2119,34 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         <span className="font-mono text-white">
                           {activeContact.effectivePrimaryEmail}
                         </span>
-                        . Send this legal email here, and let our{' '}
-                        <strong>Online Forms</strong> tool fill &amp; check {activeBroker.name}&apos;s
-                        form boxes for you too!
+                        . Send this legal email here, or click{' '}
+                        <strong>Auto-Fill Form For Me</strong> so synOUT fills &amp; checks{' '}
+                        {activeBroker.name}&apos;s form boxes automatically too!
                       </span>
                     </div>
-                    <a
-                      href={activeBroker.optOutUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap"
-                    >
-                      <span>Open Online Form</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => void handleTriggerAutoFormForActiveBroker()}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <Bot className="w-3.5 h-3.5" />
+                        <span>Auto-Fill Form For Me</span>
+                      </button>
+                      <a
+                        href={activeBroker.optOutUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <span>Open Site</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
                   </div>
                 )}
 
-                {/* Live DNS MX Deliverability Readout */}
+                {/* Live Inbox Deliverability Readout */}
                 {mxCheckState && (
                   <div
                     className={`p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
@@ -1905,20 +2160,10 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         <span>
                           {mxCheckState.mxVerified
                             ? mxCheckState.usedFallback
-                              ? `Primary Address Rejected · Verified Backup Found (${mxCheckState.recommendedEmail})`
-                              : `DNS Mail Exchange Verified for ${mxCheckState.recommendedEmail || activeContact.effectivePrimaryEmail}`
-                            : 'Recipient Domain Has No Active Mail Exchange (MX) Server'}
+                              ? `Primary Email Inactive · Verified Backup Found (${mxCheckState.recommendedEmail})`
+                              : `Verified Active Privacy Inbox: ${mxCheckState.recommendedEmail || activeContact.effectivePrimaryEmail}`
+                            : 'Email Inbox Unavailable — synOUT Can Fill Out Their Online Form For You'}
                         </span>
-                        {mxCheckState.mxHosts.length > 0 && (
-                          <>
-                            <span aria-hidden="true" className="text-slate-500">
-                              ·
-                            </span>
-                            <span className="font-mono text-[11px] text-slate-300">
-                              MX: {mxCheckState.mxHosts.slice(0, 2).join(', ')}
-                            </span>
-                          </>
-                        )}
                       </div>
                       {mxCheckState.reason && (
                         <p className="text-slate-300">{mxCheckState.reason}</p>
@@ -1936,26 +2181,25 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         </button>
                       )}
                       {!mxCheckState.mxVerified && (
-                        <a
-                          href={activeBroker.optOutUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                        <button
+                          type="button"
+                          onClick={() => void handleTriggerAutoFormForActiveBroker()}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                         >
-                          <span>Use Official Opt-Out Portal</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
+                          <Bot className="w-3.5 h-3.5" />
+                          <span>Auto-Fill Form For Me</span>
+                        </button>
                       )}
                     </div>
                   </div>
                 )}
 
-                {/* Inline Recipient DPO Override & Verified Alias Switcher */}
+                {/* Inline Recipient Override & Backup Privacy Address Switcher */}
                 {isEditingRecipient && (
                   <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                       <span className="font-semibold text-white">
-                        Override Compliance Recipient Email for {activeBroker.name}
+                        Change Broker Privacy Email for {activeBroker.name}
                       </span>
                       <div className="flex items-center gap-3">
                         <button
@@ -1963,7 +2207,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                           onClick={handleMarkCurrentRecipientBounced}
                           className="text-amber-400 hover:text-amber-300 font-medium cursor-pointer whitespace-nowrap"
                         >
-                          Blacklist Current as Bounced
+                          Mark Current Email as Bounced
                         </button>
                         {(activeContact.hasCustomOverride ||
                           activeContact.bouncedEmails.length > 0) && (
@@ -1973,7 +2217,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                             className="text-slate-400 hover:text-white inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                           >
                             <RotateCcw className="w-3 h-3" />
-                            <span>Reset to Catalog Default</span>
+                            <span>Reset to Default</span>
                           </button>
                         )}
                       </div>
@@ -1992,7 +2236,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         onClick={() => handleSaveRecipientOverride()}
                         className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
                       >
-                        Save Custom DPO
+                        Save Custom Email
                       </button>
                     </div>
 
@@ -2000,10 +2244,10 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                       <p className="text-xs text-rose-400">{recipientOverrideError}</p>
                     )}
 
-                    {/* Quick-Select Known Compliance & Parent-Entity Desks */}
+                    {/* Quick-Select Known Privacy & Parent-Company Emails */}
                     <div className="space-y-1.5 pt-1">
                       <span className="text-[11px] text-slate-400 block">
-                        Known Compliance &amp; Parent-Entity DPO Desks (click to apply):
+                        Known Privacy &amp; Parent-Company Inboxes (click to use):
                       </span>
                       <div className="flex flex-wrap items-center gap-2">
                         {Array.from(
@@ -2048,7 +2292,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                 <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2.5">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
                   <div className="space-y-0.5">
-                    <span className="font-bold block">Opt-Out Email Sent on Your Behalf</span>
+                    <span className="font-bold block">Removal Submitted on Your Behalf</span>
                     <span className="font-mono text-[11px] text-emerald-400">{sendSuccessMsg}</span>
                   </div>
                 </div>
@@ -2060,15 +2304,25 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                     <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
                     <span>{sendErrorMsg}</span>
                   </div>
-                  <a
-                    href={activeBroker.optOutUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 font-semibold inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap"
-                  >
-                    <span>Open Opt-Out Portal</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleTriggerAutoFormForActiveBroker()}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <Bot className="w-3.5 h-3.5" />
+                      <span>Auto-Fill Form For Me</span>
+                    </button>
+                    <a
+                      href={activeBroker.optOutUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <span>Open Site</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
                 </div>
               )}
 
@@ -2120,36 +2374,52 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
               {/* Dispatch Controls */}
               <div className="pt-4 border-t border-slate-800 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                  {activeContact.recommendedCcEmails.length > 0 && (
-                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={ccBackupDpo}
-                        onChange={(e) => setCcBackupDpo(e.target.checked)}
-                        className="rounded border-slate-700 bg-slate-950 text-emerald-500"
-                      />
-                      <span>
-                        Also copy backup privacy inbox (
-                        <span className="font-mono text-sky-300">
-                          {activeContact.recommendedCcEmails.join(', ')}
-                        </span>
-                        )
-                      </span>
-                    </label>
-                  )}
+                <div className="flex flex-col gap-2.5">
+                  <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoFallbackToWebForms}
+                      onChange={(e) => setAutoFallbackToWebForms(e.target.checked)}
+                      className="rounded border-slate-700 bg-slate-950 text-emerald-500"
+                    />
+                    <span>
+                      <strong className="text-emerald-300">Automatic Form Fallback:</strong> If email
+                      isn&apos;t an option or bounces, automatically fill out the online removal form
+                      &amp; check pop-up boxes for me
+                    </span>
+                  </label>
 
-                  {isAccountConnectedForDirectSend && smtpConnection?.verified && (
-                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={bccSelf}
-                        onChange={(e) => setBccSelf(e.target.checked)}
-                        className="rounded border-slate-700 bg-slate-950 text-emerald-500"
-                      />
-                      <span>Send a copy to my own inbox ({activeSenderEmail})</span>
-                    </label>
-                  )}
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                    {activeContact.recommendedCcEmails.length > 0 && (
+                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={ccBackupDpo}
+                          onChange={(e) => setCcBackupDpo(e.target.checked)}
+                          className="rounded border-slate-700 bg-slate-950 text-emerald-500"
+                        />
+                        <span>
+                          Also copy backup privacy inbox (
+                          <span className="font-mono text-sky-300">
+                            {activeContact.recommendedCcEmails.join(', ')}
+                          </span>
+                          )
+                        </span>
+                      </label>
+                    )}
+
+                    {isAccountConnectedForDirectSend && smtpConnection?.verified && (
+                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={bccSelf}
+                          onChange={(e) => setBccSelf(e.target.checked)}
+                          className="rounded border-slate-700 bg-slate-950 text-emerald-500"
+                        />
+                        <span>Send a copy to my own inbox ({activeSenderEmail})</span>
+                      </label>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2174,7 +2444,21 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
                   {/* Primary Send Button */}
                   <div className="flex flex-wrap items-center gap-2.5">
-                    {connectionMode === 'webmail' && webmailLinks ? (
+                    {!activeContact.effectivePrimaryEmail ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleTriggerAutoFormForActiveBroker()}
+                        disabled={isAutoFillingActiveForm}
+                        className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                      >
+                        <Bot className="w-3.5 h-3.5" />
+                        <span>
+                          {isAutoFillingActiveForm
+                            ? 'Filling Form & Checking Boxes...'
+                            : 'Auto-Fill & Submit Removal Form For Me'}
+                        </span>
+                      </button>
+                    ) : connectionMode === 'webmail' && webmailLinks ? (
                       <a
                         href={
                           webmailSender?.preferredLauncher === 'outlook'
@@ -2219,7 +2503,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         {isSending ? (
                           <>
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            <span>Sending Removal Email...</span>
+                            <span>Sending Removal Request...</span>
                           </>
                         ) : (
                           <>
@@ -2388,15 +2672,14 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
               <div className="space-y-1">
                 <h3 id="confirm-send-title" className="text-lg font-bold text-white">
                   {pendingConfirmation.type === 'single'
-                    ? 'Confirm Sending Opt-Out Email on Your Behalf'
-                    : `Confirm Sending ${pendingConfirmation.targets.length} Opt-Out Emails on Your Behalf`}
+                    ? 'Confirm Sending Removal Request on Your Behalf'
+                    : `Confirm Removing Your Records From ${pendingConfirmation.targets.length} Brokers`}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  synOUT will verify DNS Mail Exchange (MX) records and transmit statutory deletion
-                  demands directly from{' '}
+                  synOUT will send your legal removal emails directly from{' '}
                   <strong className="text-emerald-400 font-mono">{activeSenderEmail}</strong>,
-                  automatically failing over to verified backup DPO desks if any primary address
-                  rejects mail.
+                  automatically switch to verified backup privacy inboxes if needed, and fill out the
+                  online form + check boxes if email isn&apos;t an option.
                 </p>
               </div>
               <button
@@ -2411,7 +2694,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
 
             <div className="space-y-2">
               <div className="text-xs font-semibold text-slate-300 tabular-nums">
-                Recipient Data Broker{pendingConfirmation.targets.length > 1 ? 's' : ''} (
+                Selected Data Broker{pendingConfirmation.targets.length > 1 ? 's' : ''} (
                 {pendingConfirmation.targets.length}):
               </div>
               <div className="max-h-48 overflow-y-auto bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800/80">
@@ -2422,17 +2705,32 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                   >
                     <div className="flex items-center justify-between gap-3">
                       <span className="font-medium text-white truncate">{broker.name}</span>
-                      <span className="text-emerald-400 font-mono truncate">{recipientEmail}</span>
+                      <span className="text-emerald-400 font-mono truncate">
+                        {recipientEmail || 'Auto-Fill Online Form'}
+                      </span>
                     </div>
                     {ccEmails.length > 0 && (
                       <div className="text-[11px] text-slate-400 font-mono truncate">
-                        Backup DPO CC: {ccEmails.join(', ')}
+                        Backup Privacy CC: {ccEmails.join(', ')}
                       </div>
                     )}
                   </div>
                 ))}
               </div>
             </div>
+
+            <label className="flex items-start gap-2.5 text-xs text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoFallbackToWebForms}
+                onChange={(e) => setAutoFallbackToWebForms(e.target.checked)}
+                className="mt-0.5 rounded border-slate-700 bg-slate-950 text-emerald-500"
+              />
+              <span>
+                Automatically fill out the online removal form &amp; check pop-up boxes on my behalf
+                if any broker&apos;s email isn&apos;t available or bounces
+              </span>
+            </label>
 
             {smtpConnection?.verified && (
               <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer">

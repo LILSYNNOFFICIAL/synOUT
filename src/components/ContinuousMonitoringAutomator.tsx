@@ -18,6 +18,12 @@ import {
   saveRelistingMonitorConfig,
 } from '../utils/relistingMonitorEngine';
 import {
+  dispatchRelistingDigestAlert,
+  loadRelistingAlertSettings,
+  resolveDigestRecipientEmail,
+  saveRelistingAlertSettings,
+} from '../utils/relistingDigestEngine';
+import {
   RotateCcw,
   Play,
   Pause,
@@ -27,6 +33,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   FileCode2,
+  Bell,
+  ExternalLink,
 } from 'lucide-react';
 
 interface ContinuousMonitoringAutomatorProps {
@@ -38,6 +46,7 @@ interface ContinuousMonitoringAutomatorProps {
   onOpenConnectEmail?: () => void;
   onApplyRelistingDiffs?: (diffs: LiveRelistingProbeDiff[]) => void;
   onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
+  onAutoReRemoveResurfaced?: (resurfacedDiffs: LiveRelistingProbeDiff[]) => Promise<number>;
 }
 
 interface CrawledBrokerNotice {
@@ -58,11 +67,15 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
   onOpenConnectEmail,
   onApplyRelistingDiffs,
   onOpenWebFormWorkbench,
+  onAutoReRemoveResurfaced,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
   const [monitorConfig, setMonitorConfig] = useState(() => loadRelistingMonitorConfig());
+  const [alertSettings, setAlertSettings] = useState(() => loadRelistingAlertSettings());
   const [isSweeping, setIsSweeping] = useState(false);
   const [sweepError, setSweepError] = useState<string | null>(null);
+  const [isSendingDigest, setIsSendingDigest] = useState(false);
+  const [digestFeedback, setDigestFeedback] = useState<string | null>(null);
 
   const [isAutomatorActive, setIsAutomatorActive] = useState<boolean>(true);
   const [autoRemoveEnabled, setAutoRemoveEnabled] = useState<boolean>(true);
@@ -72,6 +85,15 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
   useEffect(() => {
     saveRelistingMonitorConfig(monitorConfig);
   }, [monitorConfig]);
+
+  useEffect(() => {
+    saveRelistingAlertSettings(alertSettings);
+  }, [alertSettings]);
+
+  const effectiveAlertRecipient = useMemo(
+    () => resolveDigestRecipientEmail(alertSettings, profile),
+    [alertSettings, profile, activeConnectedEmail]
+  );
 
   const exposedResults = useMemo(
     () => scanResults.filter((r) => r.status === 'exposed'),
@@ -149,10 +171,71 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
       if (onApplyRelistingDiffs) {
         onApplyRelistingDiffs(diffs);
       }
+
+      const resurfacedDiffs = diffs.filter((d) => d.outcome === 'resurfaced_regression');
+      if (resurfacedDiffs.length > 0) {
+        let reRemovedCount = 0;
+        if (alertSettings.autoTriggerReRemovalOnResurface && onAutoReRemoveResurfaced) {
+          reRemovedCount = await onAutoReRemoveResurfaced(resurfacedDiffs).catch(() => 0);
+        }
+
+        if (alertSettings.autoEmailAlertOnResurface && effectiveAlertRecipient) {
+          const entry = await dispatchRelistingDigestAlert({
+            recipientEmail: effectiveAlertRecipient,
+            profile,
+            resurfacedDiffs,
+            cadenceDays: monitorConfig.cadenceDays,
+            autoReRemovalTriggered:
+              alertSettings.autoTriggerReRemovalOnResurface && reRemovedCount > 0,
+          });
+          setAlertSettings((prev) => ({
+            ...prev,
+            alertHistory: [entry, ...prev.alertHistory].slice(0, 25),
+          }));
+          setDigestFeedback(
+            `Re-Listing Digest Alert dispatched to ${entry.recipientEmail} (${resurfacedDiffs.length} resurfaced broker(s)).`
+          );
+        }
+      }
     } catch (err) {
       setSweepError(err instanceof Error ? err.message : 'Batch re-listing sweep failed.');
     } finally {
       setIsSweeping(false);
+    }
+  };
+
+  const handleSendTestDigest = async () => {
+    setSweepError(null);
+    setDigestFeedback(null);
+    setIsSendingDigest(true);
+    try {
+      const targetEmail =
+        alertSettings.recipientEmailOverride.trim() || effectiveAlertRecipient;
+      const entry = await dispatchRelistingDigestAlert({
+        recipientEmail: targetEmail,
+        profile,
+        resurfacedDiffs: monitorConfig.recentDiffs.filter(
+          (d) => d.outcome === 'resurfaced_regression'
+        ),
+        cadenceDays: monitorConfig.cadenceDays,
+        autoReRemovalTriggered: alertSettings.autoTriggerReRemovalOnResurface,
+        isTestDigest: true,
+      });
+      setAlertSettings((prev) => ({
+        ...prev,
+        alertHistory: [entry, ...prev.alertHistory].slice(0, 25),
+      }));
+      setDigestFeedback(
+        entry.deliveryChannel === 'direct_email'
+          ? `Sent test Re-Listing Digest email directly to ${entry.recipientEmail} (Receipt: ${entry.messageId}).`
+          : `Prepared Re-Listing Digest for ${entry.recipientEmail} — click "Open in Webmail" below or connect background email for silent alerts.`
+      );
+    } catch (err) {
+      setSweepError(
+        err instanceof Error ? err.message : 'Could not send test Re-Listing Digest alert.'
+      );
+    } finally {
+      setIsSendingDigest(false);
     }
   };
 
@@ -331,6 +414,134 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Section 01B: Automated Re-Listing Digest Email Alerts */}
+      <div className="glass-panel rounded-2xl p-6 sm:p-8 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-xs text-emerald-400 font-medium">
+              <Bell className="w-3.5 h-3.5" />
+              <span>Automated Re-Listing Digest Alerts</span>
+            </div>
+            <h2 className="text-lg font-bold text-white">
+              Automatic Email Alerts &amp; Instant Re-Removal on Broker Republication
+            </h2>
+            <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
+              Whenever the 30/60/90-day sweep detects a broker republishing a previously purged record, synOUT automatically triggers repeat removal and sends a SHA-256 evidence digest to your inbox.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void handleSendTestDigest()}
+            disabled={isSendingDigest}
+            className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-bold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>{isSendingDigest ? 'Sending Digest...' : 'Send Test Digest Alert'}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div className="space-y-1">
+            <label className="text-slate-300 font-medium block">Alert Recipient Email</label>
+            <input
+              type="email"
+              maxLength={254}
+              value={alertSettings.recipientEmailOverride}
+              onChange={(e) =>
+                setAlertSettings((prev) => ({
+                  ...prev,
+                  recipientEmailOverride: e.target.value,
+                }))
+              }
+              placeholder={effectiveAlertRecipient || 'Enter email for re-listing alerts...'}
+              className="w-full glass-input rounded-xl px-3.5 py-2 text-white font-mono placeholder-slate-500"
+            />
+          </div>
+
+          <label className="flex items-center gap-2.5 p-3.5 glass-subtle rounded-xl cursor-pointer">
+            <input
+              type="checkbox"
+              checked={alertSettings.autoEmailAlertOnResurface}
+              onChange={(e) =>
+                setAlertSettings((prev) => ({
+                  ...prev,
+                  autoEmailAlertOnResurface: e.target.checked,
+                }))
+              }
+              className="rounded border-white/20 bg-slate-950 text-emerald-500"
+            />
+            <div>
+              <div className="font-semibold text-white">Auto-Send Email Digest</div>
+              <div className="text-[11px] text-slate-400">Email SHA-256 alert when a record resurfaces</div>
+            </div>
+          </label>
+
+          <label className="flex items-center gap-2.5 p-3.5 glass-subtle rounded-xl cursor-pointer">
+            <input
+              type="checkbox"
+              checked={alertSettings.autoTriggerReRemovalOnResurface}
+              onChange={(e) =>
+                setAlertSettings((prev) => ({
+                  ...prev,
+                  autoTriggerReRemovalOnResurface: e.target.checked,
+                }))
+              }
+              className="rounded border-white/20 bg-slate-950 text-emerald-500"
+            />
+            <div>
+              <div className="font-semibold text-white">Auto-Re-Remove Profile</div>
+              <div className="text-[11px] text-slate-400">Re-send legal email or auto-fill form + checkboxes</div>
+            </div>
+          </label>
+        </div>
+
+        {digestFeedback && (
+          <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{digestFeedback}</span>
+          </div>
+        )}
+
+        {alertSettings.alertHistory.length > 0 && (
+          <div className="space-y-2 pt-2 border-t border-white/[0.06] text-xs">
+            <div className="text-[11px] font-semibold text-slate-400">
+              Recent Re-Listing Digest Receipts
+            </div>
+            {alertSettings.alertHistory.slice(0, 5).map((entry) => (
+              <div
+                key={entry.id}
+                className="glass-subtle rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 tabular-nums"
+              >
+                <div className="flex flex-wrap items-center gap-2 text-slate-300">
+                  <span className="font-mono text-slate-400">
+                    {new Date(entry.sentAtIso).toLocaleString()}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-semibold text-white">{entry.recipientEmail}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-emerald-300">{entry.brokerNames.join(', ')}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[11px] text-slate-400">{entry.messageId}</span>
+                  {entry.webmailComposeUrl && (
+                    <a
+                      href={entry.webmailComposeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 hover:text-white inline-flex items-center gap-1"
+                    >
+                      <span>Open in Webmail</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>

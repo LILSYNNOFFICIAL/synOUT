@@ -252,7 +252,8 @@ async function deriveVaultKey(
 
 export async function encryptWorkspaceBundle(
   bundle: SynoutWorkspaceBundle,
-  passphrase: string
+  passphrase: string,
+  customIterations = 120000
 ): Promise<EncryptedWorkspaceEnvelope> {
   if (!passphrase || passphrase.length < 6) {
     throw new Error('Passphrase must be at least 6 characters.');
@@ -262,7 +263,7 @@ export async function encryptWorkspaceBundle(
     throw new Error('Web Crypto API is unavailable in this environment.');
   }
 
-  const iterations = 120000;
+  const iterations = Math.max(100000, Math.min(1000000, Math.floor(customIterations)));
   const salt = globalThis.crypto.getRandomValues(new Uint8Array(16));
   const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveVaultKey(passphrase, salt, iterations);

@@ -13,6 +13,10 @@ import {
 } from '../services/emailConnectionStore';
 import { downloadFile, copyTextToClipboard } from '../utils/exportEngines';
 import {
+  downloadPdfBytes,
+  generateBrokerEscalationPdf,
+} from '../utils/pdfPacketGenerator';
+import {
   X,
   Scale,
   Send,
@@ -24,6 +28,7 @@ import {
   CheckCircle2,
   Mail,
   RefreshCw,
+  FileText,
 } from 'lucide-react';
 
 interface RegulatoryEscalationModalProps {
@@ -113,6 +118,20 @@ export const RegulatoryEscalationModal: React.FC<RegulatoryEscalationModalProps>
   const handleDownloadComplaint = () => {
     const filename = `synOUT-${agencyId}-Complaint-${broker.id}-${profile.lastName.toLowerCase()}.txt`;
     downloadFile(complaintText, filename, 'text/plain');
+  };
+
+  const handleDownloadComplaintPdf = async () => {
+    const pdfBytes = await generateBrokerEscalationPdf({
+      agencyId,
+      broker,
+      result,
+      profile,
+      senderEmail: effectiveEmail,
+    });
+    downloadPdfBytes(
+      pdfBytes,
+      `synOUT-${agencyId}-Complaint-${broker.id}-${profile.lastName.toLowerCase()}.pdf`
+    );
   };
 
   return (
@@ -334,7 +353,7 @@ export const RegulatoryEscalationModal: React.FC<RegulatoryEscalationModalProps>
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={onClose}
@@ -345,10 +364,18 @@ export const RegulatoryEscalationModal: React.FC<RegulatoryEscalationModalProps>
                 <button
                   type="button"
                   onClick={handleDownloadComplaint}
+                  className="px-4 py-2.5 rounded-xl glass-subtle hover:border-white/20 text-slate-200 font-semibold text-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download .TXT</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadComplaintPdf()}
                   className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
                 >
-                  <Download className="w-4 h-4" />
-                  <span>Download Complaint Packet (.txt)</span>
+                  <FileText className="w-4 h-4" />
+                  <span>Download Formal PDF (.pdf)</span>
                 </button>
               </div>
             </div>

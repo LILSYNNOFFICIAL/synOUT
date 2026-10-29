@@ -1,0 +1,345 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Primitives (Phase 3)
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidVaultId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidEmailAddress(val) {
+      return val is string
+        && val.size() >= 3
+        && val.size() <= 254
+        && val.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$');
+    }
+
+    function hasActiveParentAccount(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId))
+        && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+    }
+
+    function hasActiveOrBatchParentAccount(userId) {
+      return hasActiveParentAccount(userId)
+        || (
+          existsAfter(/databases/$(database)/documents/users/$(userId))
+          && getAfter(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid
+        );
+    }
+
+    // Entity Blueprint 1: UserAccount (/users/{userId}) — Zero PII
+    function isValidUserAccount(data) {
+      return data.keys().hasAll([
+          'uid',
+          'displayName',
+          'syncEnabled',
+          'relistingAlertEnabled',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'syncEnabled',
+          'relistingAlertEnabled',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid.size() >= 1
+        && data.uid.size() <= 128
+        && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && data.syncEnabled is bool
+        && data.relistingAlertEnabled is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity Blueprint 2: UserPrivateContact (/users/{userId}/private/{contactId}) — Isolated PII
+    function isValidUserPrivateContact(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'email',
+          'alertRecipientEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'email',
+          'alertRecipientEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && isValidEmailAddress(data.email)
+        && isValidEmailAddress(data.alertRecipientEmail)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Entity Blueprint 3: EncryptedCloudVault (/users/{userId}/vaults/{vaultId}) — Zero-Knowledge AES-256-GCM
+    function isValidEncryptedCloudVault(data, vaultId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'vaultId',
+          'cipherAlgorithm',
+          'kdfAlgorithm',
+          'kdfIterations',
+          'saltBase64',
+          'ivBase64',
+          'ciphertextBase64',
+          'payloadSha256',
+          'schemaVersion',
+          'exposedCount',
+          'removedCount',
+          'trackedCount',
+          'profilesCount',
+          'deviceLabel',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'vaultId',
+          'cipherAlgorithm',
+          'kdfAlgorithm',
+          'kdfIterations',
+          'saltBase64',
+          'ivBase64',
+          'ciphertextBase64',
+          'payloadSha256',
+          'schemaVersion',
+          'exposedCount',
+          'removedCount',
+          'trackedCount',
+          'profilesCount',
+          'deviceLabel',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.vaultId is string
+        && data.vaultId.size() >= 1
+        && data.vaultId.size() <= 64
+        && data.vaultId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.vaultId == vaultId
+        && data.cipherAlgorithm is string
+        && data.cipherAlgorithm.size() >= 11
+        && data.cipherAlgorithm.size() <= 16
+        && data.cipherAlgorithm == 'AES-256-GCM'
+        && data.kdfAlgorithm is string
+        && data.kdfAlgorithm.size() >= 13
+        && data.kdfAlgorithm.size() <= 20
+        && data.kdfAlgorithm == 'PBKDF2-SHA256'
+        && data.kdfIterations is int
+        && data.kdfIterations >= 100000
+        && data.kdfIterations <= 1000000
+        && data.saltBase64 is string
+        && data.saltBase64.size() >= 16
+        && data.saltBase64.size() <= 128
+        && data.saltBase64.matches('^[A-Za-z0-9+/=]+$')
+        && data.ivBase64 is string
+        && data.ivBase64.size() >= 12
+        && data.ivBase64.size() <= 64
+        && data.ivBase64.matches('^[A-Za-z0-9+/=]+$')
+        && data.ciphertextBase64 is string
+        && data.ciphertextBase64.size() >= 16
+        && data.ciphertextBase64.size() <= 800000
+        && data.ciphertextBase64.matches('^[A-Za-z0-9+/=]+$')
+        && data.payloadSha256 is string
+        && data.payloadSha256.size() == 64
+        && data.payloadSha256.matches('^[a-f0-9]{64}$')
+        && data.schemaVersion is int
+        && data.schemaVersion == 1
+        && data.exposedCount is int
+        && data.exposedCount >= 0
+        && data.exposedCount <= 50000
+        && data.removedCount is int
+        && data.removedCount >= 0
+        && data.removedCount <= 50000
+        && data.trackedCount is int
+        && data.trackedCount >= 0
+        && data.trackedCount <= 50000
+        && data.profilesCount is int
+        && data.profilesCount >= 0
+        && data.profilesCount <= 10
+        && data.deviceLabel is string
+        && data.deviceLabel.size() >= 1
+        && data.deviceLabel.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection 1: Master Gate UserAccount (/users/{userId})
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && isOwner(userId);
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserAccount(incoming())
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserAccount(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Update account display preferences or sync toggles
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName',
+            'syncEnabled',
+            'relistingAlertEnabled',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && isOwner(userId);
+
+      // Subcollection 2: Split-Collection PII Contact (/users/{userId}/private/{contactId})
+      match /private/{contactId} {
+        allow get: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && contactId == 'contact'
+          && hasActiveParentAccount(userId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && contactId == 'contact'
+          && isValidUserPrivateContact(incoming())
+          && incoming().ownerId == userId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && hasActiveOrBatchParentAccount(userId);
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && contactId == 'contact'
+          && isValidUserPrivateContact(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            // Action 1: Update alert recipient or verified contact email
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'email',
+              'alertRecipientEmail',
+              'updatedAt'
+            ])
+          )
+          && hasActiveParentAccount(userId);
+
+        allow delete: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && contactId == 'contact'
+          && hasActiveParentAccount(userId);
+      }
+
+      // Subcollection 3: Zero-Knowledge Encrypted Cloud Vault (/users/{userId}/vaults/{vaultId})
+      match /vaults/{vaultId} {
+        allow get: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && isValidVaultId(vaultId)
+          && hasActiveParentAccount(userId);
+        allow list: if false;
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && isValidVaultId(vaultId)
+          && isValidEncryptedCloudVault(incoming(), vaultId)
+          && incoming().ownerId == userId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && hasActiveOrBatchParentAccount(userId);
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && isValidVaultId(vaultId)
+          && isValidEncryptedCloudVault(incoming(), vaultId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().vaultId == existing().vaultId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            // Action 1: Push refreshed AES-256-GCM encrypted vault snapshot
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'kdfIterations',
+              'saltBase64',
+              'ivBase64',
+              'ciphertextBase64',
+              'payloadSha256',
+              'exposedCount',
+              'removedCount',
+              'trackedCount',
+              'profilesCount',
+              'deviceLabel',
+              'updatedAt'
+            ])
+          )
+          && hasActiveParentAccount(userId);
+
+        allow delete: if isVerifiedUser()
+          && isValidId(userId)
+          && isOwner(userId)
+          && isValidVaultId(vaultId)
+          && hasActiveParentAccount(userId);
+      }
+    }
+  }
+}

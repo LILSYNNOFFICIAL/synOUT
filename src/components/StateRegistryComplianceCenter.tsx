@@ -14,6 +14,10 @@ import { useEmailConnection } from '../services/emailConnectionStore';
 import { sessionFetch } from '../services/sessionClient';
 import { copyTextToClipboard, downloadFile } from '../utils/exportEngines';
 import {
+  downloadPdfBytes,
+  generateRegulatorComplaintPdf,
+} from '../utils/pdfPacketGenerator';
+import {
   Scale,
   Search,
   Download,
@@ -24,6 +28,7 @@ import {
   FileCode2,
   Send,
   ShieldCheck,
+  FileText,
 } from 'lucide-react';
 
 interface StateRegistryComplianceCenterProps {
@@ -220,6 +225,21 @@ export const StateRegistryComplianceCenter: React.FC<StateRegistryComplianceCent
                     <Copy className="w-3.5 h-3.5" />
                   )}
                   <span>{packetCopied ? 'Copied Narrative' : 'Copy Narrative'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const pdfBytes = await generateRegulatorComplaintPdf(
+                      generatedPacket,
+                      profile
+                    );
+                    downloadPdfBytes(pdfBytes, `${generatedPacket.packetId.toLowerCase()}.pdf`);
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Download Official PDF</span>
                 </button>
 
                 <button

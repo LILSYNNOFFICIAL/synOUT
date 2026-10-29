@@ -239,13 +239,12 @@ test('9. Dark Web Direct Link Generator & Source-Specific Step-by-Step Removal G
   }
 });
 
-test('10. Repository Secret Hygiene: Zero Plaintext Google API Keys or Tracked Firebase Config', () => {
+test('10. Repository Secret Hygiene: Zero Plaintext Google API Keys in Tracked Source & Gitignored Provisioned Config', () => {
   const rootDir = process.cwd();
-  const forbiddenConfigPath = path.join(rootDir, 'firebase-applet-config.json');
-  assert.strictEqual(
-    fs.existsSync(forbiddenConfigPath),
-    false,
-    'firebase-applet-config.json must not exist with plaintext credentials in repository'
+  const gitignoreContent = fs.readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
+  assert(
+    gitignoreContent.includes('firebase-applet-config.json'),
+    '.gitignore must exclude provisioned firebase-applet-config.json so credentials are never tracked in git'
   );
 
   const googleKeyRegex = /AIza[0-9A-Za-z_-]{35}/;
@@ -253,7 +252,14 @@ test('10. Repository Secret Hygiene: Zero Plaintext Google API Keys or Tracked F
   function scanDirForSecrets(dirPath: string) {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
+      if (
+        entry.name === 'node_modules' ||
+        entry.name === 'dist' ||
+        entry.name === '.git' ||
+        entry.name === 'firebase-applet-config.json'
+      ) {
+        continue;
+      }
       const fullPath = path.join(dirPath, entry.name);
       if (entry.isDirectory()) {
         scanDirForSecrets(fullPath);
@@ -262,7 +268,7 @@ test('10. Repository Secret Hygiene: Zero Plaintext Google API Keys or Tracked F
         assert.strictEqual(
           googleKeyRegex.test(content),
           false,
-          `Plaintext Google API key detected in ${fullPath}`
+          `Plaintext Google API key detected in tracked file ${fullPath}`
         );
       }
     }
@@ -324,12 +330,19 @@ test('11. Universal User-Connected Email Dispatch (Zero Firebase Required) & SSR
   assert(webmail.yahooUrl.includes('compose.mail.yahoo.com'));
   assert(webmail.mailtoUrl.startsWith('mailto:privacy%40spokeo.com'));
 
-  // Verify package.json no longer depends on firebase
-  const pkgJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+  // Verify user email dispatch modules remain 100% independent of Firebase
+  const emailStoreSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'services', 'emailConnectionStore.ts'),
+    'utf8'
+  );
+  const emailProviderSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'utils', 'emailProviderConfig.ts'),
+    'utf8'
+  );
   assert.strictEqual(
-    Boolean(pkgJson.dependencies?.firebase),
+    emailStoreSrc.includes('firebase') || emailProviderSrc.includes('firebase'),
     false,
-    'Application should not require firebase dependency for user email dispatch'
+    'Email connection & dispatch engine must not depend on Firebase'
   );
 });
 
@@ -1641,11 +1654,13 @@ test('28. Email Login System: Multi-Port SMTP Failover, App Password Normalizati
   await purgeAllEmailConnections();
   assert.strictEqual(getEmailConnectionState().webmailSender, null);
 
-  // 7. Entry point & GitHub Pages build hygiene: canonical /index.html without stale public/index.html overwrite
+  // 7. Entry point & GitHub Pages build hygiene: canonical /index.html isolated from Vite publicDir ('static')
   const rootDir = process.cwd();
+  const viteCfg = fs.readFileSync(path.join(rootDir, 'vite.config.ts'), 'utf8');
   assert(
-    !fs.existsSync(path.join(rootDir, 'public', 'index.html')),
-    'public/index.html must not exist or Vite publicDir copy will overwrite dist/index.html'
+    viteCfg.includes("publicDir: 'static'") &&
+      !fs.existsSync(path.join(rootDir, 'static', 'index.html')),
+    'Vite publicDir must be isolated to /static without a static/index.html that could overwrite dist/index.html'
   );
   assert(
     !fs.existsSync(path.join(rootDir, 'app.html')),
@@ -1965,6 +1980,766 @@ test('30. Dual-Channel Form + Checkbox Automation & Friendly Email UX Across All
       appSrc.includes('onOpenWebForms=') &&
       appSrc.includes('onVerificationLinkCompleted='),
     'App.tsx must wire all dual-channel Form, Email, and Confirmation Link callbacks'
+  );
+});
+
+test('31. GitHub Pages Static Bundle Isolation (/static publicDir) & Base-URL Brand Asset Resolution', () => {
+  const repoRoot = process.cwd();
+
+  const viteConfigSrc = fs.readFileSync(path.join(repoRoot, 'vite.config.ts'), 'utf8');
+  assert(
+    viteConfigSrc.includes("publicDir: 'static'") &&
+      viteConfigSrc.includes("'/synOUT/public/'"),
+    'vite.config.ts must isolate source static assets in /static and preserve /synOUT/public/ base URL for GitHub Pages'
+  );
+
+  assert(
+    fs.existsSync(path.join(repoRoot, 'static', 'synout-logo.svg')),
+    '/static/synout-logo.svg must exist for both local root and GitHub Pages builds'
+  );
+  assert(
+    fs.existsSync(path.join(repoRoot, 'static', 'site.webmanifest')),
+    '/static/site.webmanifest must exist for PWA manifest delivery'
+  );
+
+  const navbarSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'Navbar.tsx'),
+    'utf8'
+  );
+  const splashSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'SplashScreen.tsx'),
+    'utf8'
+  );
+  assert(
+    navbarSrc.includes('${import.meta.env.BASE_URL}synout-logo.svg') &&
+      splashSrc.includes('${import.meta.env.BASE_URL}synout-logo.svg'),
+    'Navbar and SplashScreen must resolve synout-logo.svg via import.meta.env.BASE_URL so it works on both / and /synOUT/public/'
+  );
+});
+
+test('32. Zero Unexplained Optional Env Prompts, Friendly Webmail Default & Universal Automatic Form + Checkbox Fallback', async () => {
+  const repoRoot = process.cwd();
+
+  // 1. Optional advanced overrides in .env.example must stay commented out so users are never prompted for confusing keys
+  const envExample = fs.readFileSync(path.join(repoRoot, '.env.example'), 'utf8');
+  const activeEnvLines = envExample
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
+
+  for (const forbiddenUncommented of [
+    'PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH',
+    'BROWSER_WORKER_URL',
+    'SYNOUT_DISABLE_BROWSER_WORKER',
+    'VITE_GOOGLE_OAUTH_CLIENT_ID',
+  ]) {
+    assert(
+      !activeEnvLines.some((line) => line.startsWith(`${forbiddenUncommented}=`)),
+      `.env.example must keep ${forbiddenUncommented} commented out so end users are not prompted for optional overrides`
+    );
+  }
+
+  // 2. Email connection store defaults unconfigured users to friendly zero-password 1-Click Webmail mode
+  const { purgeAllEmailConnections, getEmailConnectionState } = await import(
+    '../src/services/emailConnectionStore'
+  );
+  await purgeAllEmailConnections();
+  assert.strictEqual(
+    getEmailConnectionState().mode,
+    'webmail',
+    'Unconfigured email store must default to non-intimidating 1-Click Webmail mode'
+  );
+
+  // 3. GmailDispatchCenter must automatically fall back to startWorkflowClient (filling forms & checking boxes) when email is unavailable or bounces
+  const gmailCenterSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'GmailDispatchCenter.tsx'),
+    'utf8'
+  );
+  assert(
+    gmailCenterSrc.includes('startWorkflowClient') &&
+      gmailCenterSrc.includes('onBrokerFormSubmitted') &&
+      gmailCenterSrc.includes('autoFallbackToWebForms'),
+    'GmailDispatchCenter must automatically fill out online forms and check boxes when email is unavailable or bounces'
+  );
+
+  // 4. ExposureReport and BrokerDirectory must trigger hands-free AutomatedRemovalNavigator directly from Auto-Fill Form
+  const reportSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ExposureReport.tsx'),
+    'utf8'
+  );
+  const directorySrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'BrokerDirectory.tsx'),
+    'utf8'
+  );
+  assert(
+    reportSrc.includes('onOpenAutomatedNavigator(broker, result)') &&
+      directorySrc.includes('onOpenAutomatedNavigator(broker, existingResult)') &&
+      directorySrc.includes('Auto-Remove via Form'),
+    'ExposureReport and BrokerDirectory must run hands-free form filling + checkbox checking in 1 click'
+  );
+});
+
+test('33. Cloud-Synced Encrypted Accounts, PWA Compliance, PDF Legal Packets & Automated Re-Listing Digest Alerts', async () => {
+  const repoRoot = process.cwd();
+
+  // 1. Formatted PDF Legal & Regulator Packet Generation (%PDF-1.7 binary verification)
+  const {
+    generateRegulatorComplaintPdf,
+    generateBrokerEscalationPdf,
+    generateMasterComplianceAuditPdf,
+  } = await import('../src/utils/pdfPacketGenerator');
+  const { generateRegulatorComplaintPacket } = await import('../src/utils/stateRegistryEngine');
+  const { findBrokerById } = await import('../src/services/emailConnectionStore');
+
+  const poaProfile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: [],
+    previousLocations: ['Austin, TX'],
+    powerOfAttorney: {
+      isSigned: true,
+      fullName: 'Jane Doe',
+      address: 'Sacramento, CA',
+      signedDate: 'Oct 28, 2026',
+      authCode: 'POA-SYNOUT-99210',
+      state: 'CA',
+      agentName: 'synOUT Authorized Privacy Agent',
+      scopeOfAuthority: 'CCPA § 1798.105, Delete Act SB 362 & TDPSA Statutory Deletion',
+    },
+  };
+
+  const sampleResult: ScanResult = {
+    id: 'pdf-test-wp',
+    brokerId: 'whitepages',
+    status: 'exposed',
+    removalStatus: 'submitted',
+    submittedAtIso: new Date(Date.now() - 50 * 24 * 60 * 60 * 1000).toISOString(),
+    optOutConfirmationCode: '<msg-pdf-50@gmail.com>',
+    brokerConfirmationTicket: 'WP-PDF-501',
+    mockListingData: {
+      fullName: 'Jane Doe',
+      age: 38,
+      locations: ['Sacramento, CA'],
+      phones: ['(916) 555-0144'],
+      emails: ['synovamedia@gmail.com'],
+      relatives: [],
+      recordsCount: 2,
+      riskLevel: 'Critical',
+      leakTypes: ['Address', 'Phone'],
+      profiles: ['https://www.whitepages.com/name/Jane-Doe/Sacramento-CA'],
+      matchConfidence: 'VERIFIED_PUBLIC_RECORD',
+    },
+  };
+
+  const regulatorPacket = await generateRegulatorComplaintPacket({
+    agencyId: 'CPPA',
+    profile: poaProfile,
+    results: [sampleResult],
+    senderEmail: 'synovamedia@gmail.com',
+    selectedBrokerIds: ['whitepages'],
+  });
+
+  const regPdfBytes = await generateRegulatorComplaintPdf(regulatorPacket, poaProfile);
+  assert(regPdfBytes.byteLength > 1500, 'Regulator complaint PDF must produce non-empty binary payload');
+  assert.strictEqual(
+    Buffer.from(regPdfBytes.slice(0, 8)).toString('ascii'),
+    '%PDF-1.7',
+    'Regulator complaint PDF must begin with %PDF-1.7 header'
+  );
+
+  const whitepages = findBrokerById('whitepages')!;
+  const escPdfBytes = await generateBrokerEscalationPdf({
+    agencyId: 'CPPA',
+    broker: whitepages,
+    result: sampleResult,
+    profile: poaProfile,
+    senderEmail: 'synovamedia@gmail.com',
+  });
+  assert(escPdfBytes.byteLength > 1500, 'Single-broker escalation PDF must produce non-empty binary payload');
+  assert.strictEqual(Buffer.from(escPdfBytes.slice(0, 8)).toString('ascii'), '%PDF-1.7');
+
+  const auditPdfBytes = await generateMasterComplianceAuditPdf({
+    results: [sampleResult],
+    profile: poaProfile,
+    senderEmail: 'synovamedia@gmail.com',
+  });
+  assert(auditPdfBytes.byteLength > 1500, 'Master SLA compliance audit PDF must produce non-empty binary payload');
+  assert.strictEqual(Buffer.from(auditPdfBytes.slice(0, 8)).toString('ascii'), '%PDF-1.7');
+
+  // 2. Automated Re-Listing Digest Alerts & Auto-Re-Removal Wiring
+  const { buildRelistingDigestEmail } = await import('../src/utils/relistingDigestEngine');
+  const liveDigest = buildRelistingDigestEmail({
+    profile: poaProfile,
+    resurfacedDiffs: [
+      {
+        brokerId: 'spokeo',
+        brokerName: 'Spokeo',
+        brokerDomain: 'spokeo.com',
+        probeUrl: 'https://www.spokeo.com/Jane-Doe/CA/Sacramento',
+        httpStatus: 200,
+        checkedAtIso: '2026-10-28T12:00:00.000Z',
+        snapshotSha256: 'a'.repeat(64),
+        previousSha256: 'b'.repeat(64),
+        outcome: 'resurfaced_regression',
+        summary: 'Resurfaced profile detected on Spokeo.',
+      },
+    ],
+    cadenceDays: 30,
+    autoReRemovalTriggered: true,
+    isTestDigest: false,
+  });
+  assert(liveDigest.subject.includes('1 Data Broker(s) Republished Your Removed Profile'));
+  assert(liveDigest.body.includes('Spokeo (spokeo.com)'));
+  assert(liveDigest.body.includes('a'.repeat(64)));
+
+  const testDigest = buildRelistingDigestEmail({
+    profile: poaProfile,
+    resurfacedDiffs: [],
+    cadenceDays: 60,
+    autoReRemovalTriggered: true,
+    isTestDigest: true,
+  });
+  assert(testDigest.subject.includes('[synOUT Test Digest]'));
+  assert(testDigest.body.includes('CONNECTIVITY & ALERT DELIVERY VERIFICATION'));
+
+  const monitorSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ContinuousMonitoringAutomator.tsx'),
+    'utf8'
+  );
+  const serverSrc = fs.readFileSync(path.join(repoRoot, 'server.ts'), 'utf8');
+  assert(
+    monitorSrc.includes('Send Test Digest Alert') &&
+      monitorSrc.includes('onAutoReRemoveResurfaced') &&
+      serverSrc.includes('/api/monitoring/send-relisting-digest'),
+    'ContinuousMonitoringAutomator and server.ts must wire Re-Listing Digest Alerts and automatic repeat removal'
+  );
+
+  // 3. Installable Desktop & Mobile PWA Compliance (PNG headers, dimensions, manifest, iOS tag & UI buttons)
+  const expectedIcons: Array<{ file: string; width: number; height: number }> = [
+    { file: 'apple-touch-icon.png', width: 180, height: 180 },
+    { file: 'pwa-192x192.png', width: 192, height: 192 },
+    { file: 'pwa-512x512.png', width: 512, height: 512 },
+    { file: 'pwa-maskable-512x512.png', width: 512, height: 512 },
+  ];
+
+  for (const icon of expectedIcons) {
+    const iconBuf = fs.readFileSync(path.join(repoRoot, 'static', icon.file));
+    assert.deepStrictEqual(
+      Array.from(iconBuf.subarray(0, 8)),
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      `${icon.file} must have valid PNG magic signature`
+    );
+    assert.strictEqual(iconBuf.readUInt32BE(16), icon.width, `${icon.file} width must equal ${icon.width}`);
+    assert.strictEqual(iconBuf.readUInt32BE(20), icon.height, `${icon.file} height must equal ${icon.height}`);
+  }
+
+  const staticManifest = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'static', 'site.webmanifest'), 'utf8')
+  );
+  assert.strictEqual(staticManifest.display, 'standalone');
+  assert(
+    staticManifest.icons.some((i: any) => i.sizes === '192x192' && i.purpose === 'any') &&
+      staticManifest.icons.some((i: any) => i.sizes === '512x512' && i.purpose === 'any') &&
+      staticManifest.icons.some((i: any) => i.sizes === '512x512' && i.purpose === 'maskable'),
+    'site.webmanifest must declare separate purpose: "any" (192x192 & 512x512) and purpose: "maskable" (512x512) PNG icons'
+  );
+
+  const indexHtml = fs.readFileSync(path.join(repoRoot, 'index.html'), 'utf8');
+  assert(indexHtml.includes('apple-touch-icon.png'), 'index.html must reference PNG apple-touch-icon.png for iOS Safari');
+
+  const navbarSrc = fs.readFileSync(path.join(repoRoot, 'src', 'components', 'Navbar.tsx'), 'utf8');
+  const appSrc = fs.readFileSync(path.join(repoRoot, 'src', 'App.tsx'), 'utf8');
+  assert(navbarSrc.includes('PWAInstallButton'), 'Navbar must mount PWAInstallButton for in-app installation');
+  assert(appSrc.includes('<OfflineIndicator />'), 'App.tsx must mount OfflineIndicator connectivity banner');
+
+  // 4. Cloud-Synced Zero-Knowledge Encrypted Accounts & Firestore Hardening
+  const blueprint = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'firebase-blueprint.json'), 'utf8')
+  );
+  assert(
+    blueprint.entities?.UserAccount &&
+      blueprint.entities?.UserPrivateContact &&
+      blueprint.entities?.EncryptedCloudVault,
+    'firebase-blueprint.json must declare UserAccount, split PII UserPrivateContact, and EncryptedCloudVault entities'
+  );
+
+  const rulesSrc = fs.readFileSync(path.join(repoRoot, 'firestore.rules'), 'utf8');
+  assert(
+    rulesSrc.includes("rules_version = '2';") &&
+      rulesSrc.includes('allow read, write: if false;') &&
+      rulesSrc.includes('isValidEncryptedCloudVault'),
+    'firestore.rules must enforce default-deny global safety net and strict schema blueprint helpers'
+  );
+
+  const fbClientSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'services', 'firebaseClient.ts'),
+    'utf8'
+  );
+  const cloudSyncSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'services', 'cloudVaultSync.ts'),
+    'utf8'
+  );
+  const vaultModalSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'WorkspaceVaultModal.tsx'),
+    'utf8'
+  );
+  assert(
+    fbClientSrc.includes('getDocFromServer') && fbClientSrc.includes('handleFirestoreError'),
+    'firebaseClient.ts must validate connection via getDocFromServer and expose structured handleFirestoreError'
+  );
+  assert(
+    cloudSyncSrc.includes('signInWithPopup') &&
+      cloudSyncSrc.includes('250000') &&
+      vaultModalSrc.includes('signInCloudVaultWithGoogle') &&
+      appSrc.includes('registerRemoteVaultRestoreHandler'),
+    'Cloud Vault Sync must use Google signInWithPopup, 250k-iteration PBKDF2 AES-256-GCM encryption, and live cross-device sync'
+  );
+});
+
+test('34. D3 Historical Exposure Trend, Full-Scan JSON/CSV Documentation Export & Server-Side Grounded Privacy Advisor', async () => {
+  const repoRoot = process.cwd();
+  const { computeScanStats, computeInitialBaselineExposureScore } = await import(
+    '../src/utils/scanEngine'
+  );
+  const { buildExposureTrendSeries } = await import('../src/components/ExposureTrendChart');
+  const {
+    buildFullScanExportRows,
+    generateFullScanResultsCsv,
+    generateFullScanResultsJson,
+  } = await import('../src/utils/csvExport');
+  const { createSnapshotFromScan } = await import('../src/utils/workspaceVault');
+  const {
+    buildAdvisorSystemInstruction,
+    extractGroundingMetadataFromResponse,
+    classifyGeminiServerError,
+  } = await import('../src/server/geminiPrivacyAdvisor');
+
+  const profile: UserProfile = {
+    firstName: 'Jane',
+    lastName: 'Doe',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1988',
+    phoneNumbers: ['(916) 555-0144'],
+    emails: ['synovamedia@gmail.com'],
+    relatives: ['John Doe'],
+    previousLocations: ['Austin, TX'],
+  };
+
+  // 1. Dynamic Exposure Score progression & D3 trend series construction
+  const baseResults = runBrokerScan(profile);
+  const initialStats = computeScanStats(baseResults);
+  const baselineScore = computeInitialBaselineExposureScore(baseResults);
+  assert.strictEqual(initialStats.exposureScore, baselineScore);
+  assert(initialStats.exposedBrokers > 0 && initialStats.cleanBrokers > 0);
+
+  const snap1 = {
+    ...createSnapshotFromScan(profile, baseResults, initialStats.exposureScore),
+    id: 'snap-t1',
+    timestampIso: '2026-09-01T10:00:00.000Z',
+  };
+
+  // Mark half of exposed brokers submitted and one-quarter removed
+  let exposedSeen = 0;
+  const progressedResults: ScanResult[] = baseResults.map((r) => {
+    if (r.status !== 'exposed') return r;
+    exposedSeen++;
+    if (exposedSeen % 4 === 0) {
+      return {
+        ...r,
+        removalStatus: 'removed',
+        verifiedRemovedAtIso: '2026-10-10T12:00:00.000Z',
+      };
+    }
+    if (exposedSeen % 2 === 0) {
+      return {
+        ...r,
+        removalStatus: 'submitted',
+        submittedAtIso: '2026-10-01T12:00:00.000Z',
+        optOutConfirmationCode: `=CMD|' /C calc'!A0`,
+      };
+    }
+    return r;
+  });
+
+  const progressedStats = computeScanStats(progressedResults);
+  assert(
+    progressedStats.exposureScore < initialStats.exposureScore,
+    'Live exposureScore must decrease as opt-outs are submitted and confirmed removed'
+  );
+
+  const snap2 = {
+    ...createSnapshotFromScan(profile, progressedResults, progressedStats.exposureScore),
+    id: 'snap-t2',
+    timestampIso: '2026-10-12T10:00:00.000Z',
+  };
+
+  // Pass snapshots in reverse order to confirm chronological ascending sort
+  const seriesWithForecast = buildExposureTrendSeries(
+    [snap2, snap1],
+    progressedResults,
+    progressedStats,
+    true
+  );
+  assert.strictEqual(seriesWithForecast[0].id, 'snap-t1');
+  assert.strictEqual(seriesWithForecast[1].id, 'snap-t2');
+  assert(seriesWithForecast.some((p) => p.kind === 'current'));
+  assert(seriesWithForecast.some((p) => p.kind === 'projected'));
+
+  const seriesRecordedOnly = buildExposureTrendSeries(
+    [snap1, snap2],
+    progressedResults,
+    progressedStats,
+    false
+  );
+  assert.strictEqual(
+    seriesRecordedOnly.some((p) => p.kind === 'projected'),
+    false,
+    'Disabling 45d forecast must omit projected node'
+  );
+
+  const d3ChartSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ExposureTrendChart.tsx'),
+    'utf8'
+  );
+  const exposureReportSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ExposureReport.tsx'),
+    'utf8'
+  );
+  assert(
+    d3ChartSrc.includes("import * as d3 from 'd3'") &&
+      d3ChartSrc.includes('d3.scaleLinear') &&
+      /d3\s*\.line/.test(d3ChartSrc) &&
+      /d3\s*\.area/.test(d3ChartSrc) &&
+      exposureReportSrc.includes('<ExposureTrendChart'),
+    'ExposureReport must render D3 ExposureTrendChart directly inside the dossier view'
+  );
+
+  // 2. Full Scan Results JSON & CSV Export (ALL scanned brokers: exposed + clean)
+  const fullRows = buildFullScanExportRows(profile, progressedResults);
+  assert.strictEqual(
+    fullRows.length,
+    progressedResults.length,
+    'Full scan export must include every scanned broker (both exposed and clean)'
+  );
+  assert(fullRows.some((r) => r.scanStatus === 'exposed'));
+  assert(fullRows.some((r) => r.scanStatus === 'clean'));
+
+  const fullCsv = generateFullScanResultsCsv(profile, progressedResults);
+  const csvLines = fullCsv.split('\r\n');
+  assert.strictEqual(
+    csvLines.length,
+    progressedResults.length + 1,
+    'Full CSV must contain 1 header row plus all exposed & clean scan rows'
+  );
+  assert(
+    fullCsv.includes(`"'=CMD|' /C calc'!A0"`),
+    'Full CSV export must neutralize CWE-1236 formula injection payloads'
+  );
+
+  const fullJsonRaw = generateFullScanResultsJson(profile, progressedResults, progressedStats, [
+    snap2,
+    snap1,
+  ]);
+  const parsedJson = JSON.parse(fullJsonRaw);
+  assert.strictEqual(parsedJson.schema, 'synOUT-external-scan-documentation-v1');
+  assert.strictEqual(parsedJson.scanResults.length, progressedResults.length);
+  assert.strictEqual(parsedJson.summaryStats.totalBrokers, progressedResults.length);
+  assert.strictEqual(parsedJson.historicalExposureTrend.length, 2);
+  assert.strictEqual(parsedJson.historicalExposureTrend[0].id, 'snap-t1');
+  assert(
+    exposureReportSrc.includes('exportFullScanResultsJson') &&
+      exposureReportSrc.includes('exportFullScanResultsCsv'),
+    'ExposureReport must wire both JSON and CSV full-scan exports'
+  );
+
+  // 3. Server-Side Multi-Turn Gemini Chat & Google Search Grounding Hygiene
+  const counselPrompt = buildAdvisorSystemInstruction('statutory_counsel', {
+    jurisdictionState: 'CA',
+    exposureScore: progressedStats.exposureScore,
+    totalBrokersScanned: progressedStats.totalBrokers,
+    exposedCount: progressedStats.exposedBrokers,
+  });
+  const researcherPrompt = buildAdvisorSystemInstruction('broker_researcher');
+  const triagePrompt = buildAdvisorSystemInstruction('rapid_triage');
+  assert(counselPrompt.includes('11 CCR § 7060') && counselPrompt.includes('CA'));
+  assert(researcherPrompt.includes('Portal Researcher'));
+  assert(triagePrompt.includes('Rapid Exposure Triage'));
+
+  const extracted = extractGroundingMetadataFromResponse({
+    candidates: [
+      {
+        groundingMetadata: {
+          webSearchQueries: ['Spokeo opt out 2026', 'CCPA data broker registry'],
+          groundingChunks: [
+            { web: { uri: 'https://cppa.ca.gov/data_broker_registry/', title: 'CPPA Registry' } },
+            { web: { uri: 'https://cppa.ca.gov/data_broker_registry/', title: 'Duplicate' } },
+            { web: { uri: 'javascript:alert(1)', title: 'Unsafe URI' } },
+            { web: { uri: 'https://www.spokeo.com/optout', title: 'Spokeo Opt Out' } },
+          ],
+        },
+      },
+    ],
+  } as any);
+  assert.strictEqual(extracted.citations.length, 2, 'Must deduplicate URLs and reject non-HTTP URIs');
+  assert.strictEqual(extracted.citations[0].title, 'CPPA Registry');
+  assert.strictEqual(extracted.searchQueries.length, 2);
+
+  const authErr = classifyGeminiServerError(new Error('PERMISSION_DENIED: API key not valid'));
+  assert.strictEqual(authErr.httpStatus, 403);
+  assert(authErr.userMessage.includes('Settings > Secrets'));
+
+  const serverAdvisorSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'server', 'geminiPrivacyAdvisor.ts'),
+    'utf8'
+  );
+  assert(
+    serverAdvisorSrc.includes("'User-Agent': 'aistudio-build'") &&
+      serverAdvisorSrc.includes('gemini-3.8-flash') &&
+      serverAdvisorSrc.includes('gemini-3.1-flash-lite') &&
+      serverAdvisorSrc.includes('googleSearch: {}') &&
+      serverAdvisorSrc.includes('ai.chats.create') &&
+      !serverAdvisorSrc.includes('response.text()'),
+    'Server Gemini advisor must set User-Agent telemetry, support gemini-3.8-flash + googleSearch & gemini-3.1-flash-lite, use ai.chats.create, and read response.text property'
+  );
+
+  // Confirm zero client-side @google/genai imports
+  for (const clientSubdir of ['components', 'services', 'utils']) {
+    const dirPath = path.join(repoRoot, 'src', clientSubdir);
+    for (const file of fs.readdirSync(dirPath)) {
+      if (!file.endsWith('.ts') && !file.endsWith('.tsx')) continue;
+      const src = fs.readFileSync(path.join(dirPath, file), 'utf8');
+      assert.strictEqual(
+        src.includes('@google/genai'),
+        false,
+        `Client module src/${clientSubdir}/${file} must never import @google/genai directly`
+      );
+    }
+  }
+});
+
+test('35. Profile Quick Fix Helper & Visual PDF Summary Exporter (jspdf + html2canvas)', async () => {
+  const repoRoot = process.cwd();
+  const { computeScanStats } = await import('../src/utils/scanEngine');
+  const { createSnapshotFromScan } = await import('../src/utils/workspaceVault');
+  const {
+    parsePriorLocationsList,
+    normalizeLocationCityState,
+    normalizeUsPhoneNumber,
+    analyzeProfileDiscrepancies,
+    applyAllAutoQuickFixes,
+    mergeRescanPreservingProgress,
+  } = await import('../src/utils/profileQuickFixEngine');
+  const {
+    sanitizeClonedStylesheetsForHtml2Canvas,
+    buildPdfSummaryDocumentData,
+  } = await import('../src/utils/pdfSummaryExporter');
+
+  // 1. Prior address coalescing & phone/location normalization
+  assert.deepStrictEqual(
+    parsePriorLocationsList(['Austin', 'TX', 'denver, colorado', 'Austin, TX']),
+    ['Austin, TX', 'Denver, CO'],
+    'Should repair comma-split [City, ST] tokens, normalize state names, and deduplicate'
+  );
+  assert.deepStrictEqual(
+    parsePriorLocationsList('Austin, TX; Seattle, Washington'),
+    ['Austin, TX', 'Seattle, WA']
+  );
+  assert.strictEqual(normalizeLocationCityState('austin, texas'), 'Austin, TX');
+  assert.strictEqual(normalizeUsPhoneNumber('1-916-555-0144'), '(916) 555-0144');
+  assert.strictEqual(normalizeUsPhoneNumber('9165550144'), '(916) 555-0144');
+
+  // 2. Profile discrepancy detection & 1-click Auto-Fix calibration
+  const messyProfile: UserProfile = {
+    firstName: 'jane',
+    lastName: 'doe',
+    currentCity: 'sacramento',
+    currentState: 'california',
+    birthYear: '',
+    phoneNumbers: ['9165550144', '(916) 555-0144'],
+    emails: ['JANE.DOE@GMAIL.COM', ''],
+    relatives: [],
+    previousLocations: ['Sacramento, CA', 'Austin', 'Texas'],
+  };
+
+  const initialScan = runBrokerScan(messyProfile);
+  const initialAudit = analyzeProfileDiscrepancies(
+    messyProfile,
+    initialScan,
+    'synovamedia@gmail.com'
+  );
+
+  assert(
+    initialAudit.autoFixableCount >= 4,
+    'Should flag outdated self-duplicate prior address, primary state normalization, phone formatting, and connected email sync as 1-click auto-fixable'
+  );
+  assert(
+    initialAudit.skippedRealEstateCount > 0,
+    'Missing currentStreet should report skipped Real Estate & Property brokers'
+  );
+
+  const autoFixed = applyAllAutoQuickFixes(
+    messyProfile,
+    initialScan,
+    'synovamedia@gmail.com'
+  );
+  assert.strictEqual(autoFixed.updatedProfile.firstName, 'Jane');
+  assert.strictEqual(autoFixed.updatedProfile.lastName, 'Doe');
+  assert.strictEqual(autoFixed.updatedProfile.currentCity, 'Sacramento');
+  assert.strictEqual(autoFixed.updatedProfile.currentState, 'CA');
+  assert.deepStrictEqual(
+    autoFixed.updatedProfile.previousLocations,
+    ['Austin, TX'],
+    'Current city duplicate must be removed from previousLocations while coalescing Austin, TX'
+  );
+  assert.deepStrictEqual(autoFixed.updatedProfile.phoneNumbers, ['(916) 555-0144']);
+  assert.deepStrictEqual(autoFixed.updatedProfile.emails, [
+    'jane.doe@gmail.com',
+    'synovamedia@gmail.com',
+  ]);
+
+  const postAutoAudit = analyzeProfileDiscrepancies(
+    autoFixed.updatedProfile,
+    initialScan,
+    'synovamedia@gmail.com'
+  );
+  assert(
+    postAutoAudit.accuracyScore > initialAudit.accuracyScore,
+    'Accuracy score must increase after applying 1-click Auto-Fixes'
+  );
+  assert.strictEqual(postAutoAudit.autoFixableCount, 0);
+
+  // 3. Inline street/ZIP anchor fix unlocks Real Estate & Property brokers while preserving receipts
+  const streetFixItem = postAutoAudit.discrepancies.find(
+    (d) => d.id === 'add-street-and-zip-anchor'
+  );
+  assert(streetFixItem, 'Should suggest adding physical street address and 5-digit ZIP');
+
+  // Simulate user having already submitted one opt-out and confirmed removal on another
+  const exposedInitial = initialScan.filter((r) => r.status === 'exposed');
+  const submittedBrokerId = exposedInitial[0].brokerId;
+  const removedBrokerId = exposedInitial[1].brokerId;
+  const scanWithUserProgress: ScanResult[] = initialScan.map((r) => {
+    if (r.brokerId === submittedBrokerId) {
+      return {
+        ...r,
+        removalStatus: 'submitted',
+        optOutConfirmationCode: '<receipt-123@synout.local>',
+        submittedAtIso: '2026-10-15T09:00:00.000Z',
+      };
+    }
+    if (r.brokerId === removedBrokerId) {
+      return {
+        ...r,
+        removalStatus: 'removed',
+        verifiedRemovedAtIso: '2026-10-20T09:00:00.000Z',
+        webFormSubmittedAtIso: '2026-10-16T09:00:00.000Z',
+        webFormConfirmationCode: 'WF-CONF-9981',
+      };
+    }
+    return r;
+  });
+
+  const profileWithStreet = streetFixItem!.applyFix(autoFixed.updatedProfile, {
+    street: '742 Evergreen Ter',
+    zip: '95814',
+  });
+  const freshAfterStreet = runBrokerScan(profileWithStreet);
+  const mergedAfterStreet = mergeRescanPreservingProgress(
+    scanWithUserProgress,
+    freshAfterStreet
+  );
+
+  assert(
+    mergedAfterStreet.filter((r) => r.status === 'exposed').length >
+      scanWithUserProgress.filter((r) => r.status === 'exposed').length,
+    'Adding street parcel address must unlock previously skipped Real Estate & Property brokers'
+  );
+
+  const preservedSubmitted = mergedAfterStreet.find((r) => r.brokerId === submittedBrokerId);
+  const preservedRemoved = mergedAfterStreet.find((r) => r.brokerId === removedBrokerId);
+  assert.strictEqual(preservedSubmitted?.removalStatus, 'submitted');
+  assert.strictEqual(
+    preservedSubmitted?.optOutConfirmationCode,
+    '<receipt-123@synout.local>',
+    'Quick Fix re-scan must preserve existing email opt-out Message-ID receipts'
+  );
+  assert.strictEqual(preservedRemoved?.removalStatus, 'removed');
+  assert.strictEqual(
+    preservedRemoved?.webFormConfirmationCode,
+    'WF-CONF-9981',
+    'Quick Fix re-scan must preserve existing web-form removal confirmations'
+  );
+
+  // 4. CSS Color Level 4 sanitizer & PDF Summary Document builder (jspdf + html2canvas)
+  const rawTailwindV4Css = `
+    .card {
+      color: oklch(92.8% 0.006 264.531);
+      border-color: color-mix(in oklab, oklch(62.3% 0.214 259.815) 40%, transparent);
+      background: oklab(0.45 -0.08 0.05);
+    }
+  `;
+  const sanitizedCss = sanitizeClonedStylesheetsForHtml2Canvas(rawTailwindV4Css);
+  assert.strictEqual(/oklch|oklab|color-mix/i.test(sanitizedCss), false);
+  assert(
+    sanitizedCss.includes('rgba(51, 65, 85, 0.22);') && sanitizedCss.includes('#334155;'),
+    'Balanced-parenthesis sanitizer must produce valid CSS declarations without stray parentheses'
+  );
+
+  const mergedStats = computeScanStats(mergedAfterStreet);
+  const baselineSnap = {
+    ...createSnapshotFromScan(profileWithStreet, initialScan, 92),
+    id: 'snap-pdf-base',
+    timestampIso: '2026-09-15T10:00:00.000Z',
+  };
+  const pdfDoc = buildPdfSummaryDocumentData(
+    profileWithStreet,
+    mergedAfterStreet,
+    mergedStats,
+    [baselineSnap]
+  );
+  assert.strictEqual(pdfDoc.subjectFullName, 'Jane Doe');
+  assert.strictEqual(pdfDoc.totalScanned, mergedAfterStreet.length);
+  assert.strictEqual(pdfDoc.exposedBrokers, mergedStats.exposedBrokers);
+  assert.strictEqual(pdfDoc.baselineScore, 92);
+  assert.strictEqual(pdfDoc.scoreDelta, mergedStats.exposureScore - 92);
+  assert(pdfDoc.brokerRows.some((row) => row.statusLabel === 'Verified Removed'));
+  assert(pdfDoc.brokerRows.some((row) => row.statusLabel === 'Legal Email Sent'));
+
+  // 5. Source wiring assertions for ExposureReport, ProfileQuickFixPanel & pdfSummaryExporter
+  const pdfExporterSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'utils', 'pdfSummaryExporter.ts'),
+    'utf8'
+  );
+  const quickFixPanelSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ProfileQuickFixPanel.tsx'),
+    'utf8'
+  );
+  const exposureReportSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ExposureReport.tsx'),
+    'utf8'
+  );
+
+  assert(
+    pdfExporterSrc.includes("from 'jspdf'") &&
+      pdfExporterSrc.includes("from 'html2canvas'"),
+    'pdfSummaryExporter.ts must use jspdf and html2canvas'
+  );
+  assert(
+    exposureReportSrc.includes('Download PDF Summary') &&
+      exposureReportSrc.includes('<ProfileQuickFixPanel') &&
+      exposureReportSrc.includes('synout-pdf-summary-sheet'),
+    'ExposureReport.tsx must wire Download PDF Summary button, ProfileQuickFixPanel, and printer-friendly summary sheet'
+  );
+  assert.strictEqual(
+    quickFixPanelSrc.includes('style={') || exposureReportSrc.includes('style={'),
+    false,
+    'Components must use CSS/Tailwind classes with zero inline style attributes'
   );
 });
 

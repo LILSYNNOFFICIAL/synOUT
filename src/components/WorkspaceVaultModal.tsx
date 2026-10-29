@@ -22,6 +22,14 @@ import { findBrokerById } from '../services/emailConnectionStore';
 import { getBrokerContactOverrides } from '../utils/brokerContactResolver';
 import { downloadFile } from '../utils/exportEngines';
 import {
+  pullAndDecryptCloudVault,
+  pushEncryptedBundleToCloud,
+  setCloudVaultAutoSync,
+  signInCloudVaultWithGoogle,
+  signOutCloudVault,
+  useCloudVaultState,
+} from '../services/cloudVaultSync';
+import {
   X,
   Lock,
   Download,
@@ -31,6 +39,9 @@ import {
   AlertTriangle,
   ShieldCheck,
   Plus,
+  Cloud,
+  RefreshCw,
+  LogOut,
 } from 'lucide-react';
 
 interface WorkspaceVaultModalProps {
@@ -58,12 +69,20 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
   onCaptureManualSnapshot,
   onClose,
 }) => {
-  const [activeSection, setActiveSection] = useState<'export' | 'import' | 'snapshots'>('export');
+  const cloudState = useCloudVaultState();
+  const [activeSection, setActiveSection] = useState<'cloud' | 'export' | 'import' | 'snapshots'>(
+    cloudState.configured ? 'cloud' : 'export'
+  );
   const [useEncryption, setUseEncryption] = useState(true);
   const [exportPassphrase, setExportPassphrase] = useState('');
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+
+  const [cloudPassphrase, setCloudPassphrase] = useState('');
+  const [cloudFeedback, setCloudFeedback] = useState<string | null>(null);
+  const [cloudLocalError, setCloudLocalError] = useState<string | null>(null);
+  const [isPullingCloud, setIsPullingCloud] = useState(false);
 
   const [rawImportJson, setRawImportJson] = useState('');
   const [importPassphrase, setImportPassphrase] = useState('');
@@ -171,13 +190,13 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-xs font-mono text-emerald-400">
               <Lock className="w-3.5 h-3.5" />
-              <span>Zero-Cloud Local Privacy Vault · AES-256-GCM</span>
+              <span>Zero-Knowledge Encrypted Vault · AES-256-GCM + Cloud Sync</span>
             </div>
             <h2 className="text-xl font-bold text-white">
-              Portable Workspace Vault &amp; Scan Snapshot History
+              Encrypted Workspace Vault &amp; Cross-Device Cloud Sync
             </h2>
             <p className="text-xs text-slate-400">
-              Back up your opt-out receipts, POA, de-index queue, and freeze checklists across browsers—SMTP app passwords are never exported.
+              Sync your scan profiles, removal receipts, POA, and 45-day SLA countdowns across your phone and computer—encrypted locally with your passphrase before leaving your browser.
             </p>
           </div>
           <button
@@ -190,7 +209,19 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="inline-flex p-1 glass-subtle rounded-xl">
+        <div className="flex flex-wrap p-1 glass-subtle rounded-xl gap-1">
+          <button
+            type="button"
+            onClick={() => setActiveSection('cloud')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5 ${
+              activeSection === 'cloud'
+                ? 'bg-emerald-500 text-slate-950 font-bold'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Cloud className="w-3.5 h-3.5" />
+            <span>Cloud Sync</span>
+          </button>
           <button
             type="button"
             onClick={() => setActiveSection('export')}
@@ -200,7 +231,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Export Vault
+            Local Export
           </button>
           <button
             type="button"
@@ -211,7 +242,7 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Restore Backup
+            Restore File
           </button>
           <button
             type="button"
@@ -222,9 +253,205 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            Snapshots &amp; Regressions ({scanSnapshots.length})
+            Snapshots ({scanSnapshots.length})
           </button>
         </div>
+
+        {activeSection === 'cloud' && (
+          <div className="space-y-4 text-xs">
+            {!cloudState.configured ? (
+              <div className="p-4 glass-subtle rounded-xl text-slate-300 space-y-2">
+                <div className="font-semibold text-white">Local-Only Build Detected</div>
+                <p className="text-slate-400">
+                  Cloud Sync is unavailable on static offline mirrors without a Firebase project config. Use <strong>Local Export</strong> to save an AES-256-GCM encrypted `.enc.json` vault file.
+                </p>
+              </div>
+            ) : !cloudState.user ? (
+              <div className="p-5 glass-subtle rounded-xl space-y-4 border border-emerald-400/20">
+                <div className="space-y-1">
+                  <div className="font-bold text-white text-sm">
+                    Sign in to Sync Across Phone &amp; Computer
+                  </div>
+                  <p className="text-slate-400 leading-relaxed">
+                    Your scan profiles, broker receipts, POA signature, and 45-day SLA timers are encrypted client-side with <strong>AES-256-GCM</strong> (PBKDF2 250,000 iterations) before touching cloud storage.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setCloudLocalError(null);
+                    setCloudFeedback(null);
+                    try {
+                      await signInCloudVaultWithGoogle();
+                      setCloudFeedback('Signed in with Google. Enter your vault passphrase below to push or unlock your cloud vault.');
+                    } catch (err) {
+                      setCloudLocalError(
+                        err instanceof Error ? err.message : 'Google Sign-In was cancelled or failed.'
+                      );
+                    }
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                >
+                  <Cloud className="w-4 h-4" />
+                  <span>Sign in with Google for Encrypted Cloud Sync</span>
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="p-3.5 glass-subtle rounded-xl flex flex-wrap items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <div className="font-bold text-white flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>{cloudState.user.displayName || 'Connected Account'}</span>
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400">
+                      {cloudState.user.email} · {cloudState.vaultUnlockedInSession ? 'Session Key Unlocked' : 'Passphrase Required to Sync'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void signOutCloudVault()}
+                    className="px-3 py-1.5 rounded-lg glass-card text-slate-300 hover:text-white inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+
+                {cloudState.remoteVault && (
+                  <div className="p-3.5 glass-subtle rounded-xl border border-sky-400/20 space-y-2 tabular-nums">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-sky-300">
+                        Cloud Snapshot Available · {cloudState.remoteVault.deviceLabel}
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-400">
+                        {cloudState.remoteVault.updatedAtIso
+                          ? new Date(cloudState.remoteVault.updatedAtIso).toLocaleString()
+                          : 'Just now'}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono text-slate-300">
+                      <span>{cloudState.remoteVault.exposedCount} Exposed</span>
+                      <span>{cloudState.remoteVault.trackedCount} SLA Tracked</span>
+                      <span className="text-emerald-400">{cloudState.remoteVault.removedCount} Removed</span>
+                      <span className="text-slate-500">
+                        SHA-256 {cloudState.remoteVault.payloadSha256.slice(0, 12)}…
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-slate-300">
+                    Zero-Knowledge Vault Passphrase (8+ characters — never sent to server)
+                  </label>
+                  <input
+                    type="password"
+                    minLength={8}
+                    maxLength={128}
+                    value={cloudPassphrase}
+                    onChange={(e) => setCloudPassphrase(e.target.value)}
+                    placeholder={
+                      cloudState.vaultUnlockedInSession
+                        ? 'Session unlocked (leave blank to reuse current session passphrase)...'
+                        : 'Enter your 8+ character encryption passphrase...'
+                    }
+                    className="w-full glass-input rounded-xl px-3.5 py-2.5 text-white font-mono placeholder-slate-500"
+                  />
+                </div>
+
+                <label className="flex items-center gap-2.5 p-3 glass-subtle rounded-xl cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cloudState.autoSyncEnabled}
+                    onChange={(e) => setCloudVaultAutoSync(e.target.checked)}
+                    className="rounded border-white/20 bg-slate-950 text-emerald-500"
+                  />
+                  <span className="text-slate-300">
+                    Automatically sync encrypted updates across devices while unlocked in this session
+                  </span>
+                </label>
+
+                <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-white/[0.08]">
+                  {cloudState.remoteVault && (
+                    <button
+                      type="button"
+                      disabled={isPullingCloud || cloudState.isSyncing}
+                      onClick={async () => {
+                        setCloudLocalError(null);
+                        setCloudFeedback(null);
+                        setIsPullingCloud(true);
+                        try {
+                          const restored = await pullAndDecryptCloudVault(
+                            cloudPassphrase.trim() || undefined
+                          );
+                          onRestoreWorkspace(restored);
+                          setCloudPassphrase('');
+                          setCloudFeedback(
+                            `Decrypted & restored cloud vault (${restored.scanResults.length} broker records).`
+                          );
+                        } catch (err) {
+                          setCloudLocalError(
+                            err instanceof Error ? err.message : 'Failed to decrypt cloud vault.'
+                          );
+                        } finally {
+                          setIsPullingCloud(false);
+                        }
+                      }}
+                      className="px-4 py-2.5 rounded-xl glass-card hover:border-sky-400/40 text-sky-300 font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>{isPullingCloud ? 'Decrypting...' : 'Pull & Restore Cloud Vault'}</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={cloudState.isSyncing || isPullingCloud}
+                    onClick={async () => {
+                      setCloudLocalError(null);
+                      setCloudFeedback(null);
+                      try {
+                        const res = await pushEncryptedBundleToCloud(
+                          buildCurrentBundle(),
+                          cloudPassphrase.trim() || undefined
+                        );
+                        setCloudPassphrase('');
+                        setCloudFeedback(
+                          `Encrypted & synced to cloud (SHA-256 ${res.payloadSha256.slice(0, 12)}…).`
+                        );
+                      } catch (err) {
+                        setCloudLocalError(
+                          err instanceof Error ? err.message : 'Failed to sync encrypted cloud vault.'
+                        );
+                      }
+                    }}
+                    className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${cloudState.isSyncing ? 'animate-spin' : ''}`} />
+                    <span>
+                      {cloudState.isSyncing ? 'Encrypting & Syncing...' : 'Encrypt & Sync to Cloud Now'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {cloudFeedback && (
+              <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{cloudFeedback}</span>
+              </div>
+            )}
+
+            {(cloudLocalError || cloudState.syncError) && (
+              <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span className="break-all">{cloudLocalError || cloudState.syncError}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {activeSection === 'export' && (
           <form onSubmit={handleExportVault} className="space-y-4 text-xs">

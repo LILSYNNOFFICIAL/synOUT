@@ -1,5 +1,11 @@
-import React, { useState } from 'react';
-import { DataBroker, ScanResult, ScanStats, UserProfile } from '../types';
+import React, { useMemo, useRef, useState } from 'react';
+import {
+  DataBroker,
+  ScanHistorySnapshot,
+  ScanResult,
+  ScanStats,
+  UserProfile,
+} from '../types';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
 import {
   findBrokerById,
@@ -14,12 +20,26 @@ import {
   downloadFile,
   triggerPrintablePdf,
 } from '../utils/exportEngines';
-import { exportExposureReportCsv } from '../utils/csvExport';
+import {
+  exportExposureReportCsv,
+  exportFullScanResultsCsv,
+  exportFullScanResultsJson,
+} from '../utils/csvExport';
+import {
+  buildPdfSummaryDocumentData,
+  downloadExposurePdfSummary,
+} from '../utils/pdfSummaryExporter';
 import {
   resolveBrokerContactProfile,
   useBrokerContactOverrides,
 } from '../utils/brokerContactResolver';
 import { hasWebFormSubmission } from '../utils/optOutFormEngine';
+import { ExposureTrendChart } from './ExposureTrendChart';
+import { ProfileQuickFixPanel } from './ProfileQuickFixPanel';
+import {
+  BrokerLiveIntelResponse,
+  lookupBrokerLiveIntelClient,
+} from '../services/privacyAdvisorClient';
 import {
   ShieldAlert,
   ShieldCheck,
@@ -42,13 +62,20 @@ import {
   FileCode2,
   Bot,
   Activity,
+  FileJson,
+  MessageSquare,
+  Wrench,
 } from 'lucide-react';
 
 interface ExposureReportProps {
   results: ScanResult[];
   stats: ScanStats;
   profile: UserProfile;
+  scanSnapshots?: ScanHistorySnapshot[];
   relistedBrokerIds?: string[];
+  onCaptureSnapshot?: () => void;
+  onUpdateProfile?: (updatedProfile: UserProfile, refreshScan?: boolean) => void;
+  onOpenAdvisor?: (initialPrompt?: string) => void;
   onOpenListingModal: (broker: DataBroker, result: ScanResult) => void;
   onOpenLegalNotice: (broker: DataBroker, result: ScanResult) => void;
   onAutomatedOptOut: (brokerId: string) => void;
@@ -77,7 +104,11 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
   results,
   stats,
   profile,
+  scanSnapshots = [],
   relistedBrokerIds = [],
+  onCaptureSnapshot,
+  onUpdateProfile,
+  onOpenAdvisor,
   onOpenListingModal,
   onOpenLegalNotice,
   onAutomatedOptOut,
@@ -106,7 +137,20 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [selectedBrokerIds, setSelectedBrokerIds] = useState<string[]>([]);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
+  const [isGeneratingPdfSummary, setIsGeneratingPdfSummary] = useState(false);
+  const [pdfExportFeedback, setPdfExportFeedback] = useState<string | null>(null);
   const [probingIds, setProbingIds] = useState<Record<string, boolean>>({});
+  const [intelLoadingIds, setIntelLoadingIds] = useState<Record<string, boolean>>({});
+  const [brokerIntelMap, setBrokerIntelMap] = useState<
+    Record<string, BrokerLiveIntelResponse>
+  >({});
+  const [brokerIntelErrors, setBrokerIntelErrors] = useState<Record<string, string>>({});
+
+  const pdfSummaryRef = useRef<HTMLDivElement>(null);
+  const pdfSummaryData = useMemo(
+    () => buildPdfSummaryDocumentData(profile, results, stats, scanSnapshots),
+    [profile, results, stats, scanSnapshots]
+  );
 
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
   const contactOverrides = useBrokerContactOverrides();
@@ -190,9 +234,68 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
     setExportDropdownOpen(false);
   };
 
+  const handleExportFullScanCsv = () => {
+    exportFullScanResultsCsv(profile, results);
+    setExportDropdownOpen(false);
+  };
+
+  const handleExportFullScanJson = () => {
+    exportFullScanResultsJson(profile, results, stats, scanSnapshots);
+    setExportDropdownOpen(false);
+  };
+
   const handleExportPdf = () => {
     triggerPrintablePdf(results, stats, profile);
     setExportDropdownOpen(false);
+  };
+
+  const handleDownloadVisualPdfSummary = async () => {
+    if (!pdfSummaryRef.current || isGeneratingPdfSummary) return;
+    setIsGeneratingPdfSummary(true);
+    setPdfExportFeedback(null);
+    setExportDropdownOpen(false);
+    try {
+      const savedFilename = await downloadExposurePdfSummary({
+        element: pdfSummaryRef.current,
+        profile,
+        stats,
+      });
+      setPdfExportFeedback(`Downloaded ${savedFilename}`);
+    } catch (err) {
+      setPdfExportFeedback(
+        err instanceof Error ? err.message : 'Unable to generate PDF summary.'
+      );
+    } finally {
+      setIsGeneratingPdfSummary(false);
+    }
+  };
+
+  const handleLookupBrokerWebIntel = async (broker: DataBroker, optOutUrl: string) => {
+    setIntelLoadingIds((prev) => ({ ...prev, [broker.id]: true }));
+    setBrokerIntelErrors((prev) => {
+      const next = { ...prev };
+      delete next[broker.id];
+      return next;
+    });
+    try {
+      const intel = await lookupBrokerLiveIntelClient({
+        brokerName: broker.name,
+        brokerDomain: broker.domain,
+        optOutUrl,
+        jurisdictionState: profile.currentState,
+      });
+      setBrokerIntelMap((prev) => ({ ...prev, [broker.id]: intel }));
+    } catch (err) {
+      setBrokerIntelErrors((prev) => ({
+        ...prev,
+        [broker.id]:
+          err instanceof Error
+            ? err.message
+            : 'Unable to retrieve live web intelligence.',
+      }));
+    } finally {
+      setIntelLoadingIds((prev) => ({ ...prev, [broker.id]: false }));
+    }
   };
 
   return (
@@ -251,31 +354,87 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
             </p>
           </div>
 
-          {/* Action Center: Export Findings & Batch Removal */}
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {/* Action Center: PDF Summary, Full Scan JSON/CSV Export & Batch Removal */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={isGeneratingPdfSummary}
+              onClick={() => void handleDownloadVisualPdfSummary()}
+              title="Generate and download a visually formatted, printer-friendly PDF summary of your current exposure status"
+              className="px-3.5 py-2.5 rounded-xl glass-card border-rose-400/25 text-white hover:border-rose-400/50 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap shrink-0"
+            >
+              <Printer className="w-4 h-4 text-rose-400" />
+              <span>
+                {isGeneratingPdfSummary ? 'Generating PDF...' : 'Download PDF Summary'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportFullScanJson}
+              title={`Export all ${results.length} scanned broker records (exposed & clean) plus historical trend snapshots as JSON`}
+              className="px-3.5 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+            >
+              <FileJson className="w-4 h-4 text-sky-400" />
+              <span>Export JSON ({results.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportFullScanCsv}
+              title={`Export all ${results.length} scanned broker records (exposed & clean) as CSV for external documentation`}
+              className="px-3.5 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 tabular-nums"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+              <span>Export CSV ({results.length})</span>
+            </button>
+
             <div className="relative">
               <button
                 onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
-                className="px-4 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                className="px-3.5 py-2.5 rounded-xl glass-card text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Download className="w-4 h-4 text-emerald-400" />
-                <span>Export Dossier (7 Formats)</span>
+                <span>More Formats</span>
               </button>
 
               {exportDropdownOpen && (
-                <div className="absolute right-0 mt-2 w-64 glass-popover rounded-2xl p-2 z-30 space-y-1">
+                <div className="absolute right-0 mt-2 w-72 glass-popover rounded-2xl p-2 z-30 space-y-1">
+                  <button
+                    type="button"
+                    disabled={isGeneratingPdfSummary}
+                    onClick={() => void handleDownloadVisualPdfSummary()}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-rose-300 hover:text-white hover:bg-white/[0.06] flex items-center justify-between cursor-pointer whitespace-nowrap"
+                  >
+                    <span>Download PDF Summary (.pdf)</span>
+                    <Printer className="w-3.5 h-3.5 text-rose-400" />
+                  </button>
+                  <button
+                    onClick={handleExportFullScanJson}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-sky-300 hover:text-white hover:bg-white/[0.06] flex items-center justify-between cursor-pointer whitespace-nowrap"
+                  >
+                    <span>Full Scan Results (.json · All {results.length})</span>
+                    <FileJson className="w-3.5 h-3.5 text-sky-400" />
+                  </button>
+                  <button
+                    onClick={handleExportFullScanCsv}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-emerald-300 hover:text-white hover:bg-white/[0.06] flex items-center justify-between cursor-pointer border-b border-white/[0.07] pb-2 whitespace-nowrap"
+                  >
+                    <span>Full Scan Results (.csv · All {results.length})</span>
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                  </button>
                   <button
                     onClick={handleExportPdf}
                     className="w-full text-left px-3 py-2 rounded-xl text-xs font-medium text-slate-200 hover:text-white hover:bg-white/[0.06] flex items-center justify-between cursor-pointer whitespace-nowrap"
                   >
-                    <span>Printable PDF (.pdf)</span>
-                    <Printer className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Browser Print View (.html)</span>
+                    <FileText className="w-3.5 h-3.5 text-rose-400" />
                   </button>
                   <button
                     onClick={handleExportCsv}
                     className="w-full text-left px-3 py-2 rounded-xl text-xs font-medium text-slate-200 hover:text-white hover:bg-white/[0.06] flex items-center justify-between cursor-pointer whitespace-nowrap"
                   >
-                    <span>Spreadsheet Ledger (.csv)</span>
+                    <span>Exposed Brokers Only (.csv)</span>
                     <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
                   </button>
                   <button
@@ -517,6 +676,28 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                 Reply Triage
               </button>
             )}
+            {onOpenAdvisor && (
+              <button
+                type="button"
+                onClick={() => onOpenAdvisor()}
+                className="px-3 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.06] text-emerald-300 hover:text-emerald-200 font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Privacy Advisor</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                document
+                  .getElementById('synout-quick-fix-panel')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+              className="px-3 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.06] text-emerald-300 hover:text-emerald-200 font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Wrench className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Quick Fix</span>
+            </button>
           </div>
 
           <button
@@ -528,7 +709,38 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
             <span>Re-Run Audit</span>
           </button>
         </div>
+
+        {pdfExportFeedback && (
+          <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between gap-3 text-xs text-slate-300">
+            <span>{pdfExportFeedback}</span>
+            <button
+              type="button"
+              onClick={() => setPdfExportFeedback(null)}
+              className="text-slate-400 hover:text-white cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* D3 Historical Exposure Score Trend Visualization */}
+      <ExposureTrendChart
+        snapshots={scanSnapshots}
+        results={results}
+        stats={stats}
+        onCaptureSnapshot={onCaptureSnapshot}
+      />
+
+      {/* Quick Fix Profile Discrepancy & Match Accuracy Helper */}
+      <ProfileQuickFixPanel
+        profile={profile}
+        results={results}
+        connectedEmail={activeConnectedEmail}
+        onUpdateProfile={(updated, refresh = true) => {
+          onUpdateProfile?.(updated, refresh);
+        }}
+      />
 
       {/* Filter, Multi-Select & Sort Controls */}
       <div className="p-4 glass-panel rounded-2xl flex flex-col lg:flex-row lg:items-center justify-between gap-4 text-xs">
@@ -745,34 +957,83 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                         <ExternalLink className="w-3 h-3 shrink-0" />
                       </a>
 
+                      <button
+                        type="button"
+                        disabled={Boolean(intelLoadingIds[broker.id])}
+                        onClick={() => void handleLookupBrokerWebIntel(broker, contact.optOutUrl)}
+                        className="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                        title="Verify current opt-out policy & regulator updates via live Google Search grounding"
+                      >
+                        <Search className="w-3 h-3 shrink-0" />
+                        <span>
+                          {intelLoadingIds[broker.id] ? 'Searching...' : 'Live Web Intel'}
+                        </span>
+                      </button>
+
                       <a
                         href={contact.optOutUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-slate-300 hover:text-white inline-flex items-center gap-1 truncate"
                       >
-                        <span className="truncate">Opt-Out Page</span>
+                        <span className="truncate">Opt-Out</span>
                         <span className="text-slate-500 font-mono tabular-nums">({broker.removalTime})</span>
                       </a>
                     </div>
+
+                    {brokerIntelErrors[broker.id] && (
+                      <p className="text-[11px] text-rose-300 pt-1">
+                        {brokerIntelErrors[broker.id]}
+                      </p>
+                    )}
+
+                    {brokerIntelMap[broker.id] && (
+                      <div className="pt-2 border-t border-white/[0.06] space-y-1.5 text-[11px]">
+                        <p className="text-slate-200 leading-relaxed whitespace-pre-wrap">
+                          {brokerIntelMap[broker.id].summaryText}
+                        </p>
+                        {brokerIntelMap[broker.id].citations.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 pt-0.5">
+                            {brokerIntelMap[broker.id].citations.slice(0, 4).map((cite, cIdx) => (
+                              <a
+                                key={`${cite.uri}-${cIdx}`}
+                                href={cite.uri}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-sky-300 hover:text-sky-200 underline underline-offset-2 inline-flex items-center gap-1 max-w-[200px]"
+                              >
+                                <span className="truncate">{cite.title}</span>
+                                <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 {/* Clear Dual-Channel Removal Buttons (Web Form + Email) */}
                 <div className="pt-3 border-t border-white/[0.06] space-y-2">
                   <div className="flex items-center gap-1.5">
-                    {onOpenWebFormWorkbench && (
+                    {(onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
                       <button
                         type="button"
-                        onClick={() => onOpenWebFormWorkbench(broker)}
+                        onClick={() => {
+                          if (onOpenAutomatedNavigator) {
+                            onOpenAutomatedNavigator(broker, result);
+                          } else {
+                            onOpenWebFormWorkbench?.(broker);
+                          }
+                        }}
                         className={`flex-1 py-2 px-2.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                           isFormSubmitted
                             ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/25'
                             : 'glass-subtle hover:bg-white/[0.09] text-emerald-300 border border-emerald-500/25'
                         }`}
-                        title="Let synOUT fill out this broker's online form and check required boxes for you"
+                        title="Automatically fill out this broker's online form, check required boxes as they pop up, and submit for you"
                       >
-                        <FileCode2 className="w-3.5 h-3.5 shrink-0" />
+                        <Bot className="w-3.5 h-3.5 shrink-0" />
                         <span>{isFormSubmitted ? 'Form Done' : 'Auto-Fill Form'}</span>
                       </button>
                     )}
@@ -786,7 +1047,11 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                           ? 'bg-sky-500/15 text-sky-300 border border-sky-400/25'
                           : 'bg-emerald-400 hover:bg-emerald-300 text-slate-950'
                       }`}
-                      title="Send an official legal deletion email to this broker on your behalf"
+                      title={
+                        contact.effectivePrimaryEmail
+                          ? 'Send an official legal deletion email to this broker on your behalf'
+                          : 'Email not offered by this site — synOUT will automatically fill out its online removal form and check boxes for you'
+                      }
                     >
                       {isRemoved ? (
                         <>
@@ -795,6 +1060,10 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                       ) : isDispatched ? (
                         <>
                           <Clock className="w-3.5 h-3.5 shrink-0" /> Email Sent
+                        </>
+                      ) : !contact.effectivePrimaryEmail ? (
+                        <>
+                          <Bot className="w-3.5 h-3.5 shrink-0" /> Auto-Remove
                         </>
                       ) : (
                         <>
@@ -829,17 +1098,31 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                       >
                         Guide
                       </button>
+                      {onOpenAdvisor && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenAdvisor(
+                              `Give me the fastest current opt-out strategy and verification rules for ${broker.name} (${broker.domain}).`
+                            )
+                          }
+                          className="px-2 py-1 rounded-md text-emerald-300 hover:text-emerald-200 hover:bg-white/[0.06] transition-colors cursor-pointer whitespace-nowrap"
+                          title={`Ask Privacy Advisor about ${broker.name}`}
+                        >
+                          Ask Advisor
+                        </button>
+                      )}
                     </div>
 
-                    {onOpenAutomatedNavigator && (
+                    {onOpenWebFormWorkbench && (
                       <button
                         type="button"
-                        onClick={() => onOpenAutomatedNavigator(broker, result)}
+                        onClick={() => onOpenWebFormWorkbench(broker)}
                         className="px-2 py-1 rounded-md text-sky-400 hover:text-sky-300 hover:bg-white/[0.06] inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
-                        title="Open Quick Auto-Submit Popup"
+                        title="Open Full Online Form Studio & Inspector"
                       >
-                        <Bot className="w-3.5 h-3.5" />
-                        <span>Quick Bot</span>
+                        <FileCode2 className="w-3.5 h-3.5" />
+                        <span>Form Studio</span>
                       </button>
                     )}
                   </div>
@@ -959,15 +1242,50 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                     <td className="py-3 text-right">
                       <div className="inline-flex items-center justify-end gap-1.5">
                         <button
+                          type="button"
+                          onClick={() => onOpenListingModal(broker, result)}
+                          className="px-2 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 font-medium text-xs cursor-pointer whitespace-nowrap"
+                          title="View Exposed Profile Details"
+                        >
+                          Details
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenLegalNotice(broker, result)}
+                          className="px-2 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 font-medium text-xs cursor-pointer whitespace-nowrap"
+                          title="Preview Statutory Deletion Notice"
+                        >
+                          Letter
+                        </button>
+                        <button
                           onClick={() => onOpenDiyAssistantModal(broker, result)}
-                          className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 font-medium text-xs cursor-pointer whitespace-nowrap"
+                          className="px-2 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 font-medium text-xs cursor-pointer whitespace-nowrap"
                         >
                           DIY
                         </button>
-                        {onOpenWebFormWorkbench && (
+                        {onOpenAdvisor && (
                           <button
                             type="button"
-                            onClick={() => onOpenWebFormWorkbench(broker)}
+                            onClick={() =>
+                              onOpenAdvisor(
+                                `Give me the fastest current opt-out strategy and verification rules for ${broker.name} (${broker.domain}).`
+                              )
+                            }
+                            className="px-2 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-emerald-300 font-medium text-xs cursor-pointer whitespace-nowrap"
+                          >
+                            Advisor
+                          </button>
+                        )}
+                        {(onOpenAutomatedNavigator || onOpenWebFormWorkbench) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onOpenAutomatedNavigator) {
+                                onOpenAutomatedNavigator(broker, result);
+                              } else {
+                                onOpenWebFormWorkbench?.(broker);
+                              }
+                            }}
                             className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-emerald-300 font-medium text-xs cursor-pointer whitespace-nowrap"
                           >
                             {formSent ? 'Form Done' : 'Auto-Fill Form'}
@@ -977,7 +1295,7 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                           onClick={() => onAutomatedOptOut(broker.id)}
                           className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-semibold text-xs cursor-pointer whitespace-nowrap"
                         >
-                          Send Opt-Out
+                          {!contact.effectivePrimaryEmail ? 'Auto-Remove' : 'Send Opt-Out'}
                         </button>
                       </div>
                     </td>
@@ -988,6 +1306,204 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
           </table>
         </div>
       )}
+
+      {/* Off-Screen Printer-Friendly Summary Sheet Captured via html2canvas + jsPDF */}
+      <div
+        id="synout-pdf-summary-sheet"
+        ref={pdfSummaryRef}
+        aria-hidden="true"
+        className="pdf-offscreen-stage"
+      >
+        <div className="pdf-summary-sheet">
+          <div className="pdf-summary-header">
+            <div>
+              <div className="pdf-summary-kicker">
+                synOUT · Personal Data Exposure &amp; Suppression Status Summary
+              </div>
+              <h2 className="pdf-summary-title">{pdfSummaryData.subjectFullName}</h2>
+              <div className="pdf-summary-meta">
+                <div>
+                  Jurisdiction: <strong>{pdfSummaryData.jurisdictionLabel}</strong> · Address:{' '}
+                  {pdfSummaryData.addressSummary}
+                </div>
+                <div>{pdfSummaryData.contactSummary}</div>
+                <div>
+                  Report Reference: <strong>{pdfSummaryData.referenceId}</strong> · Generated{' '}
+                  {pdfSummaryData.generatedDateLabel}
+                </div>
+              </div>
+            </div>
+
+            <div className="pdf-summary-score-box">
+              <span className="pdf-summary-score-label">Current Exposure Score</span>
+              <span className="pdf-summary-score-value">{pdfSummaryData.exposureScore}/100</span>
+              <span className="pdf-summary-score-delta">
+                {pdfSummaryData.scoreDelta < 0
+                  ? `${pdfSummaryData.scoreDelta} pts vs. baseline (${pdfSummaryData.baselineScore})`
+                  : pdfSummaryData.scoreDelta > 0
+                  ? `+${pdfSummaryData.scoreDelta} pts vs. baseline (${pdfSummaryData.baselineScore})`
+                  : `Baseline calibrated (${pdfSummaryData.totalScanned} scanned)`}
+              </span>
+            </div>
+          </div>
+
+          <div className="pdf-summary-metrics-grid">
+            <div className="pdf-summary-metric-cell">
+              <span className="pdf-summary-metric-caption">Brokers Scanned</span>
+              <span className="pdf-summary-metric-number">{pdfSummaryData.totalScanned}</span>
+            </div>
+            <div className="pdf-summary-metric-cell">
+              <span className="pdf-summary-metric-caption">Exposed Brokers</span>
+              <span className="pdf-summary-metric-number pdf-summary-metric-critical">
+                {pdfSummaryData.exposedBrokers}
+              </span>
+            </div>
+            <div className="pdf-summary-metric-cell">
+              <span className="pdf-summary-metric-caption">Critical / High Risk</span>
+              <span className="pdf-summary-metric-number">
+                {pdfSummaryData.criticalBrokers + pdfSummaryData.highRiskBrokers}
+              </span>
+            </div>
+            <div className="pdf-summary-metric-cell">
+              <span className="pdf-summary-metric-caption">Removals Submitted</span>
+              <span className="pdf-summary-metric-number pdf-summary-metric-emerald">
+                {pdfSummaryData.inProgressRemovals}
+              </span>
+            </div>
+            <div className="pdf-summary-metric-cell">
+              <span className="pdf-summary-metric-caption">Verified Removed</span>
+              <span className="pdf-summary-metric-number pdf-summary-metric-emerald">
+                {pdfSummaryData.removedBrokers}
+              </span>
+            </div>
+          </div>
+
+          <div className="pdf-summary-two-col">
+            <div>
+              <h3 className="pdf-summary-section-title">Exposure Breakdown by Registry Category</h3>
+              <table className="pdf-summary-table">
+                <thead>
+                  <tr>
+                    <th>Category</th>
+                    <th>Exposed</th>
+                    <th>Clean</th>
+                    <th>Actioned</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pdfSummaryData.categoryBreakdown.map((cat) => (
+                    <tr key={cat.category}>
+                      <td>{cat.category}</td>
+                      <td>{cat.exposedCount}</td>
+                      <td>{cat.cleanCount}</td>
+                      <td>{cat.inProgressOrRemovedCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <h3 className="pdf-summary-section-title">Historical Score Trend</h3>
+              {pdfSummaryData.historicalPoints.length === 0 ? (
+                <div className="pdf-summary-meta">
+                  Current scan establishes baseline score ({pdfSummaryData.exposureScore}/100) across{' '}
+                  {pdfSummaryData.exposedBrokers} exposed brokers. Capture future audit snapshots to
+                  chart longitudinal score reduction.
+                </div>
+              ) : (
+                <table className="pdf-summary-table">
+                  <thead>
+                    <tr>
+                      <th>Audit Date</th>
+                      <th>Score</th>
+                      <th>Exposed</th>
+                      <th>Removed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pdfSummaryData.historicalPoints.map((pt, idx) => (
+                      <tr key={`${pt.dateLabel}-${idx}`}>
+                        <td>{pt.dateLabel}</td>
+                        <td>{pt.score}/100</td>
+                        <td>{pt.exposedCount}</td>
+                        <td>{pt.removedCount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
+          <div className="pdf-summary-section">
+            <h3 className="pdf-summary-section-title">
+              Active Broker Exposure &amp; Suppression Status Ledger ({pdfSummaryData.brokerRows.length})
+            </h3>
+            <table className="pdf-summary-table">
+              <thead>
+                <tr>
+                  <th>Broker &amp; Domain</th>
+                  <th>Category</th>
+                  <th>Risk</th>
+                  <th>Exposed Fields</th>
+                  <th>Channel / SLA</th>
+                  <th>Status &amp; Receipt</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pdfSummaryData.brokerRows.map((row) => (
+                  <tr key={row.brokerId}>
+                    <td>
+                      <strong>{row.brokerName}</strong>
+                      <span className="pdf-summary-domain">{row.domain}</span>
+                    </td>
+                    <td>{row.category}</td>
+                    <td>
+                      <span
+                        className={
+                          row.risk === 'Critical'
+                            ? 'pdf-summary-risk-critical'
+                            : row.risk === 'High'
+                            ? 'pdf-summary-risk-high'
+                            : 'pdf-summary-risk-medium'
+                        }
+                      >
+                        {row.risk}
+                      </span>
+                    </td>
+                    <td>{row.exposedDataSummary || 'Name, City/State'}</td>
+                    <td>{row.channelAndSla}</td>
+                    <td>
+                      <span
+                        className={
+                          row.statusLabel === 'Verified Removed'
+                            ? 'pdf-summary-status-done'
+                            : row.statusLabel === 'Action Pending'
+                            ? 'pdf-summary-status-pending'
+                            : 'pdf-summary-status-sent'
+                        }
+                      >
+                        {row.statusLabel}
+                      </span>
+                      {row.receiptSummary !== '—' && (
+                        <span className="pdf-summary-domain">{row.receiptSummary}</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="pdf-summary-footer-note">
+            Statutory Privacy Documentation — Prepared for consumer record suppression tracking
+            under CCPA/CPRA (Cal. Civ. Code § 1798.105 &amp; Delete Act SB 362), TDPSA (Tex. Bus.
+            &amp; Com. Code § 541.051), VCDPA, CPA, CTDPA, OCPA, and applicable state data-broker
+            opt-out statutes. Retain confirmation receipts for 45-day statutory cure enforcement.
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

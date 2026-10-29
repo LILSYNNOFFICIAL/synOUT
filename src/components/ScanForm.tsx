@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { UserProfile } from '../types';
 import { SearchTypeCategory, SEARCH_TYPES } from '../utils/searchProfiles';
+import { parsePriorLocationsList } from '../utils/profileQuickFixEngine';
 import {
   Search,
   ChevronDown,
@@ -29,10 +30,7 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const previousLocations = priorLocations
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const previousLocations = parsePriorLocationsList(priorLocations);
 
     const profile: UserProfile = {
       firstName: firstName.trim(),

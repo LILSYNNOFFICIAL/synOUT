@@ -23,8 +23,12 @@ import {
   Clock,
   BookOpen,
   Globe,
+  Cloud,
+  MessageSquare,
 } from 'lucide-react';
 import { useEmailConnection } from '../services/emailConnectionStore';
+import { useCloudVaultState } from '../services/cloudVaultSync';
+import { PWAInstallButton } from './PWAInstallButton';
 
 export type AppTab =
   | 'home'
@@ -42,7 +46,8 @@ export type AppTab =
   | 'bureaus'
   | 'firewall'
   | 'inbox'
-  | 'registries';
+  | 'registries'
+  | 'advisor';
 
 export type NavCategoryId =
   | 'discovery'
@@ -276,11 +281,19 @@ export function buildNavCompartments(params: {
         },
         {
           id: 'vault-modal',
-          label: 'Encrypted Workspace Vault',
-          shortLabel: 'Vault',
-          description: 'AES-GCM encrypted backups & snapshot history',
+          label: 'Encrypted Vault & Cloud Sync',
+          shortLabel: 'Cloud Vault',
+          description: 'Cross-device AES-256-GCM cloud sync & local backups',
           action: 'vault',
           icon: Archive,
+        },
+        {
+          id: 'advisor',
+          label: 'Privacy & Opt-Out Advisor',
+          shortLabel: 'Privacy Advisor',
+          description: 'Multi-turn statutory counsel & live web broker research',
+          tab: 'advisor',
+          icon: MessageSquare,
         },
         {
           id: 'guide',
@@ -316,6 +329,7 @@ export function resolveCategoryForTab(tab: AppTab): NavCategoryId {
     case 'bureaus':
     case 'firewall':
       return 'registries';
+    case 'advisor':
     case 'guide':
       return 'workspace';
   }
@@ -343,6 +357,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const { isDirectSendConnected, isAnyEmailConnected, activeConnectedEmail } =
     useEmailConnection();
+  const cloudState = useCloudVaultState();
 
   const [logoLoadError, setLogoLoadError] = useState(false);
 
@@ -445,7 +460,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             {!logoLoadError ? (
               <img
-                src="/synout-logo.svg"
+                src={`${import.meta.env.BASE_URL}synout-logo.svg`}
                 alt="synOUT"
                 referrerPolicy="no-referrer"
                 onError={() => setLogoLoadError(true)}
@@ -624,8 +639,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             })}
           </nav>
 
-          {/* Zone 3: Single Primary Action (+ Mobile Menu Button on <lg) */}
+          {/* Zone 3: Single Primary Action + PWA Install (+ Mobile Menu Button on <lg) */}
           <div className="flex items-center gap-2.5 shrink-0">
+            <div className="hidden sm:block">
+              <PWAInstallButton />
+            </div>
             {hasScanResults && onOpenNukeAll ? (
               <button
                 type="button"
@@ -764,10 +782,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                     setOpenCategory(null);
                     onOpenVault();
                   }}
-                  className="inline-flex items-center gap-1 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className={`inline-flex items-center gap-1 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    cloudState.user ? 'text-emerald-300' : ''
+                  }`}
                 >
-                  <Archive className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Vault</span>
+                  {cloudState.user ? (
+                    <Cloud className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Archive className="w-3.5 h-3.5 text-slate-400" />
+                  )}
+                  <span>{cloudState.user ? 'Cloud Synced' : 'Cloud Vault'}</span>
                 </button>
               </>
             )}
@@ -800,6 +824,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Compartmentalized Mobile Glass Drawer — Explicit z-20 Layer */}
       {mobileMenuOpen && (
         <div className="relative z-20 lg:hidden glass-popover border-x-0 border-t-0 max-h-[80vh] overflow-y-auto px-4 py-5 space-y-5">
+          <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/[0.08]">
+            <span className="text-xs text-slate-400">Install App for Offline Access</span>
+            <PWAInstallButton />
+          </div>
           {compartments.map((cat) => (
             <div key={cat.id} className="space-y-1.5">
               <div className="px-2 text-[11px] font-semibold text-emerald-400 tracking-wide">

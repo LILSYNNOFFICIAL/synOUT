@@ -76,7 +76,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
         <div className="synout-splash-logo relative flex items-center justify-center">
           {!logoLoadError ? (
             <img
-              src="/synout-logo.svg"
+              src={`${import.meta.env.BASE_URL}synout-logo.svg`}
               alt="synOUT"
               referrerPolicy="no-referrer"
               onError={() => setLogoLoadError(true)}

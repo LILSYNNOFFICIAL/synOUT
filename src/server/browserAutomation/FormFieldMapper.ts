@@ -623,3 +623,558 @@ export async function populateMappedFieldsOnPage(
 
   return audit;
 }
+
+/**
+ * Safely dismisses blocking cookie/consent banners (OneTrust, Cookiebot, generic GDPR/CCPA bars)
+ * without touching opt-out forms or marketing checkboxes. Prefers Reject/Necessary-Only buttons.
+ */
+export async function dismissBlockingCookieBannersOnPage(page: Page): Promise<string[]> {
+  try {
+    const target = await page.evaluate(() => {
+      const cssEscape = (val: string) =>
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(val)
+          : val.replace(/([^a-zA-Z0-9_-])/g, '\\$1');
+
+      const bannerSelectors = [
+        '#onetrust-banner-sdk',
+        '#CybotCookiebotDialog',
+        '[id*="cookie-banner" i]',
+        '[id*="cookie-consent" i]',
+        '[class*="cookie-banner" i]',
+        '[class*="cookie-consent" i]',
+        '[data-testid*="cookie" i]',
+        '.cc-window',
+        '[aria-label*="cookie" i]',
+      ];
+
+      const isVisible = (el: HTMLElement): boolean => {
+        if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0) {
+          return false;
+        }
+        const rect = el.getBoundingClientRect();
+        return rect.width > 20 && rect.height > 16;
+      };
+
+      for (const sel of bannerSelectors) {
+        const containers = Array.from(document.querySelectorAll(sel)) as HTMLElement[];
+        for (const container of containers) {
+          if (!isVisible(container)) continue;
+          // Never treat a container holding the primary opt-out text inputs as a cookie banner
+          if (container.querySelector('input[type="email"], input[name*="email" i], input[name*="name" i]')) {
+            continue;
+          }
+
+          const buttons = Array.from(
+            container.querySelectorAll('button, [role="button"], input[type="button"], a[role="button"]')
+          ) as HTMLElement[];
+
+          const visibleBtns = buttons.filter(isVisible);
+          if (visibleBtns.length === 0) continue;
+
+          const getBtnLabel = (b: HTMLElement) =>
+            (
+              b.innerText ||
+              b.textContent ||
+              (b as HTMLInputElement).value ||
+              b.getAttribute('aria-label') ||
+              ''
+            )
+              .replace(/\s+/g, ' ')
+              .trim();
+
+          const preferred =
+            visibleBtns.find((b) =>
+              /\b(reject\s*all|reject\s*optional|decline|necessary\s*only|essential\s*only|do\s*not\s*accept|refuse)\b/i.test(
+                getBtnLabel(b)
+              )
+            ) ||
+            visibleBtns.find((b) =>
+              /\b(close|dismiss|got\s*it|continue\s*without|accept\s*necessary|ok|accept(\s*all)?|allow\s*cookies|i\s*understand)\b/i.test(
+                getBtnLabel(b)
+              )
+            );
+
+          if (preferred) {
+            const label = getBtnLabel(preferred).slice(0, 60) || 'Dismiss';
+            if (preferred.id) {
+              return { selector: `#${cssEscape(preferred.id)}`, label };
+            }
+            preferred.setAttribute('data-synout-cookie-dismiss', 'true');
+            return { selector: '[data-synout-cookie-dismiss="true"]', label };
+          }
+        }
+      }
+      return null;
+    });
+
+    if (target) {
+      await page.locator(target.selector).first().click({ timeout: 2000 }).catch(() => undefined);
+      await page.waitForTimeout(100);
+      return [`Dismissed cookie banner ("${target.label}")`];
+    }
+  } catch {
+    // Non-fatal if page navigated or banner vanished
+  }
+  return [];
+}
+
+/**
+ * Sweeps and checks conditional consent/opt-out checkboxes that dynamically mount or become visible
+ * AFTER typing an email or selecting a state/request-type dropdown (e.g. CA residency perjury attestation
+ * or "Suppress all matching records"), while strictly skipping marketing opt-ins and honeypots.
+ */
+export async function sweepDynamicConsentCheckboxesOnPage(params: {
+  page: Page;
+  profile: UserProfile;
+  senderEmail?: string;
+  broker?: DataBroker;
+  disclosurePolicy?: ConsumerDisclosurePolicy;
+}): Promise<{
+  newlyCheckedLabels: string[];
+  updatedMappedFields: LiveDomFieldMapping[];
+  auditEntries: Array<{
+    fieldKey: string;
+    label: string;
+    semanticRole: string;
+    confidence: number;
+    maskedValue: string;
+    populated: boolean;
+  }>;
+}> {
+  const { page, profile, senderEmail, broker, disclosurePolicy } = params;
+  // Brief hydration settle for conditional React/Vue/vanilla change listeners
+  await page.waitForTimeout(140);
+
+  const remapped = await extractAndMapLiveDomFields({
+    page,
+    profile,
+    senderEmail,
+    broker,
+    disclosurePolicy,
+  });
+
+  const uncheckedConsentMappings: LiveDomFieldMapping[] = [];
+
+  for (const field of remapped.mappedFields) {
+    if (field.preserveOriginalHidden) continue;
+    const isCheckbox = field.inputType === 'checkbox' || field.tag === 'custom_checkbox';
+    if (!isCheckbox) continue;
+    if (
+      !field.disclosureAllowed ||
+      field.semanticRole === 'marketing_opt_in' ||
+      field.semanticRole === 'honeypot_trap' ||
+      field.semanticRole === 'sensitive_id_field' ||
+      field.semanticRole === 'unknown'
+    ) {
+      continue;
+    }
+
+    const shouldCheck =
+      Boolean(field.plannedValue) && !/^(false|0|no|off|__unchecked__)$/i.test(field.plannedValue);
+    if (!shouldCheck) continue;
+
+    const locator = page.locator(field.selector).first();
+    let alreadyChecked = false;
+    if (field.tag === 'custom_checkbox') {
+      alreadyChecked = (await locator.getAttribute('aria-checked').catch(() => null)) === 'true';
+    } else {
+      alreadyChecked = await locator.isChecked().catch(() => false);
+    }
+
+    if (!alreadyChecked) {
+      uncheckedConsentMappings.push(field);
+    }
+  }
+
+  if (uncheckedConsentMappings.length === 0) {
+    return {
+      newlyCheckedLabels: [],
+      updatedMappedFields: remapped.mappedFields,
+      auditEntries: [],
+    };
+  }
+
+  const auditEntries = await populateMappedFieldsOnPage(page, uncheckedConsentMappings);
+  const newlyCheckedLabels = auditEntries
+    .filter((entry) => entry.populated)
+    .map((entry) => entry.label || entry.fieldKey);
+
+  return {
+    newlyCheckedLabels,
+    updatedMappedFields: remapped.mappedFields,
+    auditEntries,
+  };
+}
+
+/**
+ * Detects and automatically completes post-submit confirmation modals/popups (e.g. `<div role="dialog">`,
+ * `aria-modal="true"`, `<dialog open>`, `.modal`, or secondary confirmation overlays) that pop up after
+ * clicking the initial Submit button — checking required/consent/suppression checkboxes inside the popup
+ * (never marketing spam) and clicking the final confirmation button without user intervention.
+ */
+export async function handlePostSubmitConfirmationPopupOnPage(params: {
+  page: Page;
+  profile: UserProfile;
+  senderEmail?: string;
+  disclosurePolicy?: ConsumerDisclosurePolicy;
+}): Promise<{
+  handled: boolean;
+  checkedBoxLabels: string[];
+  clickedButtonLabel: string | null;
+  auditEntries: Array<{
+    fieldKey: string;
+    label: string;
+    semanticRole: string;
+    confidence: number;
+    maskedValue: string;
+    populated: boolean;
+  }>;
+}> {
+  const { page, disclosurePolicy = DEFAULT_DISCLOSURE_POLICY } = params;
+
+  const popupInspection = await page
+    .evaluate((allowAgent: boolean) => {
+      const cssEscape = (val: string) =>
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(val)
+          : val.replace(/([^a-zA-Z0-9_-])/g, '\\$1');
+
+      const isVisible = (el: HTMLElement): boolean => {
+        if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+        const style = window.getComputedStyle(el);
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          parseFloat(style.opacity || '1') === 0
+        ) {
+          return false;
+        }
+        const rect = el.getBoundingClientRect();
+        return rect.width > 12 && rect.height > 12;
+      };
+
+      const isCheckboxOrLabelVisible = (el: HTMLElement): { visible: boolean; labelElSelector?: string; labelText: string } => {
+        const parts: string[] = [];
+        let labelEl: HTMLElement | null = null;
+        if (el.id) {
+          const explicit = document.querySelector(`label[for="${cssEscape(el.id)}"]`) as HTMLElement | null;
+          if (explicit) {
+            labelEl = explicit;
+            parts.push(explicit.innerText || explicit.textContent || '');
+          }
+        }
+        const ariaLabelledBy = el.getAttribute('aria-labelledby');
+        if (ariaLabelledBy) {
+          ariaLabelledBy.split(/\s+/).forEach((id) => {
+            const ref = document.getElementById(id);
+            if (ref) parts.push(ref.innerText || ref.textContent || '');
+          });
+        }
+        const wrapping = el.closest('label') as HTMLElement | null;
+        if (wrapping) {
+          if (!labelEl) labelEl = wrapping;
+          parts.push(wrapping.innerText || wrapping.textContent || '');
+        }
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) parts.push(ariaLabel);
+
+        const labelText = parts.join(' ').replace(/\s+/g, ' ').trim();
+        let labelElSelector: string | undefined;
+        if (labelEl && isVisible(labelEl)) {
+          const randAttr = `popup-lbl-${Math.random().toString(36).slice(2, 8)}`;
+          labelEl.setAttribute('data-synout-popup-lbl', randAttr);
+          labelElSelector = `[data-synout-popup-lbl="${randAttr}"]`;
+        }
+
+        return {
+          visible: isVisible(el) || Boolean(labelEl && isVisible(labelEl)),
+          labelElSelector,
+          labelText,
+        };
+      };
+
+      const modalSelectors = [
+        'dialog[open]',
+        '[role="dialog"]',
+        '[role="alertdialog"]',
+        '[aria-modal="true"]',
+        '[data-modal="true"]',
+        '[data-testid*="modal" i]',
+        '[data-testid*="confirm" i]',
+        '[id*="confirm-modal" i]',
+        '[id*="confirmation-modal" i]',
+        '[class*="confirm-modal" i]',
+        '[class*="confirmation-modal" i]',
+        '.modal',
+        '.popup-modal',
+      ];
+
+      const candidateContainers: HTMLElement[] = [];
+      for (const sel of modalSelectors) {
+        const found = Array.from(document.querySelectorAll(sel)) as HTMLElement[];
+        for (const el of found) {
+          if (isVisible(el) && !candidateContainers.includes(el)) {
+            candidateContainers.push(el);
+          }
+        }
+      }
+
+      const confirmBtnPattern =
+        /\b(confirm|yes,?\s*(remove|delete|opt[\s-]?out|erase|suppress|proceed|continue)|finalize|permanently\s*(remove|delete|erase|opt[\s-]?out)|complete\s*(removal|opt[\s-]?out|deletion|request)|proceed\s*with\s*(removal|deletion|opt[\s-]?out)|i\s*confirm)\b/i;
+      const cancelBtnPattern =
+        /\b(cancel|close|back|keep\s*my|never\s*mind|no,?\s*(keep|cancel|don'?t)|dismiss|abort)\b/i;
+
+      for (const container of candidateContainers) {
+        // Ignore cookie banners here
+        const containerIdentity = `${container.id} ${container.className} ${container.getAttribute('aria-label') || ''}`;
+        if (/cookie|onetrust|cookiebot/i.test(containerIdentity)) continue;
+
+        const buttons = Array.from(
+          container.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]')
+        ) as HTMLElement[];
+
+        const confirmBtn = buttons.filter(isVisible).find((btn) => {
+          const text = (
+            btn.innerText ||
+            btn.textContent ||
+            (btn as HTMLInputElement).value ||
+            btn.getAttribute('aria-label') ||
+            ''
+          )
+            .replace(/\s+/g, ' ')
+            .trim();
+          return confirmBtnPattern.test(text) && !cancelBtnPattern.test(text);
+        });
+
+        if (!confirmBtn) continue;
+
+        const confirmBtnLabel = (
+          confirmBtn.innerText ||
+          confirmBtn.textContent ||
+          (confirmBtn as HTMLInputElement).value ||
+          confirmBtn.getAttribute('aria-label') ||
+          'Confirm'
+        )
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 80);
+
+        let confirmBtnSelector: string;
+        if (confirmBtn.id) {
+          confirmBtnSelector = `#${cssEscape(confirmBtn.id)}`;
+        } else {
+          confirmBtn.setAttribute('data-synout-popup-confirm', 'true');
+          confirmBtnSelector = '[data-synout-popup-confirm="true"]';
+        }
+
+        const rawCheckboxes = Array.from(
+          container.querySelectorAll('input[type="checkbox"], [role="checkbox"], [role="switch"]')
+        ) as HTMLElement[];
+
+        const checkboxesToCheck: Array<{
+          selector: string;
+          labelSelector?: string;
+          label: string;
+          isAria: boolean;
+        }> = [];
+        const checkboxesToUncheck: Array<{
+          selector: string;
+          labelSelector?: string;
+          label: string;
+          isAria: boolean;
+        }> = [];
+
+        rawCheckboxes.forEach((box, idx) => {
+          if ((box as HTMLInputElement).disabled) return;
+          const info = isCheckboxOrLabelVisible(box);
+          if (!info.visible) return;
+
+          const isAria = box.tagName !== 'INPUT';
+          const combinedHint = [
+            box.getAttribute('name') || '',
+            box.id || '',
+            info.labelText,
+            isAria ? box.innerText || '' : '',
+          ]
+            .join(' ')
+            .toLowerCase()
+            .replace(/[_-]+/g, ' ');
+
+          // Skip honeypots & sensitive IDs
+          if (/\b(honeypot|leave\s*blank|do\s*not\s*fill|ssn|social\s*security|driver'?s?\s*licen[sc]e|passport)\b/i.test(combinedHint)) {
+            return;
+          }
+
+          let selector: string;
+          if (box.id) {
+            selector = `#${cssEscape(box.id)}`;
+          } else {
+            const attrVal = `popup-box-${idx}`;
+            box.setAttribute('data-synout-popup-box', attrVal);
+            selector = `[data-synout-popup-box="${attrVal}"]`;
+          }
+
+          const isMarketing =
+            /\b(subscribe|marketing|newsletter|promo|promotional|special[\s-]?offers|partner[\s-]?emails|receive[\s-]?updates|opt[\s-]?in\s*to)\b/i.test(
+              combinedHint
+            );
+
+          if (isMarketing) {
+            const currentlyChecked = isAria
+              ? box.getAttribute('aria-checked') === 'true'
+              : (box as HTMLInputElement).checked;
+            if (currentlyChecked) {
+              checkboxesToUncheck.push({
+                selector,
+                labelSelector: info.labelElSelector,
+                label: info.labelText || 'Marketing Opt-In',
+                isAria,
+              });
+            }
+            return;
+          }
+
+          const isAgentOnly = /\b(authorized[\s-]?agent|attorney|power\s*of\s*attorney|on[\s-]?behalf\s*of\s*another)\b/i.test(
+            combinedHint
+          );
+          if (isAgentOnly && !allowAgent) {
+            return;
+          }
+
+          const isRequired =
+            (box as HTMLInputElement).required || box.getAttribute('aria-required') === 'true';
+          const isConsentOrRemoval =
+            isRequired ||
+            /\b(confirm|agree|certify|declare|accurate|perjury|privacy|resident|delete|deletion|remove|removal|suppress|erase|opt[\s-]?out|do[\s-]?not[\s-]?sell|permanent|irreversible|understand|acknowledge|authorize|18|adult|identity|individual|consumer|request|all[\s-]?records|future)\b/i.test(
+              combinedHint
+            );
+
+          if (isConsentOrRemoval) {
+            checkboxesToCheck.push({
+              selector,
+              labelSelector: info.labelElSelector,
+              label: info.labelText || `Confirmation Checkbox ${idx + 1}`,
+              isAria,
+            });
+          }
+        });
+
+        return {
+          found: true,
+          confirmBtnSelector,
+          confirmBtnLabel,
+          checkboxesToCheck,
+          checkboxesToUncheck,
+        };
+      }
+
+      return null;
+    }, Boolean(disclosurePolicy.allowAuthorizedAgent && params.profile.powerOfAttorney?.isSigned))
+    .catch(() => null);
+
+  if (!popupInspection || !popupInspection.found) {
+    return {
+      handled: false,
+      checkedBoxLabels: [],
+      clickedButtonLabel: null,
+      auditEntries: [],
+    };
+  }
+
+  const checkedBoxLabels: string[] = [];
+  const auditEntries: Array<{
+    fieldKey: string;
+    label: string;
+    semanticRole: string;
+    confidence: number;
+    maskedValue: string;
+    populated: boolean;
+  }> = [];
+
+  // Uncheck any pre-selected marketing spam checkboxes inside the modal
+  for (const mBox of popupInspection.checkboxesToUncheck) {
+    const loc = page.locator(mBox.selector).first();
+    if (mBox.isAria) {
+      if ((await loc.getAttribute('aria-checked').catch(() => null)) === 'true') {
+        await loc.click({ timeout: 1500 }).catch(() => undefined);
+      }
+    } else {
+      const checked = await loc.isChecked().catch(() => false);
+      if (checked) {
+        await loc.uncheck({ timeout: 1500 }).catch(async () => {
+          if (mBox.labelSelector) {
+            await page.locator(mBox.labelSelector).first().click({ timeout: 1500 }).catch(() => undefined);
+          }
+        });
+      }
+    }
+  }
+
+  // Check all required/consent/confirmation checkboxes inside the modal
+  for (let i = 0; i < popupInspection.checkboxesToCheck.length; i++) {
+    const cBox = popupInspection.checkboxesToCheck[i];
+    const loc = page.locator(cBox.selector).first();
+    let populated = false;
+
+    try {
+      if (cBox.isAria) {
+        if ((await loc.getAttribute('aria-checked').catch(() => null)) !== 'true') {
+          await loc.click({ timeout: 1800 });
+        }
+        populated = true;
+      } else {
+        const already = await loc.isChecked().catch(() => false);
+        if (!already) {
+          await loc.check({ timeout: 1800 }).catch(async () => {
+            if (cBox.labelSelector) {
+              await page.locator(cBox.labelSelector).first().click({ timeout: 1800 }).catch(() => undefined);
+            }
+            const afterLabel = await loc.isChecked().catch(() => false);
+            if (!afterLabel) {
+              await loc.check({ force: true, timeout: 1500 }).catch(async () => {
+                await loc.evaluate((el: HTMLInputElement) => {
+                  el.checked = true;
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+              });
+            }
+          });
+        }
+        populated = await loc.isChecked().catch(() => true);
+      }
+    } catch {
+      populated = false;
+    }
+
+    if (populated) {
+      checkedBoxLabels.push(cBox.label);
+    }
+    auditEntries.push({
+      fieldKey: `popup_checkbox_${i + 1}`,
+      label: cBox.label,
+      semanticRole: 'consent_checkbox',
+      confidence: 0.96,
+      maskedValue: populated ? 'checked' : '(fill_failed)',
+      populated,
+    });
+  }
+
+  // Allow disabled Confirm button listeners to enable after checking boxes
+  await page.waitForTimeout(90);
+
+  await page.locator(popupInspection.confirmBtnSelector).first().click({ timeout: 4500 });
+  await page.waitForLoadState('networkidle', { timeout: 4500 }).catch(() => null);
+  await page.waitForTimeout(200);
+
+  return {
+    handled: true,
+    checkedBoxLabels,
+    clickedButtonLabel: popupInspection.confirmBtnLabel,
+    auditEntries,
+  };
+}
+

@@ -59,12 +59,25 @@ interface NukeAllModalProps {
   onDeindexNuked: (deindexId: string, receiptMessageId: string) => void;
   onOpenConnectEmail: () => void;
   onOpenWebFormWorkbench?: (broker?: DataBroker) => void;
-  onBrokerWebFormLogged?: (broker: DataBroker, optOutUrl?: string) => void;
+  onBrokerWebFormLogged?: (
+    broker: DataBroker,
+    optOutUrl?: string,
+    extraReceipt?: {
+      confirmationCode?: string;
+      discoveredTitle?: string;
+      workflowJobId?: string;
+      workflowState?: ScanResult['workflowState'];
+      internalSubmissionId?: string;
+      brokerConfirmedReceipt?: string | null;
+      submissionEvidenceHash?: string;
+      verifiedRemoved?: boolean;
+    }
+  ) => void;
   onClose: () => void;
 }
 
 interface TargetExecutionStatus {
-  state: 'sent' | 'rerouted' | 'failed';
+  state: 'sent' | 'rerouted' | 'form_submitted' | 'failed';
   deliveredTo?: string;
   receipt?: string;
   error?: string;
@@ -100,6 +113,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
   const [includeWebmasterDeindex, setIncludeWebmasterDeindex] = useState<boolean>(true);
   const [includeAlreadyDispatched, setIncludeAlreadyDispatched] = useState<boolean>(false);
   const [skipPortalPrimaryInboxes, setSkipPortalPrimaryInboxes] = useState<boolean>(false);
+  const [autoFallbackToWebForms, setAutoFallbackToWebForms] = useState<boolean>(true);
   const [ccBackupDpo, setCcBackupDpo] = useState<boolean>(true);
   const [bccSelf, setBccSelf] = useState<boolean>(false);
   const [registryVersion, setRegistryVersion] = useState<number>(0);
@@ -134,6 +148,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
   const [completedSummary, setCompletedSummary] = useState<{
     sent: number;
     rerouted: number;
+    formSubmitted: number;
     failed: number;
   } | null>(null);
 
@@ -334,6 +349,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
       `${effectiveProfile.firstName} ${effectiveProfile.lastName}`.trim() || 'Authorized Consumer';
     let sent = 0;
     let rerouted = 0;
+    let formSubmitted = 0;
     let failed = 0;
 
     for (let i = 0; i < targets.length; i++) {
@@ -382,20 +398,72 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
           onDeindexNuked(item.deindexId, res.messageId);
         }
       } catch (err) {
-        failed++;
-        setExecutionResults((prev) => ({
-          ...prev,
-          [item.id]: {
-            state: 'failed',
-            error: err instanceof Error ? err.message : 'Delivery rejected — use official portal',
-          },
-        }));
+        let autoFormHandled = false;
+        if (autoFallbackToWebForms && item.brokerRef && item.brokerRef.optOutUrl) {
+          try {
+            const job = await startWorkflowClient({
+              broker: item.brokerRef,
+              brokerId: item.brokerRef.id,
+              brokerName: item.brokerRef.name,
+              brokerDomain: item.brokerRef.domain,
+              targetUrl: item.brokerRef.optOutUrl,
+              profile: effectiveProfile,
+              senderEmail: activeConnectedEmail || primaryEmail || undefined,
+              mode: 'autonomous_auto_submit',
+            });
+            const submittedOk =
+              job.state === 'awaiting_broker_processing' ||
+              job.state === 'awaiting_email_verification' ||
+              job.state === 'submitted_unconfirmed' ||
+              job.state === 'removal_verified';
+
+            if (submittedOk) {
+              autoFormHandled = true;
+              formSubmitted++;
+              setExecutionResults((prev) => ({
+                ...prev,
+                [item.id]: {
+                  state: 'form_submitted',
+                  deliveredTo: job.currentUrl || item.brokerRef?.optOutUrl,
+                  receipt: job.brokerConfirmationCode || job.internalSubmissionId,
+                },
+              }));
+              onBrokerWebFormLogged?.(
+                item.brokerRef,
+                job.currentUrl || item.brokerRef.optOutUrl,
+                {
+                  confirmationCode: job.brokerConfirmationCode || undefined,
+                  discoveredTitle: job.discoveredTitle,
+                  workflowJobId: job.jobId,
+                  workflowState: job.state,
+                  internalSubmissionId: job.internalSubmissionId,
+                  brokerConfirmedReceipt: job.brokerConfirmationCode,
+                  submissionEvidenceHash: job.evidence?.evidenceManifestSha256,
+                  verifiedRemoved: job.state === 'removal_verified',
+                }
+              );
+            }
+          } catch {
+            autoFormHandled = false;
+          }
+        }
+
+        if (!autoFormHandled) {
+          failed++;
+          setExecutionResults((prev) => ({
+            ...prev,
+            [item.id]: {
+              state: 'failed',
+              error: err instanceof Error ? err.message : 'Delivery rejected — use official portal',
+            },
+          }));
+        }
       }
     }
 
     setProgress(null);
     setIsNuking(false);
-    setCompletedSummary({ sent, rerouted, failed });
+    setCompletedSummary({ sent, rerouted, formSubmitted, failed });
   };
 
   const handleLogWebmailBatchLaunch = (batchIndex: number, providerTag: string) => {
@@ -478,7 +546,16 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
         ) {
           submitted++;
           if (item.brokerRef && onBrokerWebFormLogged) {
-            onBrokerWebFormLogged(item.brokerRef, job.currentUrl || item.optOutUrl);
+            onBrokerWebFormLogged(item.brokerRef, job.currentUrl || item.optOutUrl, {
+              confirmationCode: job.brokerConfirmationCode || undefined,
+              discoveredTitle: job.discoveredTitle,
+              workflowJobId: job.jobId,
+              workflowState: job.state,
+              internalSubmissionId: job.internalSubmissionId,
+              brokerConfirmedReceipt: job.brokerConfirmationCode,
+              submissionEvidenceHash: job.evidence?.evidenceManifestSha256,
+              verifiedRemoved: job.state === 'removal_verified',
+            });
           }
           setLoggedWebFormIds((prev) => ({ ...prev, [item.id]: true }));
           setFormBatchResults((prev) => ({
@@ -495,7 +572,16 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
         } else if (job.state === 'awaiting_email_verification') {
           emailVerify++;
           if (item.brokerRef && onBrokerWebFormLogged) {
-            onBrokerWebFormLogged(item.brokerRef, job.currentUrl || item.optOutUrl);
+            onBrokerWebFormLogged(item.brokerRef, job.currentUrl || item.optOutUrl, {
+              confirmationCode: job.brokerConfirmationCode || undefined,
+              discoveredTitle: job.discoveredTitle,
+              workflowJobId: job.jobId,
+              workflowState: job.state,
+              internalSubmissionId: job.internalSubmissionId,
+              brokerConfirmedReceipt: job.brokerConfirmationCode,
+              submissionEvidenceHash: job.evidence?.evidenceManifestSha256,
+              verifiedRemoved: false,
+            });
           }
           setLoggedWebFormIds((prev) => ({ ...prev, [item.id]: true }));
           setFormBatchResults((prev) => ({
@@ -698,7 +784,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isCheckingAllMx ? 'animate-spin' : ''}`} />
                   <span>
-                    {isCheckingAllMx ? 'Checking DNS MX...' : 'Verify All Recipient MX Servers'}
+                    {isCheckingAllMx ? 'Checking Broker Inboxes...' : 'Check All Broker Inboxes'}
                   </span>
                 </button>
               </div>
@@ -770,7 +856,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                   onChange={(e) => setCcBackupDpo(e.target.checked)}
                   className="rounded border-slate-700 bg-slate-900 text-emerald-500"
                 />
-                <span>CC verified parent-entity / backup DPO desks</span>
+                <span>Also copy (CC) parent company privacy teams</span>
               </label>
 
               <label className="flex items-center gap-2.5 cursor-pointer">
@@ -780,7 +866,21 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                   onChange={(e) => setSkipPortalPrimaryInboxes(e.target.checked)}
                   className="rounded border-slate-700 bg-slate-900 text-amber-500"
                 />
-                <span>Skip web-portal-primary directory inboxes</span>
+                <span>Skip email for sites that prefer online forms</span>
+              </label>
+
+              <label className="flex items-center gap-2.5 cursor-pointer sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={autoFallbackToWebForms}
+                  onChange={(e) => setAutoFallbackToWebForms(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-emerald-500"
+                />
+                <span>
+                  <strong className="text-emerald-300">Automatic Form Fallback:</strong> If email is
+                  unavailable or bounces for any broker, automatically fill out its online removal
+                  form &amp; check required pop-up boxes for me
+                </span>
               </label>
 
               <label className="flex items-center gap-2.5 cursor-pointer sm:col-span-2">
@@ -790,7 +890,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                   onChange={(e) => setIncludeAlreadyDispatched(e.target.checked)}
                   className="rounded border-slate-700 bg-slate-900 text-red-500"
                 />
-                <span>Include targets that already received an opt-out notice (force re-send)</span>
+                <span>Include sites that already received a removal request (re-send)</span>
               </label>
             </div>
           </div>
@@ -901,12 +1001,12 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                         className="mt-0.5 rounded border-red-500/50 bg-slate-950 text-red-600"
                       />
                       <span>
-                        <strong>Arm Mass Removal Dispatch:</strong> I authorize synOUT to verify DNS
-                        MX records and transmit{' '}
+                        <strong>Confirm Mass Removal:</strong> Send{' '}
                         <strong className="text-white tabular-nums">{targets.length}</strong>{' '}
-                        individualized statutory deletion demands directly from{' '}
+                        personalized legal deletion emails from{' '}
                         <span className="font-mono text-emerald-300">{activeConnectedEmail}</span>{' '}
-                        to all queued data brokers, websites, and clearinghouses.
+                        — and automatically fill out the online removal form &amp; check boxes if
+                        email isn&apos;t an option for any site.
                       </span>
                     </label>
 
@@ -915,7 +1015,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                         <div className="flex items-center justify-between text-xs tabular-nums">
                           <span className="font-semibold text-white flex items-center gap-2">
                             <RefreshCw className="w-3.5 h-3.5 animate-spin text-red-400" />
-                            <span>Dispatching to {progress.currentName}...</span>
+                            <span>Removing your record from {progress.currentName}...</span>
                           </span>
                           <span className="font-mono text-red-300">
                             {progress.current} / {progress.total}
@@ -934,19 +1034,21 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                         <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                         <div className="space-y-1">
                           <span className="font-bold text-white block">
-                            NUKE ALL Mass Dispatch Finished
+                            NUKE ALL Mass Removal Finished
                           </span>
                           <span>
-                            Transmitted{' '}
-                            <strong className="tabular-nums">{completedSummary.sent}</strong>{' '}
-                            statutory deletion demands from{' '}
+                            Sent <strong className="tabular-nums">{completedSummary.sent}</strong>{' '}
+                            legal removal emails from{' '}
                             <span className="font-mono">{activeConnectedEmail}</span>
+                            {completedSummary.formSubmitted > 0
+                              ? ` · Auto-filled & checked boxes on ${completedSummary.formSubmitted} online form(s)`
+                              : ''}
                             {completedSummary.rerouted > 0
-                              ? ` (${completedSummary.rerouted} automatically rerouted to verified backup DPO desks)`
+                              ? ` (${completedSummary.rerouted} routed to backup privacy teams)`
                               : ''}
                             {completedSummary.failed > 0
-                              ? ` · ${completedSummary.failed} require manual web portal opt-out below.`
-                              : '. All 45-day SLA timers are now active in your Removal Tracker.'}
+                              ? ` · ${completedSummary.failed} need a quick human check below.`
+                              : '. All removal timers are active in your Tracker.'}
                           </span>
                         </div>
                       </div>
@@ -976,13 +1078,13 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-bold text-white">
-                      Zero-Credential Mass BCC Webmail Launcher
+                      1-Click Group Email Launcher (No Password Needed)
                     </div>
                     <p className="text-xs text-slate-400">
-                      Opens your signed-in webmail or mail app pre-addressed via{' '}
-                      <span className="font-mono text-slate-200">BCC:</span> to every verified data
-                      broker &amp; website DPO in URL-safe batches with a multi-state statutory
-                      omnibus deletion demand.
+                      Opens your email app pre-addressed via{' '}
+                      <span className="font-mono text-slate-200">BCC:</span> to every selected data
+                      broker&apos;s privacy team in safe batches with a complete legal removal
+                      letter written for you.
                     </p>
                   </div>
 
@@ -996,12 +1098,12 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                       {copiedAllEmails ? (
                         <>
                           <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Copied DPO List</span>
+                          <span className="text-emerald-400">Copied Broker Emails</span>
                         </>
                       ) : (
                         <>
                           <Copy className="w-3.5 h-3.5" />
-                          <span>Copy All DPO Emails</span>
+                          <span>Copy All Broker Emails</span>
                         </>
                       )}
                     </button>
@@ -1014,12 +1116,12 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                       {copiedOmnibusBody ? (
                         <>
                           <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Copied Demand</span>
+                          <span className="text-emerald-400">Copied Letter</span>
                         </>
                       ) : (
                         <>
                           <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Omnibus Notice</span>
+                          <span>Copy Removal Letter</span>
                         </>
                       )}
                     </button>
@@ -1028,7 +1130,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
 
                 {webmailBatches.length === 0 ? (
                   <p className="text-xs text-slate-400">
-                    Enable at least one target category above to generate mass BCC batches.
+                    Enable at least one target category above to generate group email batches.
                   </p>
                 ) : (
                   <div className="space-y-2.5">
@@ -1039,8 +1141,8 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                       >
                         <div className="space-y-1 min-w-0">
                           <div className="font-bold text-white tabular-nums">
-                            Mass BCC Batch {batch.batchIndex} of {batch.totalBatches} ·{' '}
-                            {batch.recipients.length} DPO Inboxes
+                            Group Email Batch {batch.batchIndex} of {batch.totalBatches} ·{' '}
+                            {batch.recipients.length} Broker Inboxes
                           </div>
                           <div className="text-[11px] text-slate-400 truncate">
                             {batch.targetNames.join(', ')}
@@ -1316,23 +1418,22 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
             )}
           </div>
 
-          {/* 4. Queued Targets & Per-Target DPO Override / Portal Fallback Table */}
+          {/* 4. Queued Targets & Per-Target Override / Form Fallback Table */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between text-xs tabular-nums">
               <span className="font-bold text-slate-200">
-                Queued Data Brokers, Websites &amp; Clearinghouses ({targets.length})
+                Queued Data Brokers &amp; People-Search Sites ({targets.length})
               </span>
               <span className="text-slate-400">
-                Click Edit DPO to override any recipient or Portal for manual web opt-out
+                Click Edit Email to change any broker address, or Form for online form removal
               </span>
             </div>
 
             <div className="max-h-64 overflow-y-auto bg-slate-950 border border-slate-800 rounded-xl divide-y divide-slate-800/80">
               {targets.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400">
-                  All selected targets have already received opt-out demands. Check &ldquo;Include
-                  targets that already received an opt-out notice&rdquo; above to force a fresh
-                  mass re-send.
+                  All selected targets have already received removal requests. Check &ldquo;Include
+                  sites that already received a removal request&rdquo; above to re-send.
                 </div>
               ) : (
                 targets.map((item) => {
@@ -1375,7 +1476,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                               <>
                                 <span className="text-slate-600">·</span>
                                 <span className={mx.mxVerified ? 'text-emerald-400' : 'text-rose-400'}>
-                                  {mx.mxVerified ? 'MX Verified' : 'No MX — Use Portal'}
+                                  {mx.mxVerified ? 'Inbox Active' : 'No Email — Auto-Form Ready'}
                                 </span>
                               </>
                             )}
@@ -1392,13 +1493,19 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                           {exec?.state === 'rerouted' && (
                             <span className="text-amber-300 font-semibold inline-flex items-center gap-1">
                               <CheckCircle2 className="w-3.5 h-3.5" />
-                              <span>Rerouted Backup DPO</span>
+                              <span>Sent via Backup Email</span>
+                            </span>
+                          )}
+                          {exec?.state === 'form_submitted' && (
+                            <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Auto-Filled Form &amp; Boxes</span>
                             </span>
                           )}
                           {exec?.state === 'failed' && (
                             <span className="text-rose-400 font-semibold inline-flex items-center gap-1">
                               <ShieldAlert className="w-3.5 h-3.5" />
-                              <span>Use Portal</span>
+                              <span>Use Form</span>
                             </span>
                           )}
 
@@ -1417,7 +1524,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                               className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
                             >
                               <Edit3 className="w-3 h-3 text-sky-400" />
-                              <span>Edit DPO</span>
+                              <span>Edit Email</span>
                             </button>
                           )}
 
@@ -1467,7 +1574,7 @@ export const NukeAllModal: React.FC<NukeAllModalProps> = ({
                             onClick={() => handleSaveTargetOverride(item)}
                             className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold cursor-pointer whitespace-nowrap"
                           >
-                            Save DPO
+                            Save Email
                           </button>
                           {overrideError && (
                             <span className="text-rose-400 text-[11px]">{overrideError}</span>

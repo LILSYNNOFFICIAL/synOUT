@@ -47,6 +47,14 @@ import {
 import { listAllBrokerPlaybooks } from './src/server/browserAutomation/BrokerAdapters.ts';
 import { detectAntiBotGate } from './src/utils/optOutFormEngine.ts';
 import { getBrokerRecordSearchUrl } from './src/utils/scanEngine.ts';
+import {
+  type AdvisorHistoryItem,
+  type AdvisorRoleId,
+  type AdvisorSpeedMode,
+  classifyGeminiServerError,
+  lookupBrokerLiveSearchIntel,
+  runMultiTurnPrivacyChat,
+} from './src/server/geminiPrivacyAdvisor.ts';
 
 dotenv.config();
 
@@ -154,15 +162,6 @@ app.post('/api/user/purge-session', (req, res) => {
 });
 
 // Endpoint: Generate customized statutory legal notice (synOUT Legal Engine)
-const apiKey = process.env.GEMINI_API_KEY || '';
-let ai: GoogleGenAI | null = null;
-if (apiKey) {
-  ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-  });
-}
-
 app.post('/api/generate-letter', apiRateLimiter, async (req, res) => {
   const userName = sanitizeString(req.body.userName, 80);
   const userEmail = sanitizeString(req.body.userEmail, 120);
@@ -193,11 +192,16 @@ Please transmit written confirmation of complete compliance within the statutory
 Sincerely,
 ${userName}`;
 
-  if (!ai) {
+  const currentApiKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (!currentApiKey) {
     return res.json({ letter: fallbackLetter });
   }
 
   try {
+    const ai = new GoogleGenAI({
+      apiKey: currentApiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
     const prompt = `Write a formal, legally grounded Consumer Data Deletion and Opt-Out of Sale demand letter.
 Statute: ${statute}
 Consumer: ${userName} residing in ${userCity}, ${userState}
@@ -205,14 +209,129 @@ Entity: ${brokerName} (${brokerDomain})
 Notice requirement: Demand permanent deletion of phone, address, and online records within statutory deadlines. No preamble or conversational filler.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: prompt,
     });
 
     const letter = response.text?.trim() || fallbackLetter;
     return res.json({ letter: scrubSensitivePII(letter) });
-  } catch (error) {
+  } catch {
     return res.json({ letter: fallbackLetter });
+  }
+});
+
+// Endpoint: Multi-turn Privacy & Opt-Out Advisor Chat (with optional Google Search Grounding)
+app.post('/api/advisor/chat', apiRateLimiter, async (req, res) => {
+  const message = sanitizeString(req.body.message, 3000);
+  if (!message) {
+    return res.status(400).json({ error: 'Message text is required.' });
+  }
+
+  const rawRole = sanitizeString(req.body.roleId, 40);
+  const roleId: AdvisorRoleId =
+    rawRole === 'broker_researcher' || rawRole === 'rapid_triage'
+      ? rawRole
+      : 'statutory_counsel';
+
+  const speedMode: AdvisorSpeedMode =
+    req.body.speedMode === 'fast_lite' ? 'fast_lite' : 'grounded_standard';
+  const useSearchGrounding = Boolean(req.body.useSearchGrounding);
+
+  const history: AdvisorHistoryItem[] = Array.isArray(req.body.history)
+    ? req.body.history
+        .slice(-20)
+        .filter(
+          (h: unknown): h is { role: 'user' | 'model'; text: string } =>
+            Boolean(
+              h &&
+                typeof h === 'object' &&
+                ((h as { role?: string }).role === 'user' ||
+                  (h as { role?: string }).role === 'model') &&
+                typeof (h as { text?: unknown }).text === 'string'
+            )
+        )
+        .map((h) => ({
+          role: h.role,
+          text: sanitizeString(h.text, 4000),
+        }))
+    : [];
+
+  const rawCtx = req.body.scanContext;
+  const scanContext =
+    rawCtx && typeof rawCtx === 'object'
+      ? {
+          jurisdictionState: sanitizeString(rawCtx.jurisdictionState, 30) || undefined,
+          exposureScore:
+            typeof rawCtx.exposureScore === 'number'
+              ? Math.max(0, Math.min(100, Math.round(rawCtx.exposureScore)))
+              : undefined,
+          totalBrokersScanned:
+            typeof rawCtx.totalBrokersScanned === 'number'
+              ? Math.max(0, Math.min(5000, Math.round(rawCtx.totalBrokersScanned)))
+              : undefined,
+          exposedCount:
+            typeof rawCtx.exposedCount === 'number'
+              ? Math.max(0, Math.min(5000, Math.round(rawCtx.exposedCount)))
+              : undefined,
+          inProgressCount:
+            typeof rawCtx.inProgressCount === 'number'
+              ? Math.max(0, Math.min(5000, Math.round(rawCtx.inProgressCount)))
+              : undefined,
+          removedCount:
+            typeof rawCtx.removedCount === 'number'
+              ? Math.max(0, Math.min(5000, Math.round(rawCtx.removedCount)))
+              : undefined,
+          topExposedBrokers: Array.isArray(rawCtx.topExposedBrokers)
+            ? rawCtx.topExposedBrokers.slice(0, 12).map((b: Record<string, unknown>) => ({
+                name: sanitizeString(b?.name, 80),
+                domain: sanitizeString(b?.domain, 120),
+                risk: sanitizeString(b?.risk, 20),
+                removalStatus: sanitizeString(b?.removalStatus, 30),
+              }))
+            : undefined,
+        }
+      : undefined;
+
+  try {
+    const result = await runMultiTurnPrivacyChat({
+      message,
+      history,
+      roleId,
+      speedMode,
+      useSearchGrounding,
+      scanContext,
+    });
+    return res.json(result);
+  } catch (err) {
+    const classified = classifyGeminiServerError(err);
+    return res.status(classified.httpStatus).json({ error: classified.userMessage });
+  }
+});
+
+// Endpoint: Live Google-Search-Grounded Data Broker Opt-Out & Policy Lookup
+app.post('/api/advisor/broker-intel', apiRateLimiter, async (req, res) => {
+  const brokerName = sanitizeString(req.body.brokerName, 100);
+  const brokerDomain = sanitizeString(req.body.brokerDomain, 140).toLowerCase();
+  const optOutUrl = sanitizeString(req.body.optOutUrl, 280);
+  const jurisdictionState = sanitizeString(req.body.jurisdictionState, 30);
+
+  if (!brokerName || !brokerDomain) {
+    return res
+      .status(400)
+      .json({ error: 'Both brokerName and brokerDomain are required.' });
+  }
+
+  try {
+    const intel = await lookupBrokerLiveSearchIntel({
+      brokerName,
+      brokerDomain,
+      optOutUrl: optOutUrl || undefined,
+      jurisdictionState: jurisdictionState || undefined,
+    });
+    return res.json(intel);
+  } catch (err) {
+    const classified = classifyGeminiServerError(err);
+    return res.status(classified.httpStatus).json({ error: classified.userMessage });
   }
 });
 
@@ -1412,6 +1531,52 @@ app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
     resurfacedCount: diffs.filter((d) => d.outcome === 'resurfaced_regression').length,
     confirmedAbsentCount: diffs.filter((d) => d.outcome === 'confirmed_absent').length,
     diffs,
+  });
+});
+
+// Endpoint: Send or log Automated Re-Listing Surveillance Digest Alert
+app.post('/api/monitoring/send-relisting-digest', apiRateLimiter, async (req, res) => {
+  const sessionId = getRequestSessionId(req);
+  const recipientEmail = sanitizeString(req.body.recipientEmail, 254).toLowerCase();
+  const subject = sanitizeString(
+    req.body.subject || '[synOUT Security Alert] Re-Listing Surveillance Digest',
+    220
+  );
+  const rawBody = typeof req.body.body === 'string' ? req.body.body.slice(0, 24000) : '';
+  const brokerNames = Array.isArray(req.body.brokerNames)
+    ? req.body.brokerNames.map((b: unknown) => sanitizeString(b, 80)).filter(Boolean).slice(0, 25)
+    : [];
+  const resurfacedCount = Math.max(0, Math.min(500, Number(req.body.resurfacedCount || 0)));
+
+  if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
+    return res.status(400).json({ error: 'Valid recipientEmail is required.' });
+  }
+
+  const nowIso = new Date().toISOString();
+  const fallbackMessageId = `<relisting-digest-${Date.now()}-${crypto.randomBytes(4).toString('hex')}@alert.synout.privacy>`;
+
+  pushSessionEvent(sessionId, {
+    id: `ev-digest-${Date.now()}`,
+    timestamp: nowIso,
+    brokerId: 'relisting-digest-monitor',
+    brokerName: brokerNames[0] || 'Re-Listing Monitor',
+    brokerDomain: 'synout.local',
+    action: 'INTERCEPTED',
+    externalConfirmationToken: fallbackMessageId,
+    statusText:
+      resurfacedCount > 0
+        ? `Re-listing digest alert prepared for ${recipientEmail} (${resurfacedCount} resurfaced broker(s)).`
+        : `Test re-listing digest verification logged for ${recipientEmail}.`,
+    externalStatusCode: 200,
+  });
+
+  return res.json({
+    success: true,
+    deliveredViaSmtp: false,
+    messageId: fallbackMessageId,
+    recipientEmail,
+    sentAt: nowIso,
+    bodyLength: scrubSensitivePII(rawBody).length,
   });
 });
 

@@ -18,9 +18,14 @@ import {
   runBrokerScan,
   saveStateToStorage,
 } from './utils/scanEngine';
+import { mergeRescanPreservingProgress } from './utils/profileQuickFixEngine';
 import { rotateClientSessionToken, sessionFetch } from './services/sessionClient';
-import { runLivePortalProbeClient } from './services/optOutDiscoveryClient';
 import {
+  runLivePortalProbeClient,
+  startWorkflowClient,
+} from './services/optOutDiscoveryClient';
+import {
+  buildStatutoryNoticeForBroker,
   findBrokerById,
   hasVerifiedEmailReceipt,
   disconnectSmtpAccount,
@@ -28,11 +33,13 @@ import {
   purgeAllEmailConnections,
   getEmailConnectionState,
   resolveActiveConnectedEmailFromState,
+  sendEmailViaConnectedAccount,
   useEmailConnection,
 } from './services/emailConnectionStore';
 import { clearCustomDiscoveredBrokers } from './utils/dynamicBrokerRegistry';
 import {
   SearchTypeCategory,
+  getSavedSearches,
   saveSearchProfile,
   clearAllSavedSearches,
   restoreSavedSearches,
@@ -66,6 +73,8 @@ import {
 import {
   clearBrokerContactOverrides,
   clearClientMxCache,
+  getBrokerContactOverrides,
+  resolveBrokerContactProfile,
   restoreBrokerContactOverrides,
 } from './utils/brokerContactResolver';
 import { Navbar, AppTab } from './components/Navbar';
@@ -102,6 +111,16 @@ import { StateRegistryComplianceCenter } from './components/StateRegistryComplia
 import { LiveRelistingProbeDiff } from './utils/relistingMonitorEngine';
 import { Footer } from './components/Footer';
 import { SplashScreen } from './components/SplashScreen';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { PrivacyAdvisorChat } from './components/PrivacyAdvisorChat';
+import { clearAdvisorThreadHistory } from './services/privacyAdvisorClient';
+import {
+  hasUnlockedSessionPassphrase,
+  pushEncryptedBundleToCloud,
+  registerRemoteVaultRestoreHandler,
+  signOutCloudVault,
+  useCloudVaultState,
+} from './services/cloudVaultSync';
 import { CheckCircle2 } from 'lucide-react';
 
 const DEFAULT_FALLBACK_PROFILE: UserProfile = {
@@ -180,6 +199,8 @@ export default function App() {
     broker: DataBroker;
     result: ScanResult;
   } | null>(null);
+  const [isAdvisorDrawerOpen, setIsAdvisorDrawerOpen] = useState(false);
+  const [advisorInitialPrompt, setAdvisorInitialPrompt] = useState<string | null>(null);
 
   // Toast notifications
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -191,7 +212,8 @@ export default function App() {
     }, 3500);
   };
 
-  const { activeConnectedEmail } = useEmailConnection();
+  const { activeConnectedEmail, isDirectSendConnected } = useEmailConnection();
+  const cloudVaultState = useCloudVaultState();
 
   useEffect(() => {
     if (!activeConnectedEmail || !userProfile) return;
@@ -298,6 +320,44 @@ export default function App() {
     setActiveTab('report');
     const exposed = completedResults.filter((r) => r.status === 'exposed').length;
     showToast(`Audit complete: ${exposed} exposed records identified across clearinghouses.`);
+  };
+
+  const handleQuickFixProfileUpdate = (updatedProfile: UserProfile, refreshScan = true) => {
+    const preservedPoa = userProfile?.powerOfAttorney;
+    const nextProfile: UserProfile =
+      preservedPoa && !updatedProfile.powerOfAttorney
+        ? { ...updatedProfile, powerOfAttorney: preservedPoa }
+        : updatedProfile;
+
+    setUserProfile(nextProfile);
+
+    if (refreshScan) {
+      const freshScan = runBrokerScan(nextProfile);
+      const mergedResults = mergeRescanPreservingProgress(scanResults, freshScan);
+      setScanResults(mergedResults);
+
+      // Update the most recent saved search slot in place so quota is preserved
+      const existingSaved = getSavedSearches();
+      if (existingSaved.length > 0) {
+        const [latest, ...rest] = existingSaved;
+        const updatedLatest = {
+          ...latest,
+          name: `${nextProfile.firstName} ${nextProfile.lastName} - ${latest.typeLabel}`,
+          profileData: nextProfile,
+          savedResults: mergedResults,
+          exposedCount: mergedResults.filter((r) => r.status === 'exposed').length,
+          totalScanned: mergedResults.length,
+        };
+        restoreSavedSearches([updatedLatest, ...rest]);
+      }
+
+      const activeExposed = mergedResults.filter((r) => r.status === 'exposed').length;
+      showToast(
+        `Profile calibrated · ${activeExposed} active broker matches refreshed (removal receipts preserved).`
+      );
+    } else {
+      showToast('Profile details updated.');
+    }
   };
 
   // Records a real sent email Message-ID receipt on a broker's ScanResult
@@ -577,13 +637,20 @@ export default function App() {
     setActiveTab('webforms');
   };
 
-  // Opens real Email Opt-Out modal for a single broker
+  // Opens Email Opt-Out modal — or automatically launches hands-free Online Form filler when email is not an option
   const handleSingleBrokerOptOutRequest = (brokerId: string) => {
     ensureActiveProfile();
     const target = scanResults.find((r) => r.brokerId === brokerId);
-    if (target) {
-      setEmailDispatchQueue([target]);
+    if (!target) return;
+    const broker = findBrokerById(brokerId);
+    if (broker) {
+      const contact = resolveBrokerContactProfile(broker);
+      if (!contact.effectivePrimaryEmail) {
+        setActiveNavigatorModal({ broker, result: target });
+        return;
+      }
     }
+    setEmailDispatchQueue([target]);
   };
 
   // Opens real Email Opt-Out modal for a subset of selected brokers
@@ -599,9 +666,10 @@ export default function App() {
     setEmailDispatchQueue(selectedItems);
   };
 
-  // Allows sending a real opt-out email directly from any broker card in the 700+ Broker Directory
+  // Allows removing directly from any broker card in the 700+ Broker Directory (Email or automatic Form fallback)
   const handleDirectBrokerOptOut = (broker: DataBroker) => {
     const activeProfile = ensureActiveProfile();
+    const contact = resolveBrokerContactProfile(broker);
     const existing = scanResults.find((r) => r.brokerId === broker.id);
     if (existing) {
       const promoted: ScanResult =
@@ -612,6 +680,10 @@ export default function App() {
         setScanResults((prev) =>
           prev.map((item) => (item.brokerId === broker.id ? promoted : item))
         );
+      }
+      if (!contact.effectivePrimaryEmail) {
+        setActiveNavigatorModal({ broker, result: promoted });
+        return;
       }
       setEmailDispatchQueue([promoted]);
       return;
@@ -639,6 +711,10 @@ export default function App() {
     };
 
     setScanResults((prev) => [createdItem, ...prev]);
+    if (!contact.effectivePrimaryEmail) {
+      setActiveNavigatorModal({ broker, result: createdItem });
+      return;
+    }
     setEmailDispatchQueue([createdItem]);
   };
 
@@ -895,10 +971,64 @@ export default function App() {
     showToast(`Restored synOUT Workspace Vault (${bundle.scanResults.length} records).`);
   };
 
+  useEffect(() => {
+    registerRemoteVaultRestoreHandler((bundle) => {
+      handleRestoreWorkspace(bundle);
+      showToast('Synced latest encrypted vault update from cloud.');
+    });
+    return () => {
+      registerRemoteVaultRestoreHandler(null);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !cloudVaultState.user ||
+      !cloudVaultState.vaultUnlockedInSession ||
+      !cloudVaultState.autoSyncEnabled ||
+      !hasUnlockedSessionPassphrase()
+    ) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const bundle: SynoutWorkspaceBundle = {
+        schema: 'synOUT-workspace-vault-v1',
+        exportedAtIso: new Date().toISOString(),
+        profile: userProfile,
+        scanResults,
+        deindexQueue,
+        bureauProgress,
+        scanSnapshots,
+        canaryAliases,
+        publicRecordProgress,
+        brokerContactOverrides: getBrokerContactOverrides(),
+        savedSearches: getSavedSearches(),
+      };
+      void pushEncryptedBundleToCloud(bundle).catch(() => null);
+    }, 1500);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    cloudVaultState.user,
+    cloudVaultState.vaultUnlockedInSession,
+    cloudVaultState.autoSyncEnabled,
+    userProfile,
+    scanResults,
+    deindexQueue,
+    bureauProgress,
+    scanSnapshots,
+    canaryAliases,
+    publicRecordProgress,
+  ]);
+
   const handlePurgeSession = async () => {
     await disconnectSmtpAccount();
     await disconnectGoogleOAuthAccount().catch(() => null);
     await purgeAllEmailConnections();
+    await signOutCloudVault().catch(() => null);
     await sessionFetch('/api/user/purge-session', { method: 'POST' }).catch(() => null);
     rotateClientSessionToken();
     clearAllSavedSearches();
@@ -910,6 +1040,7 @@ export default function App() {
     clearBrokerContactOverrides();
     clearClientMxCache();
     clearCustomDiscoveredBrokers();
+    clearAdvisorThreadHistory();
     purgeAllClientStorage();
     setUserProfile(null);
     setScanResults([]);
@@ -920,8 +1051,86 @@ export default function App() {
     setPublicRecordProgress({});
     setEmailDispatchQueue(null);
     setActiveNavigatorModal(null);
+    setIsAdvisorDrawerOpen(false);
+    setAdvisorInitialPrompt(null);
     setActiveTab('home');
     showToast('All session workflows, connected email credentials, vault snapshots, and storage purged.');
+  };
+
+  const handleAutoReRemoveResurfaced = async (
+    resurfacedDiffs: LiveRelistingProbeDiff[]
+  ): Promise<number> => {
+    const activeProfile = ensureActiveProfile();
+    const senderEmail =
+      activeConnectedEmail ||
+      activeProfile.emails.find((e) => Boolean(e && e.trim())) ||
+      'privacy@synout.local';
+    const senderName =
+      `${activeProfile.firstName} ${activeProfile.lastName}`.trim() || 'Protected Consumer';
+
+    let actioned = 0;
+
+    for (const diff of resurfacedDiffs) {
+      const broker = findBrokerById(diff.brokerId);
+      if (!broker) continue;
+
+      const contact = resolveBrokerContactProfile(broker);
+      let handledViaEmail = false;
+
+      if (
+        isDirectSendConnected &&
+        contact.effectivePrimaryEmail &&
+        broker.removalMethod !== 'Online Form'
+      ) {
+        try {
+          const notice = buildStatutoryNoticeForBroker(broker, activeProfile, senderEmail);
+          const sent = await sendEmailViaConnectedAccount({
+            recipientEmail: contact.effectivePrimaryEmail,
+            fallbackRecipientEmails: contact.fallbackEmails,
+            ccEmails: contact.recommendedCcEmails,
+            subject: `[REPEAT RE-PUBLICATION CURE DEMAND] ${notice.subject}`,
+            body: notice.body,
+            senderName,
+            brokerId: broker.id,
+            brokerName: broker.name,
+            brokerDomain: broker.domain,
+            bccSelf: false,
+          });
+          handleMarkEmailDispatched(broker.id, sent.messageId, true);
+          handledViaEmail = true;
+          actioned++;
+        } catch {
+          handledViaEmail = false;
+        }
+      }
+
+      if (!handledViaEmail) {
+        try {
+          const job = await startWorkflowClient({
+            broker,
+            profile: activeProfile,
+            senderEmail: activeConnectedEmail || undefined,
+            mode: 'autonomous_auto_submit',
+          });
+          handleRecordWebFormSubmitted({
+            broker,
+            confirmationCode: job.brokerConfirmationCode || undefined,
+            optOutUrl: job.currentUrl || broker.optOutUrl,
+            discoveredTitle: job.discoveredTitle,
+            workflowJobId: job.jobId,
+            workflowState: job.state,
+            internalSubmissionId: job.internalSubmissionId,
+            brokerConfirmedReceipt: job.brokerConfirmationCode,
+            submissionEvidenceHash: job.evidence?.evidenceManifestSha256,
+          });
+          actioned++;
+        } catch {
+          // Individual portal handoff remains available in tracker if automated form blocked
+        }
+      }
+    }
+
+    return actioned;
   };
 
   const handleApplyRelistingDiffs = (diffs: LiveRelistingProbeDiff[]) => {
@@ -1030,7 +1239,16 @@ export default function App() {
               results={scanResults}
               stats={stats}
               profile={userProfile}
+              scanSnapshots={scanSnapshots}
               relistedBrokerIds={regressionDiff.relistedBrokerIds}
+              onCaptureSnapshot={handleCaptureManualSnapshot}
+              onUpdateProfile={handleQuickFixProfileUpdate}
+              onOpenAdvisor={(promptText) => {
+                if (promptText) {
+                  setAdvisorInitialPrompt(promptText);
+                }
+                setIsAdvisorDrawerOpen(true);
+              }}
               onOpenListingModal={(b, r) => setActiveListingModal({ broker: b, result: r })}
               onOpenLegalNotice={(b, r) => setActiveLegalModal({ broker: b, result: r })}
               onAutomatedOptOut={handleSingleBrokerOptOutRequest}
@@ -1104,6 +1322,7 @@ export default function App() {
             onOpenConnectEmail={() => setActiveTab('gmail')}
             onApplyRelistingDiffs={handleApplyRelistingDiffs}
             onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+            onAutoReRemoveResurfaced={handleAutoReRemoveResurfaced}
           />
         )}
 
@@ -1217,10 +1436,16 @@ export default function App() {
             onMarkDispatched={(brokerId, msgId, silent) => {
               handleMarkEmailDispatched(brokerId, msgId, silent);
             }}
+            onBrokerFormSubmitted={handleRecordWebFormSubmitted}
+            onOpenAutomatedNavigator={(b, r) => {
+              ensureActiveProfile();
+              setActiveNavigatorModal({ broker: b, result: r });
+            }}
             onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
             onStartScan={() => setActiveTab('scanner')}
             onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
             onOpenInboxHarvester={() => setActiveTab('inbox')}
+            onOpenWebForms={() => handleOpenWebFormWorkbench()}
           />
         )}
 
@@ -1267,6 +1492,20 @@ export default function App() {
             onSendBrokerOptOut={handleDirectBrokerOptOut}
             onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
             onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+            onOpenAutomatedNavigator={(b, r) => {
+              ensureActiveProfile();
+              setActiveNavigatorModal({ broker: b, result: r });
+            }}
+          />
+        )}
+        {activeTab === 'advisor' && (
+          <PrivacyAdvisorChat
+            profile={userProfile}
+            results={scanResults}
+            stats={stats}
+            mode="page"
+            initialPrompt={advisorInitialPrompt}
+            onConsumeInitialPrompt={() => setAdvisorInitialPrompt(null)}
           />
         )}
         {activeTab === 'guide' && (
@@ -1352,6 +1591,7 @@ export default function App() {
           profile={userProfile}
           onClose={() => setEmailDispatchQueue(null)}
           onBrokerDispatched={handleMarkEmailDispatched}
+          onBrokerFormSubmitted={handleRecordWebFormSubmitted}
           onComplete={handleEmailBatchComplete}
           onOpenEmailWorkspace={() => setActiveTab('gmail')}
           onOpenAutomatedNavigator={(b, r) => {
@@ -1502,8 +1742,12 @@ export default function App() {
           onDeindexNuked={handleDeindexNuked}
           onOpenConnectEmail={() => setActiveTab('gmail')}
           onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
-          onBrokerWebFormLogged={(broker, optOutUrl) => {
-            handleRecordWebFormSubmitted({ broker, optOutUrl });
+          onBrokerWebFormLogged={(broker, optOutUrl, extraReceipt) => {
+            handleRecordWebFormSubmitted({
+              broker,
+              optOutUrl,
+              ...extraReceipt,
+            });
           }}
           onClose={() => setIsNukeAllModalOpen(false)}
         />
@@ -1536,6 +1780,28 @@ export default function App() {
           }}
         />
       )}
+
+      {isAdvisorDrawerOpen && activeTab !== 'advisor' && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/60 backdrop-blur-xs">
+          <div
+            className="flex-1"
+            onClick={() => setIsAdvisorDrawerOpen(false)}
+            aria-hidden="true"
+          />
+          <PrivacyAdvisorChat
+            profile={userProfile}
+            results={scanResults}
+            stats={stats}
+            mode="drawer"
+            onClose={() => setIsAdvisorDrawerOpen(false)}
+            initialPrompt={advisorInitialPrompt}
+            onConsumeInitialPrompt={() => setAdvisorInitialPrompt(null)}
+          />
+        </div>
+      )}
+
+      {/* Offline Connectivity Banner */}
+      <OfflineIndicator />
 
       {/* Toast Notification */}
       {toastMessage && (

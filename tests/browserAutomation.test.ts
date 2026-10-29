@@ -1681,4 +1681,187 @@ test('39. Email Confirmation Landing Page Auto-Checks Required Checkboxes & Skip
   }
 });
 
+test('11. Dynamic Conditional Checkboxes, Cookie Banner Dismissal & Post-Submit Confirmation Popup Modal Automation', async () => {
+  const { buildUniversalAutoFillScript } = await import('../src/utils/optOutFormEngine.ts');
+  const script = buildUniversalAutoFillScript(TEST_PROFILE, 'jane.doe@privacy.example');
+  assert.ok(
+    script.includes('MutationObserver') && script.includes('__synoutCheckboxObserver'),
+    'Universal browser auto-fill script must watch for dynamically popped-up checkboxes via MutationObserver'
+  );
+
+  let cookieBannerRejected = false;
+  let finalSubmittedPayload: Record<string, string> | null = null;
+
+  const server = http.createServer(async (req, res) => {
+    const urlObj = new URL(req.url || '/', 'http://127.0.0.1');
+
+    if (req.method === 'POST' && urlObj.pathname === '/cookie-reject') {
+      cookieBannerRejected = true;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (req.method === 'GET' && urlObj.pathname === '/popup-optout') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <head><title>Dynamic Popup Broker Opt-Out</title></head>
+  <body>
+    <div id="cookie-consent-banner" role="region" aria-label="Cookie Consent" style="position:fixed;bottom:0;left:0;right:0;padding:16px;background:#111;color:#fff;z-index:9999">
+      <p>We use cookies on this directory.</p>
+      <button type="button" id="reject-cookies-btn" onclick="fetch('/cookie-reject',{method:'POST'});document.getElementById('cookie-consent-banner').style.display='none';">
+        Reject Optional
+      </button>
+      <button type="button">Accept All</button>
+    </div>
+
+    <h1>Remove My Personal Record</h1>
+    <form id="primary-optout-form" action="/popup-optout-submit" method="POST">
+      <label for="full_name">Full Name *</label>
+      <input id="full_name" name="full_name" type="text" required />
+
+      <label for="consumer_email">Email Address *</label>
+      <input id="consumer_email" name="consumer_email" type="email" required />
+
+      <label for="state_select">State of Residence *</label>
+      <select id="state_select" name="state_select" required>
+        <option value="">Select state...</option>
+        <option value="CA">California</option>
+        <option value="TX">Texas</option>
+      </select>
+
+      <div id="dynamic-ca-container"></div>
+
+      <button type="button" id="open-confirm-modal-btn">Submit Opt-Out Request</button>
+
+      <!-- Hidden confirmation modal that pops up ONLY after clicking Submit Opt-Out Request -->
+      <div id="confirm-popup" role="dialog" aria-modal="true" style="display:none;position:fixed;inset:20px;background:#fff;border:2px solid #000;padding:24px;z-index:10000">
+        <h2>Confirm Permanent Removal</h2>
+        <p>Please check the confirmation box below to permanently suppress your record.</p>
+        <label for="popup_permanent_confirm">
+          <input id="popup_permanent_confirm" name="popup_permanent_confirm" type="checkbox" value="yes_permanent" required />
+          I understand this removal is permanent and suppresses future records
+        </label>
+        <label for="popup_marketing_spam">
+          <input id="popup_marketing_spam" name="popup_marketing_spam" type="checkbox" value="yes_spam" checked />
+          Subscribe me to promotional marketing partner emails
+        </label>
+        <button type="submit" id="final-popup-confirm-btn" disabled>Confirm Permanent Removal</button>
+        <button type="button" id="cancel-popup-btn">Cancel</button>
+      </div>
+    </form>
+
+    <script>
+      // Inject dynamic CA perjury checkbox ONLY after state CA is selected!
+      document.getElementById('state_select').addEventListener('change', function(e) {
+        var container = document.getElementById('dynamic-ca-container');
+        if (e.target.value === 'CA' && !document.getElementById('ca_perjury_attest')) {
+          container.innerHTML = '<label for="ca_perjury_attest"><input id="ca_perjury_attest" name="ca_perjury_attest" type="checkbox" value="certified_ca" required /> I certify under penalty of perjury that I am a California resident requesting deletion</label>';
+        }
+      });
+
+      document.getElementById('open-confirm-modal-btn').addEventListener('click', function() {
+        var caBox = document.getElementById('ca_perjury_attest');
+        if (!caBox || !caBox.checked) {
+          var err = document.createElement('div');
+          err.className = 'error-message';
+          err.textContent = 'Please check the California residency certification box first.';
+          document.body.appendChild(err);
+          return;
+        }
+        document.getElementById('confirm-popup').style.display = 'block';
+      });
+
+      document.getElementById('popup_permanent_confirm').addEventListener('change', function(e) {
+        document.getElementById('final-popup-confirm-btn').disabled = !e.target.checked;
+      });
+    </script>
+  </body>
+</html>`);
+      return;
+    }
+
+    if (req.method === 'POST' && urlObj.pathname === '/popup-optout-submit') {
+      const raw = await readPostBody(req);
+      const params = new URLSearchParams(raw);
+      finalSubmittedPayload = Object.fromEntries(params.entries());
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <head><title>Removal Request Received</title></head>
+  <body>
+    <h1>Your Opt-Out Request Has Been Received</h1>
+    <p>Confirmation Number: CONF-POPUP-90210</p>
+    <p>Your listing will be suppressed within 48 hours.</p>
+  </body>
+</html>`);
+      return;
+    }
+
+    res.writeHead(404);
+    res.end('Not found');
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const addr = server.address();
+  assert.ok(addr && typeof addr === 'object');
+  const baseUrl = `http://127.0.0.1:${addr.port}`;
+  const sessionId = mintSessionToken();
+
+  try {
+    const job = await startOptOutWorkflow({
+      sessionId,
+      brokerId: 'mock-popup-broker',
+      brokerName: 'PopupModalBroker',
+      brokerDomain: '127.0.0.1',
+      targetUrl: `${baseUrl}/popup-optout`,
+      mode: 'autonomous_auto_submit',
+      profile: TEST_PROFILE,
+      senderEmail: 'jane.doe@privacy.example',
+      allowLoopbackForTests: true,
+    });
+
+    assert.strictEqual(cookieBannerRejected, true, 'Must automatically dismiss cookie banner via Reject Optional');
+    assert.strictEqual(
+      job.state,
+      'awaiting_broker_processing',
+      `Expected awaiting_broker_processing after hands-free dynamic + popup checkbox completion, got ${job.state} (${job.errorMessage || ''})`
+    );
+    assert.strictEqual(job.brokerConfirmationCode, 'CONF-POPUP-90210');
+
+    const stepActions = job.steps.map((s) => s.action);
+    assert.ok(
+      stepActions.includes('SWEEP_DYNAMIC_CHECKBOXES'),
+      'Workflow must sweep and check dynamically revealed post-fill checkboxes before clicking submit'
+    );
+    assert.ok(
+      stepActions.includes('AUTO_CONFIRMED_POPUP_MODAL'),
+      'Workflow must detect and complete post-submit confirmation modal checkboxes & button automatically'
+    );
+
+    assert.ok(finalSubmittedPayload, 'Final form payload must have been POSTed after popup confirmation');
+    assert.strictEqual(
+      finalSubmittedPayload!.ca_perjury_attest,
+      'certified_ca',
+      'Dynamically injected CA residency checkbox must be checked'
+    );
+    assert.strictEqual(
+      finalSubmittedPayload!.popup_permanent_confirm,
+      'yes_permanent',
+      'Popup modal permanent removal checkbox must be checked'
+    );
+    assert.strictEqual(
+      finalSubmittedPayload!.popup_marketing_spam,
+      undefined,
+      'Pre-checked marketing spam checkbox inside popup modal must be unchecked automatically'
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+
 

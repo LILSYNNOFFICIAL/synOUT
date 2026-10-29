@@ -299,6 +299,12 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
           rawEmailText: rawReplyText,
         }),
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+        throw new Error(
+          'Automatic server link clicking is unavailable on this static website deployment. Click "Open Safe Link" to finish confirming directly in a new tab.'
+        );
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data?.error || `HTTP ${res.status}`);

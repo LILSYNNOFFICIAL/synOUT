@@ -12,8 +12,11 @@ import {
   withIsolatedPlaywrightPage,
 } from './BrowserAutomationService.ts';
 import {
+  dismissBlockingCookieBannersOnPage,
   extractAndMapLiveDomFields,
+  handlePostSubmitConfirmationPopupOnPage,
   populateMappedFieldsOnPage,
+  sweepDynamicConsentCheckboxesOnPage,
 } from './FormFieldMapper.ts';
 import { buildSubmissionEvidenceArtifact } from './SubmissionEvidence.ts';
 import type {
@@ -137,6 +140,7 @@ async function executePageWorkflowPass(params: {
 
   const navRes = await page.goto(job.targetUrl, { waitUntil: 'domcontentloaded', timeout: 14000 });
   await waitForPageReady(page);
+  await dismissBlockingCookieBannersOnPage(page);
 
   const initialStatus = navRes?.status() ?? 200;
   job.currentUrl = page.url();
@@ -358,8 +362,15 @@ async function executePageWorkflowPass(params: {
         `Populating lookup fields and clicking "${mapped.searchControl.label}".`
       );
       await populateMappedFieldsOnPage(page, mapped.mappedFields);
+      await sweepDynamicConsentCheckboxesOnPage({
+        page,
+        profile,
+        senderEmail,
+        disclosurePolicy: job.disclosurePolicy,
+      });
       await page.locator(mapped.searchControl.selector).first().click({ timeout: 4000 });
       await waitForPageReady(page);
+      await dismissBlockingCookieBannersOnPage(page);
       if (await checkBlocker(200)) return;
       continue;
     }
@@ -395,8 +406,24 @@ async function executePageWorkflowPass(params: {
         `Completed step ${wizardStep + 1} fields and clicking "${mapped.nextStepControl.label}".`
       );
       await populateMappedFieldsOnPage(page, mapped.mappedFields);
+      const stepDynamicSweep = await sweepDynamicConsentCheckboxesOnPage({
+        page,
+        profile,
+        senderEmail,
+        disclosurePolicy: job.disclosurePolicy,
+      });
+      if (stepDynamicSweep.newlyCheckedLabels.length > 0) {
+        appendJobStep(
+          job,
+          'inspecting',
+          'SWEEP_DYNAMIC_CHECKBOXES',
+          page.url(),
+          `Automatically checked ${stepDynamicSweep.newlyCheckedLabels.length} newly revealed consent checkbox(es): ${stepDynamicSweep.newlyCheckedLabels.join('; ')}`
+        );
+      }
       await page.locator(mapped.nextStepControl.selector).first().click({ timeout: 4000 });
       await waitForPageReady(page);
+      await dismissBlockingCookieBannersOnPage(page);
       if (await checkBlocker(200)) return;
       continue;
     }
@@ -467,6 +494,25 @@ async function executePageWorkflowPass(params: {
 
     const fieldAudit = await populateMappedFieldsOnPage(page, mapped.mappedFields);
 
+    // Sweep any conditional consent checkboxes that dynamically mounted after state/email/type input
+    const preSubmitSweep = await sweepDynamicConsentCheckboxesOnPage({
+      page,
+      profile,
+      senderEmail,
+      disclosurePolicy: job.disclosurePolicy,
+    });
+    if (preSubmitSweep.newlyCheckedLabels.length > 0) {
+      fieldAudit.push(...preSubmitSweep.auditEntries);
+      job.mappedFields = preSubmitSweep.updatedMappedFields;
+      appendJobStep(
+        job,
+        'submitting',
+        'SWEEP_DYNAMIC_CHECKBOXES',
+        page.url(),
+        `Automatically checked ${preSubmitSweep.newlyCheckedLabels.length} dynamically revealed consent checkbox(es): ${preSubmitSweep.newlyCheckedLabels.join('; ')}`
+      );
+    }
+
     let lastDocResponseStatus = 200;
     const responseListener = (resp: { url: () => string; status: () => number; request: () => { resourceType: () => string } }) => {
       const rType = resp.request().resourceType();
@@ -480,6 +526,30 @@ async function executePageWorkflowPass(params: {
       await page.locator(mapped.submitControl.selector).first().click({ timeout: 5000 });
       await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => null);
       await page.waitForTimeout(220);
+
+      // Automatically handle up to 2 chained post-submit confirmation modals/popups & checkboxes
+      for (let popupPass = 0; popupPass < 2; popupPass++) {
+        const popupResult = await handlePostSubmitConfirmationPopupOnPage({
+          page,
+          profile,
+          senderEmail,
+          disclosurePolicy: job.disclosurePolicy,
+        });
+        if (!popupResult.handled) break;
+
+        fieldAudit.push(...popupResult.auditEntries);
+        appendJobStep(
+          job,
+          'submitting',
+          'AUTO_CONFIRMED_POPUP_MODAL',
+          page.url(),
+          `Automatically handled confirmation popup${
+            popupResult.checkedBoxLabels.length > 0
+              ? ` (checked ${popupResult.checkedBoxLabels.length} box(es): ${popupResult.checkedBoxLabels.join('; ')})`
+              : ''
+          } and clicked "${popupResult.clickedButtonLabel || 'Confirm'}".`
+        );
+      }
     } finally {
       page.off('response', responseListener);
     }

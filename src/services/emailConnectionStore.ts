@@ -218,7 +218,7 @@ const initialSmtp = loadInitialSmtpConnection();
 const initialWebmail = loadInitialWebmailSender();
 
 let state: EmailConnectionState = {
-  mode: initialSmtp?.verified ? 'smtp' : initialWebmail ? 'webmail' : 'smtp',
+  mode: initialSmtp?.verified ? 'smtp' : 'webmail',
   smtp: initialSmtp,
   oauthUser: null,
   oauthAccessToken: null,
@@ -648,7 +648,7 @@ export function disconnectWebmailSenderAccount(): void {
   state = {
     ...state,
     webmailSender: null,
-    mode: state.smtp?.verified ? 'smtp' : state.oauthUser ? 'oauth' : 'smtp',
+    mode: state.smtp?.verified ? 'smtp' : state.oauthUser ? 'oauth' : 'webmail',
   };
   emitChange();
 }
@@ -660,7 +660,7 @@ export async function purgeAllEmailConnections(): Promise<void> {
   clearAllGoogleAuthStorage();
   state = {
     ...state,
-    mode: 'smtp',
+    mode: 'webmail',
     smtp: null,
     oauthUser: null,
     oauthAccessToken: null,

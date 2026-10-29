@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { DataBroker, ScanResult, UserProfile } from '../types';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
 import { buildUniversalAutoFillScript } from '../utils/optOutFormEngine';
@@ -46,6 +46,7 @@ interface AutomatedRemovalNavigatorProps {
   ) => void;
   onOpenPowerOfAttorney: () => void;
   onSwitchToEmailOptOut?: (brokerId: string) => void;
+  autoStart?: boolean;
 }
 
 function formatWorkflowStateLabel(state?: string): string {
@@ -77,12 +78,21 @@ function formatWorkflowStepAction(action: string): string {
     NAVIGATE_PORTAL: 'Loaded Opt-Out Page',
     DISCOVER_OPTOUT_LINK: 'Found Disguised Opt-Out Link',
     ADAPTER_PRE_STEP: 'Ran Broker Playbook Step',
+    ADAPTER_PLAYBOOK_APPLIED: 'Applied Broker Form Playbook',
     INSPECT_DOM_FIELDS: 'Mapped Form Fields & Checkboxes',
     INSPECTION_READY_FOR_REVIEW: 'Prepared Fields & Boxes for Review',
+    EXECUTE_RECORD_SEARCH: 'Searched Directory For Your Listing',
     SELECT_CANDIDATE_RECORD: 'Matched Your Record & Checked Box',
     AMBIGUOUS_CANDIDATE_PAUSE: 'Paused: Confirm Which Listing Is Yours',
     ADVANCE_WIZARD_STEP: 'Moved to Next Form Step',
+    ADVANCE_MULTI_STEP_FORM: 'Completed Step & Clicked Next',
+    SWEEP_DYNAMIC_CHECKBOXES: 'Checked Pop-Up Consent Boxes For You',
     POPULATE_AND_SUBMIT_FORM: 'Filled Fields, Checked Boxes & Submitted',
+    AUTO_CONFIRMED_POPUP_MODAL: 'Confirmed Pop-Up Dialog & Checked Boxes',
+    SUBMISSION_ACKNOWLEDGED_BY_BROKER: 'Submitted · Broker Received Removal Request',
+    EMAIL_VERIFICATION_REQUIRED: 'Submitted · Confirmation Email Sent to You',
+    SUBMISSION_POSTED_UNCONFIRMED: 'Submitted Removal Form',
+    FORM_VALIDATION_REJECTED: 'Broker Form Returned an Error',
     FORM_SUBMITTED_AWAITING_EMAIL: 'Submitted · Confirmation Email Sent to You',
     FORM_SUBMITTED_CONFIRMED: 'Submitted · Broker Issued Confirmation Code',
     FORM_SUBMITTED_ACKNOWLEDGED: 'Submitted · Broker Received Request',
@@ -117,6 +127,7 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
   onExecutionComplete,
   onOpenPowerOfAttorney,
   onSwitchToEmailOptOut,
+  autoStart = true,
 }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [job, setJob] = useState<ClientRemovalWorkflowJob | null>(null);
@@ -126,6 +137,7 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
   const [verificationUrl, setVerificationUrl] = useState('');
   const [handoffCode, setHandoffCode] = useState('');
   const [copiedScript, setCopiedScript] = useState(false);
+  const hasAutoStartedRef = useRef(false);
 
   const poa = profile.powerOfAttorney;
   const entryOfRecordsUrl = getBrokerRecordSearchUrl(broker, profile);
@@ -188,6 +200,15 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
       setIsRunning(false);
     }
   };
+
+  useEffect(() => {
+    if (!autoStart || hasAutoStartedRef.current) return;
+    if (result.removalStatus === 'found') {
+      hasAutoStartedRef.current = true;
+      void handleRunWorkflow('autonomous_auto_submit');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, broker.id]);
 
   const handleApproveAndSubmit = async () => {
     if (!job) return;
@@ -296,12 +317,12 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
             </div>
             <div>
               <h2 className="text-lg font-bold text-white tracking-tight">
-                Automatic Web-Form Removal Assistant
+                Automatic Online Form Removal — Done For You
               </h2>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Opens <strong className="text-slate-200">{broker.name}</strong> ({broker.domain}),
-                fills in your details, checks required consent &amp; removal boxes on your behalf,
-                and submits.
+                synOUT opens <strong className="text-slate-200">{broker.name}</strong> ({broker.domain}),
+                fills in your details, automatically checks required consent &amp; pop-up boxes on your
+                behalf (never marketing spam), and submits without needing you to type.
               </p>
             </div>
           </div>
@@ -664,19 +685,24 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                 <span>{formatWorkflowStateLabel(job.state)}</span>
               </span>
-              <span className="font-mono text-[11px] text-slate-400">
-                Reference: {job.internalSubmissionId}
-              </span>
             </div>
-            <div className="font-mono text-slate-200">
-              Broker Confirmation Code:{' '}
-              <strong>{job.brokerConfirmationCode || 'None issued by broker'}</strong>
+            <div className="text-slate-200">
+              Confirmation Code:{' '}
+              <strong className="font-mono">
+                {job.brokerConfirmationCode || 'Submitted (no code shown by broker)'}
+              </strong>
             </div>
-            {job.evidence && (
-              <div className="font-mono text-[11px] text-slate-400 truncate">
-                Receipt Hash: {job.evidence.evidenceManifestSha256}
+            <details className="text-[11px] text-slate-400 pt-0.5">
+              <summary className="cursor-pointer hover:text-slate-200 select-none">
+                Show technical receipt details
+              </summary>
+              <div className="pt-1.5 space-y-1 font-mono text-[11px] text-slate-400">
+                <div>Reference: {job.internalSubmissionId}</div>
+                {job.evidence && (
+                  <div className="truncate">Receipt Hash: {job.evidence.evidenceManifestSha256}</div>
+                )}
               </div>
-            )}
+            </details>
 
             {job.state === 'awaiting_email_verification' && (
               <div className="pt-2 space-y-1.5">

@@ -1,0 +1,233 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Non-PII root account metadata acting as the Master Gate parent document for cloud-synced encrypted vaults.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Authentication UID of the account owner."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display label for the authenticated workspace user."
+        },
+        "syncEnabled": {
+          "type": "boolean",
+          "description": "Whether automatic zero-knowledge encrypted cloud sync is enabled."
+        },
+        "relistingAlertEnabled": {
+          "type": "boolean",
+          "description": "Whether automated re-listing digest alerts are enabled."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest account update."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "syncEnabled",
+        "relistingAlertEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateContact": {
+      "title": "UserPrivateContact",
+      "description": "Isolated PII sub-document storing owner contact and re-listing digest recipient email addresses.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Authentication UID matching parent UserAccount."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+          "description": "Verified account email address isolated from root profile."
+        },
+        "alertRecipientEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+          "description": "Destination email address for automated re-listing digest alerts."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest private contact update."
+        }
+      },
+      "required": [
+        "ownerId",
+        "email",
+        "alertRecipientEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EncryptedCloudVault": {
+      "title": "EncryptedCloudVault",
+      "description": "Zero-knowledge client-encrypted AES-256-GCM workspace vault envelope syncing scan profiles, receipts, and 45-day SLA trackers across devices.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Authentication UID of the vault owner."
+        },
+        "vaultId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Deterministic vault slot identifier (e.g. primary)."
+        },
+        "cipherAlgorithm": {
+          "type": "string",
+          "enum": ["AES-256-GCM"],
+          "minLength": 11,
+          "maxLength": 16,
+          "description": "Authenticated symmetric cipher used client-side."
+        },
+        "kdfAlgorithm": {
+          "type": "string",
+          "enum": ["PBKDF2-SHA256"],
+          "minLength": 13,
+          "maxLength": 20,
+          "description": "Key derivation function used to derive the vault key from the user's passphrase."
+        },
+        "kdfIterations": {
+          "type": "integer",
+          "description": "PBKDF2 iteration count (>= 100000 and <= 1000000)."
+        },
+        "saltBase64": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9+/=]+$",
+          "description": "Base64-encoded random 16-byte KDF salt."
+        },
+        "ivBase64": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9+/=]+$",
+          "description": "Base64-encoded random 12-byte AES-GCM initialization vector."
+        },
+        "ciphertextBase64": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 800000,
+          "pattern": "^[A-Za-z0-9+/=]+$",
+          "description": "Base64-encoded AES-256-GCM ciphertext + authentication tag."
+        },
+        "payloadSha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase hex SHA-256 integrity digest of ciphertextBase64."
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "description": "Encrypted cloud vault schema version."
+        },
+        "exposedCount": {
+          "type": "integer",
+          "description": "Non-PII count of exposed broker records in this snapshot."
+        },
+        "removedCount": {
+          "type": "integer",
+          "description": "Non-PII count of verified removed broker records."
+        },
+        "trackedCount": {
+          "type": "integer",
+          "description": "Non-PII count of submitted/tracked SLA broker records."
+        },
+        "profilesCount": {
+          "type": "integer",
+          "description": "Non-PII count of stored search profiles (0..10)."
+        },
+        "deviceLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Sanitized label of the device that pushed this encrypted snapshot."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest encrypted vault push."
+        }
+      },
+      "required": [
+        "ownerId",
+        "vaultId",
+        "cipherAlgorithm",
+        "kdfAlgorithm",
+        "kdfIterations",
+        "saltBase64",
+        "ivBase64",
+        "ciphertextBase64",
+        "payloadSha256",
+        "schemaVersion",
+        "exposedCount",
+        "removedCount",
+        "trackedCount",
+        "profilesCount",
+        "deviceLabel",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Master Gate root account document per authenticated user (contains zero PII)."
+    },
+    "/users/{userId}/private/{contactId}": {
+      "schema": { "$ref": "#/entities/UserPrivateContact" },
+      "description": "Split-collection isolated PII contact document strictly accessible only to the verified owner."
+    },
+    "/users/{userId}/vaults/{vaultId}": {
+      "schema": { "$ref": "#/entities/EncryptedCloudVault" },
+      "description": "Zero-knowledge AES-256-GCM encrypted workspace vault snapshot synced across the owner's devices."
+    }
+  }
+}

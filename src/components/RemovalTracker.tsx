@@ -11,6 +11,10 @@ import {
   generateIcsCalendarEvent,
 } from '../utils/statutorySlaEngine';
 import { downloadFile } from '../utils/exportEngines';
+import {
+  downloadPdfBytes,
+  generateMasterComplianceAuditPdf,
+} from '../utils/pdfPacketGenerator';
 import { hasWebFormSubmission } from '../utils/optOutFormEngine';
 import {
   ExternalLink,
@@ -124,6 +128,18 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
     );
   };
 
+  const handleDownloadMasterAuditPdf = async () => {
+    const pdfBytes = await generateMasterComplianceAuditPdf({
+      results,
+      profile,
+      senderEmail: activeConnectedEmail || undefined,
+    });
+    downloadPdfBytes(
+      pdfBytes,
+      `synout-45day-compliance-audit-${profile.lastName.toLowerCase()}.pdf`
+    );
+  };
+
   const handleDownloadSingleBrokerIcs = (broker: DataBroker, result: ScanResult) => {
     const sla = computeBrokerSlaStatus(result);
     const startDate =
@@ -194,6 +210,15 @@ export const RemovalTracker: React.FC<RemovalTrackerProps> = ({
                 <span>Web-Form Runner</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => void handleDownloadMasterAuditPdf()}
+              className="px-3.5 py-2.5 rounded-xl glass-card text-amber-300 hover:text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <FileText className="w-3.5 h-3.5 text-amber-400" />
+              <span>PDF Audit Packet</span>
+            </button>
 
             <button
               type="button"

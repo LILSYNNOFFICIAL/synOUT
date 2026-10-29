@@ -2004,8 +2004,40 @@ export function buildUniversalAutoFillScript(
     if (/\\b(age)\\b/.test(h)) { if (d.age && setVal(el, d.age)) filled++; return; }
     if (el.tagName === 'TEXTAREA' || /\\b(reason|message|details|comment|request)\\b/.test(h)) { if (setVal(el, d.reason)) filled++; return; }
   });
+  const checkSingleDynamicBox = (el) => {
+    if (!el || el.disabled || el.readOnly) return false;
+    const role = (el.getAttribute && (el.getAttribute('role') || '').toLowerCase()) || '';
+    const isAriaCheck = (role === 'checkbox' || role === 'switch') && el.tagName !== 'INPUT';
+    const t = isAriaCheck ? 'checkbox' : ((el.type || '').toLowerCase());
+    if (t !== 'checkbox') return false;
+    const assocLabel = findVisibleLabel(el);
+    if (!isVisible(el) && !assocLabel) return false;
+    const h = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), labelFor(el), isAriaCheck ? (el.innerText || '') : ''].filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g,' ');
+    if (/\\b(honeypot|leave\\s*blank|do\\s*not\\s*fill|ssn|social\\s*security|driver'?s?\\s*licen[sc]e|passport)\\b/.test(h)) return false;
+    const isReq = el.required || el.getAttribute('aria-required') === 'true';
+    if (!shouldCheckConsentBox(h, isReq)) return false;
+    if (isAriaCheck) {
+      if (el.getAttribute('aria-checked') !== 'true') { el.click(); el.style.outline = '2px solid #10b981'; return true; }
+    } else if (!el.checked) {
+      if (!isVisible(el) && assocLabel) { assocLabel.click(); assocLabel.style.outline = '2px solid #10b981'; }
+      if (!el.checked) { el.click(); }
+      if (!el.checked) { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); }
+      el.style.outline = '2px solid #10b981';
+      return true;
+    }
+    return false;
+  };
+  if (typeof MutationObserver !== 'undefined' && document.body) {
+    if (window.__synoutCheckboxObserver) { try { window.__synoutCheckboxObserver.disconnect(); } catch (_) {} }
+    const obs = new MutationObserver(() => {
+      document.querySelectorAll('input[type="checkbox"], [role="checkbox"], [role="switch"]').forEach(checkSingleDynamicBox);
+    });
+    obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'hidden', 'aria-hidden'] });
+    window.__synoutCheckboxObserver = obs;
+    setTimeout(() => { try { obs.disconnect(); } catch (_) {} }, 30000);
+  }
   const badge = document.createElement('div');
-  badge.textContent = 'synOUT Auto-Filled ' + filled + ' Field(s)' + (checkedBoxes ? ' (including ' + checkedBoxes + ' checkbox' + (checkedBoxes === 1 ? '' : 'es') + ')' : '') + (skippedSensitive ? ' · ' + skippedSensitive + ' sensitive ID skipped' : '') + ' — Review & Submit';
+  badge.textContent = 'synOUT Auto-Filled ' + filled + ' Field(s)' + (checkedBoxes ? ' (including ' + checkedBoxes + ' checkbox' + (checkedBoxes === 1 ? '' : 'es') + ')' : '') + (skippedSensitive ? ' · ' + skippedSensitive + ' sensitive ID skipped' : '') + ' · Watching pop-up boxes';
   badge.style.cssText = 'position:fixed;bottom:18px;right:18px;z-index:2147483647;background:#022c22;color:#6ee7b7;border:1px solid #10b981;padding:10px 16px;border-radius:10px;font:600 13px/1.4 monospace;box-shadow:0 10px 25px rgba(0,0,0,.45)';
   document.body.appendChild(badge);
   setTimeout(() => badge.remove(), 6500);
