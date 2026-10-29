@@ -1863,5 +1863,146 @@ test('11. Dynamic Conditional Checkboxes, Cookie Banner Dismissal & Post-Submit 
   }
 });
 
+test('40. Live Browser E2E: Post-Splash Onboarding Tutorial, Global Legal/Contact Footer, Mobile Layout & Privacy Tactics Modal Focus/Escape', async () => {
+  const { createServer: createViteServer } = await import('vite');
+  const { chromium } = await import('playwright-core');
+  const { resolveChromiumExecutablePath } = await import(
+    '../src/server/browserAutomation/BrowserAutomationService.ts'
+  );
+
+  const vite = await createViteServer({
+    server: { port: 0, host: '127.0.0.1', hmr: false, ws: false },
+    appType: 'spa',
+  });
+  await vite.listen();
+  const addr = vite.httpServer?.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  const appUrl = `http://127.0.0.1:${port}`;
+
+  const execPath = resolveChromiumExecutablePath();
+  assert.ok(execPath, 'Chromium binary must be available for Playwright UI verification');
+
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: execPath,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  });
+
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const page = await context.newPage();
+
+    // 1. Splash screen must render first WITHOUT onboarding tutorial overlapping it
+    await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+    const splash = page.getByTestId('synout-splash-screen');
+    await splash.waitFor({ state: 'visible' });
+    assert.strictEqual(
+      await page.getByTestId('synout-onboarding-tutorial').count(),
+      0,
+      'Onboarding tutorial must never appear over the splash screen'
+    );
+
+    // Wait for splash screen to complete -> tutorial must open immediately
+    await splash.waitFor({ state: 'detached', timeout: 5000 });
+    const tutorial = page.getByTestId('synout-onboarding-tutorial');
+    await tutorial.waitFor({ state: 'visible', timeout: 3000 });
+    assert.ok(
+      await tutorial
+        .getByRole('heading', { name: 'Take control of your digital privacy.' })
+        .isVisible(),
+      'Step 1 headline must be visible after splash completes'
+    );
+
+    // Navigate Next -> Back -> Skip Tutorial
+    await tutorial.getByRole('button', { name: 'Next' }).click();
+    await tutorial
+      .getByRole('heading', { name: 'Connect Your Email' })
+      .waitFor({ state: 'visible' });
+    await tutorial.getByRole('button', { name: 'Back' }).click();
+    await tutorial
+      .getByRole('heading', { name: 'Take control of your digital privacy.' })
+      .waitFor({ state: 'visible' });
+    await tutorial.getByRole('button', { name: 'Skip Tutorial' }).click();
+    assert.strictEqual(
+      await tutorial.count(),
+      0,
+      'Skip Tutorial must dismiss onboarding cleanly'
+    );
+
+    // 2. Global Footer: Privacy, Terms, and Contact routing + no duplicate footers
+    const footers = page.locator('footer[aria-label="Global Footer"]');
+    assert.strictEqual(await footers.count(), 1, 'Exactly one Global Footer must render');
+
+    await footers.getByRole('button', { name: 'Privacy' }).click();
+    await page.locator('h1', { hasText: 'Privacy Policy' }).waitFor({ state: 'visible' });
+    assert.strictEqual(
+      await tutorial.count(),
+      0,
+      'Onboarding tutorial must not reopen on page navigation after skipping'
+    );
+
+    await footers.getByRole('button', { name: 'Terms' }).click();
+    await page.locator('h1', { hasText: 'Terms of Service' }).waitFor({ state: 'visible' });
+
+    await footers.getByRole('button', { name: 'Contact' }).click();
+    await page.locator('h1', { hasText: 'Contact synOUT' }).waitFor({ state: 'visible' });
+
+    // Submit empty contact form -> verify client validation errors appear
+    await page.getByRole('button', { name: 'Send Message' }).click();
+    await page.getByText('Please enter your name.').waitFor({ state: 'visible' });
+    await page.getByText('Please enter your email address.').waitFor({ state: 'visible' });
+    await page.getByText('Please enter your message.').waitFor({ state: 'visible' });
+
+    // 3. Mobile viewport check (390x844): verify zero horizontal overflow on legal/contact pages
+    await page.setViewportSize({ width: 390, height: 844 });
+    const hasMobileOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth + 1
+    );
+    assert.strictEqual(
+      hasMobileOverflow,
+      false,
+      'Contact page and global footer must not cause horizontal overflow on 390px mobile viewport'
+    );
+
+    // Restore desktop viewport & run scan to verify ExposureReport Privacy Tactics modal
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('header button', { hasText: 'Start Audit' }).click();
+    await page.locator('button[type="submit"]', { hasText: 'Run Exposure Audit' }).click();
+    const instantBtn = page.locator('button', { hasText: 'Instant Results' });
+    await instantBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await instantBtn.click();
+
+    // 4. Open Privacy Tactics modal from first broker card, verify broker name, Escape close & focus restoration
+    const firstTacticsBtn = page.getByRole('button', { name: 'Privacy Tactics' }).first();
+    await firstTacticsBtn.waitFor({ state: 'visible', timeout: 5000 });
+    const buttonTitle = await firstTacticsBtn.getAttribute('title');
+    await firstTacticsBtn.click();
+
+    const modalDialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await modalDialog.waitFor({ state: 'visible' });
+    assert.ok(
+      await modalDialog.getByText('A. Minimize Information Provided').isVisible(),
+      'Privacy Tactics modal must render structured actionable categories'
+    );
+
+    // Press Escape -> modal closes and focus returns to initiating Privacy Tactics button
+    await page.keyboard.press('Escape');
+    await modalDialog.waitFor({ state: 'detached' });
+
+    const activeElementTitle = await page.evaluate(
+      () => document.activeElement?.getAttribute('title') || ''
+    );
+    assert.strictEqual(
+      activeElementTitle,
+      buttonTitle,
+      'Closing Privacy Tactics modal with Escape must restore focus to the initiating button'
+    );
+  } finally {
+    await browser.close();
+    await vite.close();
+  }
+});
+
+
 
 

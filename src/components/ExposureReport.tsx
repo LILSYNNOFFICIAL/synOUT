@@ -34,13 +34,17 @@ import {
   useBrokerContactOverrides,
 } from '../utils/brokerContactResolver';
 import { hasWebFormSubmission } from '../utils/optOutFormEngine';
+import { shouldRenderOptOutTimeline } from '../utils/optOutTimelineEngine';
 import { ExposureTrendChart } from './ExposureTrendChart';
 import { ProfileQuickFixPanel } from './ProfileQuickFixPanel';
+import { OptOutMiniTimeline } from './OptOutMiniTimeline';
+import { PrivacyTacticsModal } from './PrivacyTacticsModal';
 import {
   BrokerLiveIntelResponse,
   lookupBrokerLiveIntelClient,
 } from '../services/privacyAdvisorClient';
 import {
+  Shield,
   ShieldAlert,
   ShieldCheck,
   Search,
@@ -145,6 +149,11 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
     Record<string, BrokerLiveIntelResponse>
   >({});
   const [brokerIntelErrors, setBrokerIntelErrors] = useState<Record<string, string>>({});
+  const [activeTacticsModal, setActiveTacticsModal] = useState<{
+    broker: DataBroker;
+    result: ScanResult;
+    triggerEl: HTMLElement | null;
+  } | null>(null);
 
   const pdfSummaryRef = useRef<HTMLDivElement>(null);
   const pdfSummaryData = useMemo(
@@ -1011,6 +1020,15 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                       </div>
                     )}
                   </div>
+
+                  {/* 45-Day Expected Removal Mini-Timeline for Submitted / Actioned Requests */}
+                  {shouldRenderOptOutTimeline(result) && (
+                    <OptOutMiniTimeline
+                      brokerName={broker.name}
+                      result={result}
+                      onFollowUp={() => onAutomatedOptOut(broker.id)}
+                    />
+                  )}
                 </div>
 
                 {/* Clear Dual-Channel Removal Buttons (Web Form + Email) */}
@@ -1073,8 +1091,23 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between gap-1 text-[11px] text-slate-400">
-                    <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] text-slate-400">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) =>
+                          setActiveTacticsModal({
+                            broker,
+                            result,
+                            triggerEl: e.currentTarget,
+                          })
+                        }
+                        className="px-2.5 py-1 rounded-md glass-subtle hover:bg-white/[0.09] text-emerald-300 hover:text-emerald-200 font-medium inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                        title={`Review actionable Privacy Tactics for ${broker.name}`}
+                      >
+                        <Shield className="w-3.5 h-3.5 shrink-0" />
+                        <span>Privacy Tactics</span>
+                      </button>
                       <button
                         onClick={() => onOpenListingModal(broker, result)}
                         className="px-2 py-1 rounded-md hover:bg-white/[0.06] hover:text-white inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
@@ -1214,33 +1247,57 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                         Opt-Out <ExternalLink className="w-2.5 h-2.5" />
                       </a>
                     </td>
-                    <td className="py-3">
-                      <span
-                        className={`font-medium whitespace-nowrap ${
-                          result.removalStatus === 'removed'
-                            ? 'text-emerald-400'
+                    <td className="py-3 min-w-[200px]">
+                      <div className="space-y-1.5">
+                        <span
+                          className={`font-medium whitespace-nowrap ${
+                            result.removalStatus === 'removed'
+                              ? 'text-emerald-400'
+                              : emailSent && formSent
+                              ? 'text-emerald-300'
+                              : emailSent
+                              ? 'text-sky-300'
+                              : formSent
+                              ? 'text-emerald-400'
+                              : 'text-amber-300'
+                          }`}
+                        >
+                          {result.removalStatus === 'removed'
+                            ? 'Removed'
                             : emailSent && formSent
-                            ? 'text-emerald-300'
+                            ? 'Form + Email'
                             : emailSent
-                            ? 'text-sky-300'
+                            ? 'Email Sent'
                             : formSent
-                            ? 'text-emerald-400'
-                            : 'text-amber-300'
-                        }`}
-                      >
-                        {result.removalStatus === 'removed'
-                          ? 'Removed'
-                          : emailSent && formSent
-                          ? 'Form + Email'
-                          : emailSent
-                          ? 'Email Sent'
-                          : formSent
-                          ? 'Form Logged'
-                          : 'Exposed'}
-                      </span>
+                            ? 'Form Logged'
+                            : 'Exposed'}
+                        </span>
+                        {shouldRenderOptOutTimeline(result) && (
+                          <OptOutMiniTimeline
+                            brokerName={broker.name}
+                            result={result}
+                            compact
+                            onFollowUp={() => onAutomatedOptOut(broker.id)}
+                          />
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 text-right">
                       <div className="inline-flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={(e) =>
+                            setActiveTacticsModal({
+                              broker,
+                              result,
+                              triggerEl: e.currentTarget,
+                            })
+                          }
+                          className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-emerald-300 font-medium text-xs cursor-pointer whitespace-nowrap"
+                          title={`Review Privacy Tactics for ${broker.name}`}
+                        >
+                          Privacy Tactics
+                        </button>
                         <button
                           type="button"
                           onClick={() => onOpenListingModal(broker, result)}
@@ -1504,6 +1561,19 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Broker-Specific Privacy Tactics Modal */}
+      {activeTacticsModal && (
+        <PrivacyTacticsModal
+          broker={activeTacticsModal.broker}
+          result={activeTacticsModal.result}
+          effectiveOptOutUrlOverride={
+            resolveBrokerContactProfile(activeTacticsModal.broker, contactOverrides).optOutUrl
+          }
+          returnFocusElement={activeTacticsModal.triggerEl}
+          onClose={() => setActiveTacticsModal(null)}
+        />
+      )}
     </div>
   );
 };

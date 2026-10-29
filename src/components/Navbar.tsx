@@ -47,7 +47,10 @@ export type AppTab =
   | 'firewall'
   | 'inbox'
   | 'registries'
-  | 'advisor';
+  | 'advisor'
+  | 'privacy'
+  | 'terms'
+  | 'contact';
 
 export type NavCategoryId =
   | 'discovery'
@@ -84,6 +87,7 @@ interface NavbarProps {
   onOpenPowerOfAttorney?: () => void;
   onOpenVault?: () => void;
   onOpenNukeAll?: () => void;
+  onOpenTutorial?: () => void;
 }
 
 export function buildNavCompartments(params: {
@@ -331,6 +335,9 @@ export function resolveCategoryForTab(tab: AppTab): NavCategoryId {
       return 'registries';
     case 'advisor':
     case 'guide':
+    case 'privacy':
+    case 'terms':
+    case 'contact':
       return 'workspace';
   }
 }
@@ -345,6 +352,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenPowerOfAttorney,
   onOpenVault,
   onOpenNukeAll,
+  onOpenTutorial,
 }) => {
   const [openCategory, setOpenCategory] = useState<NavCategoryId | null>(null);
   const [pinnedCategory, setPinnedCategory] = useState<NavCategoryId | null>(null);
@@ -817,6 +825,26 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               </>
             )}
+
+            {onOpenTutorial && (
+              <>
+                <span aria-hidden="true" className="text-slate-700">
+                  ·
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinnedCategory(null);
+                    setOpenCategory(null);
+                    onOpenTutorial();
+                  }}
+                  className="inline-flex items-center gap-1 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Tutorial</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -824,8 +852,22 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Compartmentalized Mobile Glass Drawer — Explicit z-20 Layer */}
       {mobileMenuOpen && (
         <div className="relative z-20 lg:hidden glass-popover border-x-0 border-t-0 max-h-[80vh] overflow-y-auto px-4 py-5 space-y-5">
-          <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/[0.08]">
-            <span className="text-xs text-slate-400">Install App for Offline Access</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-white/[0.08]">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400">Install App</span>
+              {onOpenTutorial && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onOpenTutorial();
+                  }}
+                  className="px-2.5 py-1 rounded-lg glass-subtle text-xs text-emerald-300 hover:text-white cursor-pointer"
+                >
+                  Open Tutorial
+                </button>
+              )}
+            </div>
             <PWAInstallButton />
           </div>
           {compartments.map((cat) => (

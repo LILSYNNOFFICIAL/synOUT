@@ -55,6 +55,10 @@ import {
   lookupBrokerLiveSearchIntel,
   runMultiTurnPrivacyChat,
 } from './src/server/geminiPrivacyAdvisor.ts';
+import {
+  inspectConfiguredOperatorEmailProvider,
+  processAndDeliverContactSubmission,
+} from './src/server/contactDeliveryService.ts';
 
 dotenv.config();
 
@@ -159,6 +163,106 @@ app.post('/api/user/purge-session', (req, res) => {
   purgeSessionWorkflows(sessionId);
   clearDnsMxCache();
   res.json({ success: true, message: 'All session events, workflows, and ephemeral credentials expunged.' });
+});
+
+// Endpoint: Inspect whether an operator-level contact email provider is configured on the server
+app.get('/api/contact/status', apiRateLimiter, (_req, res) => {
+  const status = inspectConfiguredOperatorEmailProvider();
+  return res.json(status);
+});
+
+// Endpoint: Validated Contact Form Delivery -> synovamedia@gmail.com with exact subject "synOUT MESSAGE"
+app.post('/api/contact', apiRateLimiter, async (req, res) => {
+  // Enforce same-origin when Origin header is present (honoring Cloud Run X-Forwarded-Host)
+  const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  const hostHeader = typeof req.headers.host === 'string' ? req.headers.host.trim() : '';
+  const forwardedHostRaw = req.headers['x-forwarded-host'];
+  const forwardedHosts = (
+    Array.isArray(forwardedHostRaw) ? forwardedHostRaw.join(',') : forwardedHostRaw || ''
+  )
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+
+  const allowedHosts = new Set<string>(
+    [hostHeader.toLowerCase(), ...forwardedHosts].filter(Boolean)
+  );
+
+  if (originHeader && allowedHosts.size > 0) {
+    try {
+      const originUrl = new URL(originHeader);
+      const originHost = originUrl.host.toLowerCase();
+      const originHostname = originUrl.hostname.toLowerCase();
+      const matchesAllowed =
+        allowedHosts.has(originHost) ||
+        Array.from(allowedHosts).some((h) => h.split(':')[0] === originHostname);
+
+      if (!matchesAllowed) {
+        return res.status(403).json({
+          success: false,
+          accepted: false,
+          errorCode: 'DELIVERY_FAILED',
+          userMessage: 'Cross-origin contact submissions are not permitted.',
+        });
+      }
+    } catch {
+      return res.status(403).json({
+        success: false,
+        accepted: false,
+        errorCode: 'DELIVERY_FAILED',
+        userMessage: 'Invalid request origin.',
+      });
+    }
+  }
+
+  const sessionId = getRequestSessionId(req);
+  const rawIp = req.headers['x-forwarded-for'];
+  const clientIp =
+    typeof rawIp === 'string'
+      ? rawIp.split(',')[0].trim().slice(0, 45)
+      : (req.socket.remoteAddress || '127.0.0.1').slice(0, 45);
+  const rateKey = `${clientIp}:${sessionId}`;
+
+  const credentialId =
+    typeof req.body?.credentialId === 'string' ? req.body.credentialId.trim() : '';
+  const sessionSmtp = credentialId
+    ? resolveSessionSmtpCredential(sessionId, credentialId)
+    : null;
+
+  const authHeader =
+    typeof req.headers.authorization === 'string' ? req.headers.authorization.trim() : '';
+  const oauthBearerToken = authHeader.toLowerCase().startsWith('bearer ')
+    ? authHeader.slice(7).trim()
+    : null;
+
+  const outcome = await processAndDeliverContactSubmission(
+    {
+      name: req.body?.name,
+      email: req.body?.email,
+      message: req.body?.message,
+      honeypot: req.body?.honeypot,
+    },
+    rateKey,
+    {
+      sessionSmtp,
+      oauthBearerToken,
+    }
+  );
+
+  if (!outcome.success && outcome.errorCode && outcome.errorCode !== 'VALIDATION_FAILED') {
+    // Log diagnostic status code only — never log personal message contents or credentials
+    console.warn(`[synOUT Contact] Submission not delivered (code=${outcome.errorCode}, status=${outcome.httpStatus})`);
+  }
+
+  return res.status(outcome.httpStatus).json({
+    success: outcome.success,
+    accepted: outcome.accepted,
+    provider: outcome.provider,
+    messageId: outcome.messageId,
+    errorCode: outcome.errorCode,
+    userMessage: outcome.userMessage,
+    errors: outcome.errors,
+  });
 });
 
 // Endpoint: Generate customized statutory legal notice (synOUT Legal Engine)
@@ -1382,6 +1486,7 @@ app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
     outcome:
       | 'confirmed_absent'
       | 'resurfaced_regression'
+      | 'new_exposure_detected'
       | 'still_present_within_sla'
       | 'anti_bot_gated'
       | 'unreachable';
@@ -1393,6 +1498,8 @@ app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
     ? `${profile.firstName || ''} ${profile.lastName || ''}`.trim().toLowerCase()
     : '';
   const city = (profile?.currentCity || '').trim().toLowerCase();
+  const allowLoopback =
+    process.env.SYNOUT_TEST_ALLOW_LOOPBACK === '1' && Boolean(req.body.allowLoopbackForTests);
 
   // Bounded concurrency (4 at a time)
   const chunkSize = 4;
@@ -1401,15 +1508,28 @@ app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
     const batchResults = await Promise.all(
       slice.map(async (entry: { broker: any; baselineStatus?: string }) => {
         const broker = entry?.broker;
-        const baselineStatus = entry?.baselineStatus === 'removed' ? 'removed' : 'submitted';
+        const baselineStatus: 'clean' | 'removed' | 'submitted' =
+          entry?.baselineStatus === 'clean'
+            ? 'clean'
+            : entry?.baselineStatus === 'removed'
+            ? 'removed'
+            : 'submitted';
         if (!broker || typeof broker.domain !== 'string') return null;
 
-        const probeUrl = getBrokerRecordSearchUrl(broker, profile);
+        const probeUrl =
+          typeof broker.recordsUrl === 'string' && allowLoopback && broker.recordsUrl.startsWith('http://127.0.0.1')
+            ? broker.recordsUrl
+            : getBrokerRecordSearchUrl(broker, profile);
         const checkedAtIso = new Date().toISOString();
         const prevHash = previousHashes[broker.id] || null;
 
         try {
-          const fetched = await safePublicFetch(probeUrl, { timeoutMs: 5000 });
+          const fetched = allowLoopback && probeUrl.startsWith('http://127.0.0.1')
+            ? await (async () => {
+                const r = await fetch(probeUrl, { signal: AbortSignal.timeout(5000) });
+                return { status: r.status, bodyText: await r.text() };
+              })()
+            : await safePublicFetch(probeUrl, { timeoutMs: 5000 });
           const antiBot = detectAntiBotGate(fetched.bodyText, fetched.status);
           const plainText = fetched.bodyText
             .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -1471,7 +1591,9 @@ app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
 
           if (hasNameAndCity) {
             const outcome =
-              baselineStatus === 'removed'
+              baselineStatus === 'clean'
+                ? ('new_exposure_detected' as const)
+                : baselineStatus === 'removed'
                 ? ('resurfaced_regression' as const)
                 : ('still_present_within_sla' as const);
             return {
@@ -1485,7 +1607,9 @@ app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
               outcome,
               checkedAtIso,
               summary:
-                outcome === 'resurfaced_regression'
+                outcome === 'new_exposure_detected'
+                  ? `NEW EXPOSURE ALERT: Previously clean broker ${broker.domain} now indexes matching personal record tokens!`
+                  : outcome === 'resurfaced_regression'
                   ? `ALERT: Previously purged profile tokens resurfaced on ${broker.domain}!`
                   : `Listing tokens still visible on ${broker.domain} while awaiting broker purge.`,
             };
@@ -1529,6 +1653,7 @@ app.post('/api/monitoring/batch-recheck', apiRateLimiter, async (req, res) => {
   return res.json({
     checkedCount: diffs.length,
     resurfacedCount: diffs.filter((d) => d.outcome === 'resurfaced_regression').length,
+    newExposureCount: diffs.filter((d) => d.outcome === 'new_exposure_detected').length,
     confirmedAbsentCount: diffs.filter((d) => d.outcome === 'confirmed_absent').length,
     diffs,
   });

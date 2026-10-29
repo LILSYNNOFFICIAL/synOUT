@@ -113,6 +113,14 @@ import { Footer } from './components/Footer';
 import { SplashScreen } from './components/SplashScreen';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PrivacyAdvisorChat } from './components/PrivacyAdvisorChat';
+import { PrivacyPolicyPage } from './components/PrivacyPolicyPage';
+import { TermsOfServicePage } from './components/TermsOfServicePage';
+import { ContactPage } from './components/ContactPage';
+import { OnboardingTutorialModal } from './components/OnboardingTutorialModal';
+import {
+  reopenOnboardingTutorial,
+  syncOnboardingWithAuthUser,
+} from './utils/onboardingStore';
 import { clearAdvisorThreadHistory } from './services/privacyAdvisorClient';
 import {
   hasUnlockedSessionPassphrase,
@@ -137,7 +145,39 @@ const DEFAULT_FALLBACK_PROFILE: UserProfile = {
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
-  const [activeTab, setActiveTab] = useState<AppTab>('home');
+  const [activeTab, setActiveTab] = useState<AppTab>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase();
+      if (hash === 'privacy' || hash === 'terms' || hash === 'contact') {
+        return hash;
+      }
+    }
+    return 'home';
+  });
+  const [lastWorkspaceTab, setLastWorkspaceTab] = useState<AppTab>('home');
+
+  const navigateToTab = (nextTab: AppTab) => {
+    if (nextTab !== 'privacy' && nextTab !== 'terms' && nextTab !== 'contact') {
+      setLastWorkspaceTab(nextTab);
+    }
+    setActiveTab(nextTab);
+    if (typeof window !== 'undefined') {
+      if (nextTab === 'privacy' || nextTab === 'terms' || nextTab === 'contact') {
+        window.history.replaceState(null, '', `#${nextTab}`);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (
+        window.location.hash === '#privacy' ||
+        window.location.hash === '#terms' ||
+        window.location.hash === '#contact'
+      ) {
+        window.history.replaceState(
+          null,
+          '',
+          `${window.location.pathname}${window.location.search}`
+        );
+      }
+    }
+  };
 
   // Stored state
   const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
@@ -214,6 +254,22 @@ export default function App() {
 
   const { activeConnectedEmail, isDirectSendConnected } = useEmailConnection();
   const cloudVaultState = useCloudVaultState();
+
+  useEffect(() => {
+    syncOnboardingWithAuthUser(cloudVaultState.user?.uid);
+  }, [cloudVaultState.user?.uid]);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase();
+      if (hash === 'privacy' || hash === 'terms' || hash === 'contact') {
+        setActiveTab(hash);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   useEffect(() => {
     if (!activeConnectedEmail || !userProfile) return;
@@ -380,7 +436,7 @@ export default function App() {
               ...item,
               removalStatus: 'submitted',
               optOutConfirmationCode: ref,
-              submissionDate: dateLabel,
+              submissionDate: item.submissionDate || dateLabel,
               submittedAtIso: item.submittedAtIso || nowIso,
               isRegression: false,
             }
@@ -475,7 +531,7 @@ export default function App() {
               : trackingRef,
             submissionDate: item.submissionDate || dateLabel,
             submittedAtIso: item.submittedAtIso || nowIso,
-            webFormSubmittedAtIso: nowIso,
+            webFormSubmittedAtIso: item.webFormSubmittedAtIso || nowIso,
             webFormConfirmationCode: genuineBrokerTicket || auditId,
             submittedOptOutUrl: optOutUrl || item.submittedOptOutUrl || broker.optOutUrl,
             discoveredOptOutTitle: discoveredTitle || item.discoveredOptOutTitle,
@@ -589,7 +645,7 @@ export default function App() {
             : formRef,
           submissionDate: item.submissionDate || dateLabel,
           submittedAtIso: item.submittedAtIso || nowIso,
-          webFormSubmittedAtIso: nowIso,
+          webFormSubmittedAtIso: item.webFormSubmittedAtIso || nowIso,
           webFormConfirmationCode: formRef,
           internalSubmissionId: auditId,
           brokerConfirmedReceipt: genuineTicket,
@@ -867,7 +923,7 @@ export default function App() {
                 status: 'exposed',
                 removalStatus: 'submitted',
                 optOutConfirmationCode: receiptMessageId,
-                submissionDate: dateLabel,
+                submissionDate: item.submissionDate || dateLabel,
                 submittedAtIso: item.submittedAtIso || nowIso,
                 isRegression: false,
               }
@@ -1190,7 +1246,7 @@ export default function App() {
       {/* Main Navbar */}
       <Navbar
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={navigateToTab}
         hasScanResults={hasCompletedScan}
         exposedCount={exposedItems.length}
         removedCount={removedCount}
@@ -1198,6 +1254,7 @@ export default function App() {
         onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
         onOpenVault={() => setIsVaultModalOpen(true)}
         onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
+        onOpenTutorial={() => reopenOnboardingTutorial(0)}
       />
 
       {/* Main Container */}
@@ -1512,19 +1569,52 @@ export default function App() {
           <PrivacyGuide
             onOpenFirewall={(sub) => {
               setFirewallSubTab(sub);
-              setActiveTab('firewall');
+              navigateToTab('firewall');
             }}
-            onOpenStateRegistries={() => setActiveTab('registries')}
-            onOpenInboxHarvester={() => setActiveTab('inbox')}
+            onOpenStateRegistries={() => navigateToTab('registries')}
+            onOpenInboxHarvester={() => navigateToTab('inbox')}
+          />
+        )}
+
+        {activeTab === 'privacy' && (
+          <PrivacyPolicyPage
+            onReturnToWorkspace={() =>
+              navigateToTab(hasCompletedScan ? 'report' : lastWorkspaceTab)
+            }
+            onNavigateContact={() => navigateToTab('contact')}
+            onNavigateTerms={() => navigateToTab('terms')}
+          />
+        )}
+
+        {activeTab === 'terms' && (
+          <TermsOfServicePage
+            onReturnToWorkspace={() =>
+              navigateToTab(hasCompletedScan ? 'report' : lastWorkspaceTab)
+            }
+            onNavigateContact={() => navigateToTab('contact')}
+            onNavigatePrivacy={() => navigateToTab('privacy')}
+          />
+        )}
+
+        {activeTab === 'contact' && (
+          <ContactPage
+            onReturnToWorkspace={() =>
+              navigateToTab(hasCompletedScan ? 'report' : lastWorkspaceTab)
+            }
+            onOpenEmailSetup={() => navigateToTab('gmail')}
+            onNavigatePrivacy={() => navigateToTab('privacy')}
+            onNavigateTerms={() => navigateToTab('terms')}
           />
         )}
       </main>
 
       {/* Footer */}
       <Footer
-        onNavigate={setActiveTab}
+        activeTab={activeTab}
+        onNavigate={navigateToTab}
         onPurgeSession={handlePurgeSession}
         onOpenVault={() => setIsVaultModalOpen(true)}
+        onOpenTutorial={() => reopenOnboardingTutorial(0)}
       />
 
       {/* Modals */}
@@ -1798,6 +1888,14 @@ export default function App() {
             onConsumeInitialPrompt={() => setAdvisorInitialPrompt(null)}
           />
         </div>
+      )}
+
+      {/* First-Launch Interactive Onboarding Tutorial — Appears strictly after SplashScreen completes */}
+      {!showSplash && (
+        <OnboardingTutorialModal
+          onConnectEmailAndStart={() => navigateToTab('gmail')}
+          onExploreIndependently={() => {}}
+        />
       )}
 
       {/* Offline Connectivity Banner */}
