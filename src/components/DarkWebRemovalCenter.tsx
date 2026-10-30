@@ -12,6 +12,7 @@ import {
   sendEmailViaConnectedAccount,
 } from '../services/emailConnectionStore';
 import { copyTextToClipboard } from '../utils/exportEngines';
+import { isStaticServerlessRuntime } from '../utils/serverlessRuntime';
 import {
   Skull,
   Globe,
@@ -68,7 +69,7 @@ export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({
   const [dispatchSuccess, setDispatchSuccess] = useState<string | null>(null);
 
   // Direct Deep/Dark Web Link Generator state
-  const primaryEmail = profile.emails[0] || `${profile.firstName.toLowerCase()}.${profile.lastName.toLowerCase()}@example.com`;
+  const primaryEmail = profile.emails[0] || activeConnectedEmail || 'yourname@email.com';
   const primaryPhone = profile.phoneNumbers[0] || '';
   const fullName = `${profile.firstName} ${profile.lastName}`.trim();
   const emailHandle = primaryEmail.split('@')[0] || profile.lastName.toLowerCase();
@@ -177,15 +178,17 @@ export const DarkWebRemovalCenter: React.FC<DarkWebRemovalCenterProps> = ({
           brokerDomain: f.hostContact,
         });
 
-        await fetch('/api/darkweb/dispatch-takedown', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sourceTitle: f.sourceName,
-            hostContact: f.hostContact,
-            sourceCategory: f.sourceCategory,
-          }),
-        }).catch(() => null);
+        if (!isStaticServerlessRuntime()) {
+          await fetch('/api/darkweb/dispatch-takedown', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourceTitle: f.sourceName,
+              hostContact: f.hostContact,
+              sourceCategory: f.sourceCategory,
+            }),
+          }).catch(() => null);
+        }
 
         sentCount++;
         setFindings((prev) =>

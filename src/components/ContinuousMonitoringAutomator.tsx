@@ -24,6 +24,21 @@ import {
   saveRelistingAlertSettings,
 } from '../utils/relistingDigestEngine';
 import {
+  acknowledgeNewExposureAlert,
+  dismissAllNewExposureAlerts,
+  ingestMonitoringDiffsForNewExposures,
+  requestBrowserNotificationPermission,
+  setNewExposureAlertsEnabled,
+  setPushNotificationsEnabled,
+  triggerNewExposureAlert,
+  useNewExposureAlerts,
+} from '../utils/newExposureAlertStore';
+import {
+  isJsonApiResponse,
+  isStaticServerlessRuntime,
+  runServerlessMonitoringSweep,
+} from '../utils/serverlessRuntime';
+import {
   RotateCcw,
   Play,
   Pause,
@@ -34,7 +49,9 @@ import {
   CheckCircle2,
   FileCode2,
   Bell,
+  BellRing,
   ExternalLink,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface ContinuousMonitoringAutomatorProps {
@@ -70,10 +87,20 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
   onAutoReRemoveResurfaced,
 }) => {
   const { isDirectSendConnected, activeConnectedEmail } = useEmailConnection();
+  const {
+    alerts: newExposureAlerts,
+    unacknowledgedAlerts,
+    alertsEnabled,
+    pushNotificationsEnabled,
+    notificationPermission,
+  } = useNewExposureAlerts();
+
   const [monitorConfig, setMonitorConfig] = useState(() => loadRelistingMonitorConfig());
   const [alertSettings, setAlertSettings] = useState(() => loadRelistingAlertSettings());
   const [isSweeping, setIsSweeping] = useState(false);
+  const [isSweepingCleanWatchlist, setIsSweepingCleanWatchlist] = useState(false);
   const [sweepError, setSweepError] = useState<string | null>(null);
+  const [watchlistFeedback, setWatchlistFeedback] = useState<string | null>(null);
   const [isSendingDigest, setIsSendingDigest] = useState(false);
   const [digestFeedback, setDigestFeedback] = useState<string | null>(null);
 
@@ -100,6 +127,11 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
     [scanResults]
   );
 
+  const cleanResults = useMemo(
+    () => scanResults.filter((r) => r.status === 'clean'),
+    [scanResults]
+  );
+
   const pendingResults = useMemo(
     () => exposedResults.filter((r) => !hasVerifiedEmailReceipt(r) && r.removalStatus !== 'removed'),
     [exposedResults]
@@ -119,8 +151,53 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
     setMonitorConfig((prev) => ({ ...prev, cadenceDays: days }));
   };
 
+  const executeBatchRecheckWithServerlessFallback = async (
+    validTargets: Array<{ broker: DataBroker; baselineStatus: 'clean' | 'removed' | 'submitted' }>
+  ): Promise<LiveRelistingProbeDiff[]> => {
+    if (isStaticServerlessRuntime()) {
+      return runServerlessMonitoringSweep({
+        brokers: validTargets,
+        profile,
+        previousHashes: monitorConfig.snapshotHashesByBroker,
+      });
+    }
+
+    try {
+      const res = await sessionFetch('/api/monitoring/batch-recheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brokers: validTargets,
+          profile,
+          previousHashes: monitorConfig.snapshotHashesByBroker,
+        }),
+      });
+
+      if (!isJsonApiResponse(res)) {
+        return runServerlessMonitoringSweep({
+          brokers: validTargets,
+          profile,
+          previousHashes: monitorConfig.snapshotHashesByBroker,
+        });
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || `Sweep failed (HTTP ${res.status})`);
+      }
+      return Array.isArray(data.diffs) ? (data.diffs as LiveRelistingProbeDiff[]) : [];
+    } catch {
+      return runServerlessMonitoringSweep({
+        brokers: validTargets,
+        profile,
+        previousHashes: monitorConfig.snapshotHashesByBroker,
+      });
+    }
+  };
+
   const handleRunRelistingSweep = async () => {
     setSweepError(null);
+    setWatchlistFeedback(null);
     setIsSweeping(true);
     try {
       const registry = getExhaustiveBrokerRegistry();
@@ -132,30 +209,19 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
             }))
           : exposedResults.slice(0, 10).map((r) => ({
               broker: findBrokerById(r.brokerId),
-              baselineStatus: r.removalStatus === 'removed' ? 'removed' : 'submitted',
+              baselineStatus: (r.removalStatus === 'removed' ? 'removed' : 'submitted') as
+                | 'removed'
+                | 'submitted',
             }));
 
-      const validTargets = targetEntries.filter((t) => Boolean(t.broker));
+      const validTargets = targetEntries.filter((t): t is { broker: DataBroker; baselineStatus: 'clean' | 'removed' | 'submitted' } =>
+        Boolean(t.broker)
+      );
       if (validTargets.length === 0) {
         throw new Error('Run an exposure scan first so synOUT has broker records to monitor.');
       }
 
-      const res = await sessionFetch('/api/monitoring/batch-recheck', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          brokers: validTargets,
-          profile,
-          previousHashes: monitorConfig.snapshotHashesByBroker,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || `Sweep failed (HTTP ${res.status})`);
-      }
-
-      const diffs: LiveRelistingProbeDiff[] = Array.isArray(data.diffs) ? data.diffs : [];
+      const diffs = await executeBatchRecheckWithServerlessFallback(validTargets);
       const updatedHashes = { ...monitorConfig.snapshotHashesByBroker };
       for (const d of diffs) {
         updatedHashes[d.brokerId] = d.snapshotSha256;
@@ -168,11 +234,15 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
         recentDiffs: [...diffs, ...prev.recentDiffs].slice(0, 30),
       }));
 
+      await ingestMonitoringDiffsForNewExposures(diffs);
+
       if (onApplyRelistingDiffs) {
         onApplyRelistingDiffs(diffs);
       }
 
-      const resurfacedDiffs = diffs.filter((d) => d.outcome === 'resurfaced_regression');
+      const resurfacedDiffs = diffs.filter(
+        (d) => d.outcome === 'resurfaced_regression' || d.outcome === 'new_exposure_detected'
+      );
       if (resurfacedDiffs.length > 0) {
         let reRemovedCount = 0;
         if (alertSettings.autoTriggerReRemovalOnResurface && onAutoReRemoveResurfaced) {
@@ -193,7 +263,7 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
             alertHistory: [entry, ...prev.alertHistory].slice(0, 25),
           }));
           setDigestFeedback(
-            `Re-Listing Digest Alert dispatched to ${entry.recipientEmail} (${resurfacedDiffs.length} resurfaced broker(s)).`
+            `Re-Listing Digest Alert dispatched to ${entry.recipientEmail} (${resurfacedDiffs.length} resurfaced/new leak broker(s)).`
           );
         }
       }
@@ -201,6 +271,111 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
       setSweepError(err instanceof Error ? err.message : 'Batch re-listing sweep failed.');
     } finally {
       setIsSweeping(false);
+    }
+  };
+
+  const handleScanCleanBrokersForNewLeaks = async () => {
+    setSweepError(null);
+    setWatchlistFeedback(null);
+    setIsSweepingCleanWatchlist(true);
+    try {
+      const registry = getExhaustiveBrokerRegistry();
+      const sourceClean =
+        cleanResults.length > 0
+          ? cleanResults
+              .slice(0, 12)
+              .map((r) => findBrokerById(r.brokerId) || registry.find((b) => b.id === r.brokerId))
+              .filter((b): b is DataBroker => Boolean(b))
+          : registry.slice(0, 8);
+
+      const validTargets = sourceClean.map((broker) => ({
+        broker,
+        baselineStatus: 'clean' as const,
+      }));
+
+      const diffs = await executeBatchRecheckWithServerlessFallback(validTargets);
+      const updatedHashes = { ...monitorConfig.snapshotHashesByBroker };
+      for (const d of diffs) {
+        updatedHashes[d.brokerId] = d.snapshotSha256;
+      }
+
+      setMonitorConfig((prev) => ({
+        ...prev,
+        lastSweepIso: new Date().toISOString(),
+        snapshotHashesByBroker: updatedHashes,
+        recentDiffs: [...diffs, ...prev.recentDiffs].slice(0, 30),
+      }));
+
+      const createdAlerts = await ingestMonitoringDiffsForNewExposures(diffs);
+      if (onApplyRelistingDiffs) {
+        onApplyRelistingDiffs(diffs);
+      }
+
+      if (createdAlerts.length > 0) {
+        setWatchlistFeedback(
+          `Detected ${createdAlerts.length} new data leak(s) across previously clean brokers! Persistent toast alert and push notification triggered.`
+        );
+      } else {
+        setWatchlistFeedback(
+          `Audited ${diffs.length} previously clean broker(s): zero new personal data leaks detected.`
+        );
+      }
+    } catch (err) {
+      setSweepError(err instanceof Error ? err.message : 'Clean-broker watchlist scan failed.');
+    } finally {
+      setIsSweepingCleanWatchlist(false);
+    }
+  };
+
+  const handleEnablePushNotifications = async () => {
+    if (pushNotificationsEnabled) {
+      setPushNotificationsEnabled(false);
+      setWatchlistFeedback('Browser push notifications muted; persistent in-app toast bar remains active.');
+      return;
+    }
+    const perm = await requestBrowserNotificationPermission();
+    if (perm === 'granted') {
+      setWatchlistFeedback('Browser push notifications enabled for New Exposure Alerts.');
+    } else if (perm === 'denied') {
+      setWatchlistFeedback(
+        'Browser notification permission is blocked in site settings; synOUT will notify you immediately via the persistent top alert bar.'
+      );
+    } else if (perm === 'unsupported') {
+      setWatchlistFeedback(
+        'Push notifications are unavailable in this browser context; synOUT will notify you immediately via the persistent top alert bar.'
+      );
+    }
+  };
+
+  const handleRunAlertVerificationDrill = async () => {
+    const registry = getExhaustiveBrokerRegistry();
+    const cleanCandidate =
+      (cleanResults[0] && findBrokerById(cleanResults[0].brokerId)) ||
+      registry.find((b) => !exposedResults.some((r) => r.brokerId === b.id)) ||
+      registry[0];
+
+    if (!cleanCandidate) return;
+
+    if (!alertsEnabled) {
+      setNewExposureAlertsEnabled(true);
+    }
+
+    const alert = await triggerNewExposureAlert({
+      brokerId: cleanCandidate.id,
+      brokerName: cleanCandidate.name,
+      brokerDomain: cleanCandidate.domain,
+      risk: cleanCandidate.risk,
+      summary: `Alert drill: detected new personal profile match on previously clean broker ${cleanCandidate.name}.`,
+      probeUrl: cleanCandidate.optOutUrl,
+      source: 'alert_verification_drill',
+    });
+
+    if (alert) {
+      setWatchlistFeedback(
+        `Triggered New Exposure Alert for ${cleanCandidate.name} — verify the persistent top alert bar${
+          alert.pushDispatched ? ' and desktop push notification' : ''
+        }.`
+      );
     }
   };
 
@@ -215,7 +390,7 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
         recipientEmail: targetEmail,
         profile,
         resurfacedDiffs: monitorConfig.recentDiffs.filter(
-          (d) => d.outcome === 'resurfaced_regression'
+          (d) => d.outcome === 'resurfaced_regression' || d.outcome === 'new_exposure_detected'
         ),
         cadenceDays: monitorConfig.cadenceDays,
         autoReRemovalTriggered: alertSettings.autoTriggerReRemovalOnResurface,
@@ -371,6 +546,11 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             <span>Confirmed Absent</span>
                           </span>
+                        ) : diff.outcome === 'new_exposure_detected' ? (
+                          <span className="text-rose-400 inline-flex items-center gap-1 font-semibold">
+                            <ShieldAlert className="w-3.5 h-3.5" />
+                            <span>New Exposure Leak</span>
+                          </span>
                         ) : diff.outcome === 'resurfaced_regression' ? (
                           <span className="text-rose-400 inline-flex items-center gap-1">
                             <AlertTriangle className="w-3.5 h-3.5" />
@@ -414,6 +594,177 @@ export const ContinuousMonitoringAutomator: React.FC<ContinuousMonitoringAutomat
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Section 01A: New Exposure Alert Watchdog (Push Notifications + Persistent Toast Bar) */}
+      <div className="glass-panel rounded-2xl p-6 sm:p-8 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 tabular-nums">
+              <BellRing className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span className="text-rose-300 font-medium">New Exposure Alert Watchdog</span>
+              <span aria-hidden="true">·</span>
+              <span>{cleanResults.length} Clean Broker(s) Monitored</span>
+              <span aria-hidden="true">·</span>
+              <span>
+                Push Status:{' '}
+                {pushNotificationsEnabled
+                  ? 'Granted & Active'
+                  : notificationPermission === 'denied'
+                  ? 'Blocked (Toast Bar Active)'
+                  : 'Persistent Toast Active'}
+              </span>
+            </div>
+            <h2 className="text-lg font-bold text-white">
+              Immediate Push &amp; Persistent Toast Alerts for Clean-Broker Data Leaks
+            </h2>
+            <p className="text-xs text-slate-400 max-w-3xl leading-relaxed">
+              Continuously watches brokers that previously returned zero records for your profile.
+              Whenever a clean clearinghouse acquires a new data feed exposing your personal
+              identifiers, synOUT triggers a browser push notification and pins a persistent alert
+              bar until you suppress or acknowledge the leak.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setNewExposureAlertsEnabled(!alertsEnabled)}
+              className={`px-3.5 py-2 rounded-xl text-xs font-medium glass-subtle cursor-pointer whitespace-nowrap ${
+                alertsEnabled ? 'text-emerald-300 border-emerald-400/30' : 'text-slate-400'
+              }`}
+            >
+              Alert Watchdog: {alertsEnabled ? 'Active' : 'Muted'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleEnablePushNotifications()}
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                pushNotificationsEnabled
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/35'
+                  : 'glass-subtle hover:bg-white/[0.08] text-slate-200'
+              }`}
+            >
+              <Bell className="w-3.5 h-3.5" />
+              <span>
+                {pushNotificationsEnabled
+                  ? 'Push Notifications On'
+                  : 'Enable Push Notifications'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleScanCleanBrokersForNewLeaks()}
+              disabled={isSweepingCleanWatchlist}
+              className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${isSweepingCleanWatchlist ? 'animate-spin' : ''}`}
+              />
+              <span>
+                {isSweepingCleanWatchlist
+                  ? 'Scanning Clean Brokers...'
+                  : 'Scan Clean Brokers for New Leaks'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleRunAlertVerificationDrill()}
+              className="px-3.5 py-2 rounded-xl glass-subtle hover:border-rose-400/40 text-rose-300 text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Test New Exposure Alert</span>
+            </button>
+          </div>
+        </div>
+
+        {watchlistFeedback && (
+          <div className="p-3.5 rounded-xl bg-slate-950/60 border border-white/[0.08] text-xs text-slate-200 flex items-center justify-between gap-3">
+            <span>{watchlistFeedback}</span>
+            <button
+              type="button"
+              onClick={() => setWatchlistFeedback(null)}
+              className="text-slate-400 hover:text-white cursor-pointer whitespace-nowrap"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {newExposureAlerts.length > 0 && (
+          <div className="space-y-2.5 pt-2 border-t border-white/[0.06] text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-slate-400 tabular-nums">
+                Recent Clean-Broker Leak Alerts ({unacknowledgedAlerts.length} Unacknowledged)
+              </span>
+              {unacknowledgedAlerts.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => dismissAllNewExposureAlerts()}
+                  className="text-[11px] text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Acknowledge All
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              {newExposureAlerts.slice(0, 6).map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border ${
+                    alert.acknowledged
+                      ? 'bg-slate-950/35 border-white/[0.06] text-slate-400'
+                      : 'bg-rose-500/[0.07] border-rose-500/35 text-slate-200'
+                  }`}
+                >
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 tabular-nums">
+                      <span className="font-semibold text-white">{alert.brokerName}</span>
+                      <span aria-hidden="true">·</span>
+                      <span className="font-mono text-slate-400">{alert.brokerDomain}</span>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-[11px] font-mono text-slate-500">
+                        {new Date(alert.detectedAtIso).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </div>
+                    <p className="text-slate-300 leading-snug">{alert.summary}</p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {onSingleOptOut && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSingleOptOut(alert.brokerId);
+                          acknowledgeNewExposureAlert(alert.id);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        Remove Now
+                      </button>
+                    )}
+                    {!alert.acknowledged && (
+                      <button
+                        type="button"
+                        onClick={() => acknowledgeNewExposureAlert(alert.id)}
+                        className="px-2.5 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.08] text-slate-300 cursor-pointer whitespace-nowrap"
+                      >
+                        Acknowledge
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

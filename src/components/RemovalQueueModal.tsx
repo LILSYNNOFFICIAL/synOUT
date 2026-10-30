@@ -871,7 +871,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                           type="email"
                           value={emailInput}
                           onChange={(e) => handleEmailChange(e.target.value)}
-                          placeholder="you@gmail.com"
+                          placeholder="yourname@email.com"
                           className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
                         />
                       </div>
@@ -932,7 +932,7 @@ export const RemovalQueueModal: React.FC<RemovalQueueModalProps> = ({
                           required
                           value={emailInput}
                           onChange={(e) => handleEmailChange(e.target.value)}
-                          placeholder="you@gmail.com"
+                          placeholder="yourname@email.com"
                           className="w-full glass-input rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
                         />
                       </div>

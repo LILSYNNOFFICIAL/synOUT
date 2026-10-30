@@ -22,6 +22,11 @@ import {
 import { copyTextToClipboard, downloadFile } from '../utils/exportEngines';
 import { sessionFetch } from '../services/sessionClient';
 import {
+  executeVerificationLinkServerless,
+  isJsonApiResponse,
+  isStaticServerlessRuntime,
+} from '../utils/serverlessRuntime';
+import {
   X,
   Inbox,
   ShieldAlert,
@@ -288,34 +293,66 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
     }));
 
     try {
-      const res = await sessionFetch('/api/inbox/execute-verification-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      let verified = false;
+      let code: string | null = activeTicketId || null;
+      let summary = 'Confirmation link completed.';
+      let finalUrl = sanitizedUrl;
+      let evidenceSha256 = '';
+
+      if (isStaticServerlessRuntime()) {
+        const exec = await executeVerificationLinkServerless({
           verificationUrl: sanitizedUrl,
           expectedBrokerDomain: expectedDomain,
           brokerId: activeBroker?.id,
           brokerName: activeBroker?.name,
           rawEmailText: rawReplyText,
-        }),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
-        throw new Error(
-          'Automatic server link clicking is unavailable on this static website deployment. Click "Open Safe Link" to finish confirming directly in a new tab.'
-        );
-      }
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
+        });
+        verified = exec.verified;
+        code = exec.brokerConfirmationCode || activeTicketId || null;
+        summary = exec.summary;
+        finalUrl = exec.finalUrl;
+        evidenceSha256 = exec.evidenceSha256;
+      } else {
+        const res = await sessionFetch('/api/inbox/execute-verification-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            verificationUrl: sanitizedUrl,
+            expectedBrokerDomain: expectedDomain,
+            brokerId: activeBroker?.id,
+            brokerName: activeBroker?.name,
+            rawEmailText: rawReplyText,
+          }),
+        }).catch(() => null);
+
+        if (!res || !isJsonApiResponse(res)) {
+          const exec = await executeVerificationLinkServerless({
+            verificationUrl: sanitizedUrl,
+            expectedBrokerDomain: expectedDomain,
+            brokerId: activeBroker?.id,
+            brokerName: activeBroker?.name,
+            rawEmailText: rawReplyText,
+          });
+          verified = exec.verified;
+          code = exec.brokerConfirmationCode || activeTicketId || null;
+          summary = exec.summary;
+          finalUrl = exec.finalUrl;
+          evidenceSha256 = exec.evidenceSha256;
+        } else {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(data?.error || `HTTP ${res.status}`);
+          }
+          verified = Boolean(data.verified);
+          code = data.brokerConfirmationCode || activeTicketId || null;
+          summary = String(data.summary || 'Confirmation link completed.');
+          finalUrl = data.finalUrl || sanitizedUrl;
+          evidenceSha256 = data.evidenceSha256 || '';
+        }
       }
 
-      const verified = Boolean(data.verified);
-      const code = data.brokerConfirmationCode || activeTicketId || null;
-      const summary = String(data.summary || 'Confirmation link completed.');
-
-      if (data.brokerConfirmationCode && !manualTicketOverride) {
-        setManualTicketOverride(data.brokerConfirmationCode);
+      if (code && !manualTicketOverride) {
+        setManualTicketOverride(code);
       }
 
       setLinkExecByUrl((prev) => ({
@@ -332,8 +369,8 @@ export const BrokerReplyTriageModal: React.FC<BrokerReplyTriageModalProps> = ({
         onVerificationLinkCompleted?.({
           broker: activeBroker,
           confirmationCode: code,
-          finalUrl: data.finalUrl || sanitizedUrl,
-          evidenceSha256: data.evidenceSha256 || '',
+          finalUrl,
+          evidenceSha256,
           summary,
         });
         setTicketSavedBanner(

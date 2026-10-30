@@ -101,13 +101,16 @@ export async function sendGmailMessage(
   subject: string,
   body: string,
   bcc?: string,
-  cc?: string[]
+  cc?: string[],
+  replyTo?: string
 ): Promise<{ id: string; threadId: string }> {
-  const validCc = (cc || []).map((c) => c.trim()).filter(Boolean);
+  const validCc = (cc || []).map((c) => c.replace(/[\r\n]+/g, '').trim()).filter(Boolean);
+  const safeReplyTo = replyTo ? replyTo.replace(/[\r\n]+/g, '').trim() : '';
   const headers = [
-    `To: ${to}`,
+    `To: ${to.replace(/[\r\n]+/g, '').trim()}`,
+    ...(safeReplyTo ? [`Reply-To: ${safeReplyTo}`] : []),
     ...(validCc.length > 0 ? [`Cc: ${validCc.join(', ')}`] : []),
-    ...(bcc ? [`Bcc: ${bcc}`] : []),
+    ...(bcc ? [`Bcc: ${bcc.replace(/[\r\n]+/g, '').trim()}`] : []),
     `Subject: =?UTF-8?B?${utf8ToBase64(subject)}?=`,
     'Content-Type: text/plain; charset="UTF-8"',
     'MIME-Version: 1.0',

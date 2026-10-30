@@ -8,6 +8,8 @@ import {
 } from '../types';
 import { StoredSearchProfile } from './searchProfiles';
 import { BrokerContactOverride } from './brokerContactResolver';
+import type { CreditFreezeStateMap } from './creditFreezeEngine';
+import type { TelemarketingShieldState } from './telemarketingShieldEngine';
 
 const SNAPSHOTS_STORAGE_KEY = 'synout_scan_snapshots_v1';
 const BUREAU_PROGRESS_STORAGE_KEY = 'synout_bureau_freeze_progress_v1';
@@ -184,6 +186,8 @@ export interface SynoutWorkspaceBundle {
   canaryAliases?: CanaryAliasRecord[];
   publicRecordProgress?: Record<string, PublicRecordChecklistState>;
   brokerContactOverrides?: Record<string, BrokerContactOverride>;
+  creditFreezeState?: CreditFreezeStateMap;
+  telemarketingShieldState?: TelemarketingShieldState;
 }
 
 export interface EncryptedWorkspaceEnvelope {
@@ -348,6 +352,14 @@ export function parsePlainWorkspaceBundle(rawJson: string): SynoutWorkspaceBundl
       parsed.brokerContactOverrides && typeof parsed.brokerContactOverrides === 'object'
         ? parsed.brokerContactOverrides
         : {},
+    creditFreezeState:
+      parsed.creditFreezeState && typeof parsed.creditFreezeState === 'object'
+        ? parsed.creditFreezeState
+        : {},
+    telemarketingShieldState:
+      parsed.telemarketingShieldState && typeof parsed.telemarketingShieldState === 'object'
+        ? parsed.telemarketingShieldState
+        : undefined,
   };
 }
 

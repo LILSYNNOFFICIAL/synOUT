@@ -12,6 +12,11 @@ import {
 import { markBrokerEmailBounced } from '../utils/brokerContactResolver';
 import { copyTextToClipboard } from '../utils/exportEngines';
 import {
+  executeVerificationLinkServerless,
+  isJsonApiResponse,
+  isStaticServerlessRuntime,
+} from '../utils/serverlessRuntime';
+import {
   Inbox,
   RefreshCw,
   CheckCircle2,
@@ -192,32 +197,60 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
     }));
 
     try {
-      const res = await sessionFetch('/api/inbox/execute-verification-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      let verified = false;
+      let code: string | null = item.extractedTicketId || null;
+      let summary = 'Confirmation link executed.';
+      let finalUrl = primaryLink.sanitizedUrl;
+      let evidenceSha256 = '';
+
+      if (isStaticServerlessRuntime()) {
+        const exec = await executeVerificationLinkServerless({
           verificationUrl: primaryLink.sanitizedUrl,
           expectedBrokerDomain: expectedDomain,
           brokerId: item.broker?.id,
           brokerName: item.broker?.name,
-        }),
-      });
+        });
+        verified = exec.verified;
+        code = exec.brokerConfirmationCode || item.extractedTicketId || null;
+        summary = exec.summary;
+        finalUrl = exec.finalUrl;
+        evidenceSha256 = exec.evidenceSha256;
+      } else {
+        const res = await sessionFetch('/api/inbox/execute-verification-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            verificationUrl: primaryLink.sanitizedUrl,
+            expectedBrokerDomain: expectedDomain,
+            brokerId: item.broker?.id,
+            brokerName: item.broker?.name,
+          }),
+        }).catch(() => null);
 
-      const contentType = res.headers.get('content-type') || '';
-      if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
-        throw new Error(
-          'Automatic server link clicking is unavailable on this static website deployment. Click "Open Link" to finish confirming directly in a new tab.'
-        );
+        if (!res || !isJsonApiResponse(res)) {
+          const exec = await executeVerificationLinkServerless({
+            verificationUrl: primaryLink.sanitizedUrl,
+            expectedBrokerDomain: expectedDomain,
+            brokerId: item.broker?.id,
+            brokerName: item.broker?.name,
+          });
+          verified = exec.verified;
+          code = exec.brokerConfirmationCode || item.extractedTicketId || null;
+          summary = exec.summary;
+          finalUrl = exec.finalUrl;
+          evidenceSha256 = exec.evidenceSha256;
+        } else {
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(data?.error || `HTTP ${res.status}`);
+          }
+          verified = Boolean(data.verified);
+          code = data.brokerConfirmationCode || item.extractedTicketId || null;
+          summary = String(data.summary || 'Confirmation link executed.');
+          finalUrl = data.finalUrl || primaryLink.sanitizedUrl;
+          evidenceSha256 = data.evidenceSha256 || '';
+        }
       }
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
-
-      const verified = Boolean(data.verified);
-      const code = data.brokerConfirmationCode || item.extractedTicketId || null;
-      const summary = String(data.summary || 'Confirmation link executed.');
 
       setExecStateById((prev) => ({
         ...prev,
@@ -227,7 +260,7 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
           verified,
           summary,
           confirmationCode: code,
-          evidenceSha256: data.evidenceSha256,
+          evidenceSha256,
         },
       }));
 
@@ -236,8 +269,8 @@ export const InboxHarvesterCenter: React.FC<InboxHarvesterCenterProps> = ({
           broker: item.broker,
           matchedDomain: expectedDomain,
           confirmationCode: code,
-          finalUrl: data.finalUrl || primaryLink.sanitizedUrl,
-          evidenceSha256: data.evidenceSha256 || '',
+          finalUrl,
+          evidenceSha256,
           summary,
         });
       }

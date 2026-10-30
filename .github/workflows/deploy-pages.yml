@@ -38,6 +38,7 @@ jobs:
       - name: Prepare static site files
         run: |
           test -f dist/index.html
+          cp dist/index.html dist/404.html
           touch dist/.nojekyll
           cp -R dist/. public/
           touch .nojekyll

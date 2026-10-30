@@ -293,7 +293,7 @@ export const ProfileQuickFixPanel: React.FC<ProfileQuickFixPanelProps> = ({
                         type="email"
                         value={emailInput}
                         onChange={(e) => setEmailInput(e.target.value)}
-                        placeholder="you@example.com"
+                        placeholder="yourname@email.com"
                         aria-label="Verification email"
                         className="glass-input rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 w-52"
                       />

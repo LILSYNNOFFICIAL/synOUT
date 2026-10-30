@@ -20,6 +20,8 @@ import {
 import { getSavedSearches } from '../utils/searchProfiles';
 import { findBrokerById } from '../services/emailConnectionStore';
 import { getBrokerContactOverrides } from '../utils/brokerContactResolver';
+import type { CreditFreezeStateMap } from '../utils/creditFreezeEngine';
+import type { TelemarketingShieldState } from '../utils/telemarketingShieldEngine';
 import { downloadFile } from '../utils/exportEngines';
 import {
   pullAndDecryptCloudVault,
@@ -52,6 +54,8 @@ interface WorkspaceVaultModalProps {
   scanSnapshots: ScanHistorySnapshot[];
   canaryAliases?: CanaryAliasRecord[];
   publicRecordProgress?: Record<string, PublicRecordChecklistState>;
+  creditFreezeState?: CreditFreezeStateMap;
+  telemarketingShieldState?: TelemarketingShieldState;
   onRestoreWorkspace: (bundle: SynoutWorkspaceBundle) => void;
   onCaptureManualSnapshot: () => void;
   onClose: () => void;
@@ -65,6 +69,8 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
   scanSnapshots,
   canaryAliases = [],
   publicRecordProgress = {},
+  creditFreezeState = {},
+  telemarketingShieldState,
   onRestoreWorkspace,
   onCaptureManualSnapshot,
   onClose,
@@ -105,6 +111,8 @@ export const WorkspaceVaultModal: React.FC<WorkspaceVaultModalProps> = ({
     canaryAliases,
     publicRecordProgress,
     brokerContactOverrides: getBrokerContactOverrides(),
+    creditFreezeState,
+    telemarketingShieldState,
   });
 
   const handleExportVault = async (e: React.FormEvent) => {

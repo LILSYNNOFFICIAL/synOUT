@@ -7,6 +7,7 @@ import {
 } from '../services/emailConnectionStore';
 import { buildWebmailComposeUrls, detectWebmailLauncherFromEmail } from './emailProviderConfig';
 import { sessionFetch } from '../services/sessionClient';
+import { isStaticServerlessRuntime } from './serverlessRuntime';
 
 export interface RelistingDigestLogEntry {
   id: string;
@@ -228,38 +229,40 @@ export async function dispatchRelistingDigestAlert(params: {
     };
   }
 
-  // Record & attempt server-side session digest relay; provide 1-Click Webmail self-alert URL when no direct background email token is active
+  // Record & attempt server-side session digest relay when backend is available; provide 1-Click Webmail self-alert URL when no direct background email token is active
   let messageId = `<digest-${Date.now()}@alert.synout.privacy>`;
-  try {
-    const res = await sessionFetch('/api/monitoring/send-relisting-digest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipientEmail: cleanRecipient,
-        subject,
-        body,
-        brokerNames,
-        resurfacedCount: resurfacedDiffs.length,
-      }),
-    });
-    const data = await res.json().catch(() => null);
-    if (data?.messageId) {
-      messageId = String(data.messageId);
+  if (!isStaticServerlessRuntime()) {
+    try {
+      const res = await sessionFetch('/api/monitoring/send-relisting-digest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipientEmail: cleanRecipient,
+          subject,
+          body,
+          brokerNames,
+          resurfacedCount: resurfacedDiffs.length,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.messageId) {
+        messageId = String(data.messageId);
+      }
+      if (data?.deliveredViaSmtp) {
+        return {
+          id: `digest-${Date.now()}`,
+          sentAtIso: new Date().toISOString(),
+          recipientEmail: cleanRecipient,
+          resurfacedCount: resurfacedDiffs.length,
+          brokerNames,
+          autoReRemovalTriggered,
+          deliveryChannel: 'server_digest_relay',
+          messageId,
+        };
+      }
+    } catch {
+      // Graceful local fallback when running on static hosting
     }
-    if (data?.deliveredViaSmtp) {
-      return {
-        id: `digest-${Date.now()}`,
-        sentAtIso: new Date().toISOString(),
-        recipientEmail: cleanRecipient,
-        resurfacedCount: resurfacedDiffs.length,
-        brokerNames,
-        autoReRemovalTriggered,
-        deliveryChannel: 'server_digest_relay',
-        messageId,
-      };
-    }
-  } catch {
-    // Graceful local fallback when running on static hosting
   }
 
   const urls = buildWebmailComposeUrls(cleanRecipient, subject, body);

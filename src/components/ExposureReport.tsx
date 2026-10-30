@@ -36,9 +36,11 @@ import {
 import { hasWebFormSubmission } from '../utils/optOutFormEngine';
 import { shouldRenderOptOutTimeline } from '../utils/optOutTimelineEngine';
 import { ExposureTrendChart } from './ExposureTrendChart';
+import { ExposureGeoMap } from './ExposureGeoMap';
 import { ProfileQuickFixPanel } from './ProfileQuickFixPanel';
 import { OptOutMiniTimeline } from './OptOutMiniTimeline';
 import { PrivacyTacticsModal } from './PrivacyTacticsModal';
+import { resultMatchesUsState } from '../utils/geoExposureEngine';
 import {
   BrokerLiveIntelResponse,
   lookupBrokerLiveIntelClient,
@@ -102,6 +104,9 @@ interface ExposureReportProps {
   onOpenAutomatedNavigator?: (broker: DataBroker, result: ScanResult) => void;
   onOpenInboxHarvester?: () => void;
   onOpenStateRegistries?: () => void;
+  onOpenSupplyChain?: () => void;
+  onOpenCreditFreeze?: () => void;
+  onOpenTcpaShield?: () => void;
 }
 
 export const ExposureReport: React.FC<ExposureReportProps> = ({
@@ -133,10 +138,14 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
   onOpenAutomatedNavigator,
   onOpenInboxHarvester,
   onOpenStateRegistries,
+  onOpenSupplyChain,
+  onOpenCreditFreeze,
+  onOpenTcpaShield,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedRisk, setSelectedRisk] = useState<string>('all');
+  const [selectedStateFilter, setSelectedStateFilter] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<'risk' | 'name' | 'records'>('risk');
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [selectedBrokerIds, setSelectedBrokerIds] = useState<string[]>([]);
@@ -178,8 +187,9 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
 
       const matchesCat = selectedCategory === 'all' || broker.category === selectedCategory;
       const matchesRisk = selectedRisk === 'all' || broker.risk === selectedRisk;
+      const matchesState = resultMatchesUsState(item, profile, selectedStateFilter);
 
-      return matchesQuery && matchesCat && matchesRisk;
+      return matchesQuery && matchesCat && matchesRisk && matchesState;
     })
     .sort((a, b) => {
       const brokerA = findBrokerById(a.brokerId);
@@ -658,6 +668,33 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
                 State Registries
               </button>
             )}
+            {onOpenSupplyChain && (
+              <button
+                type="button"
+                onClick={onOpenSupplyChain}
+                className="px-3 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.06] text-emerald-300 hover:text-emerald-200 font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Supply-Chain Graph
+              </button>
+            )}
+            {onOpenCreditFreeze && (
+              <button
+                type="button"
+                onClick={onOpenCreditFreeze}
+                className="px-3 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.06] text-sky-300 hover:text-sky-200 font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Credit Freeze
+              </button>
+            )}
+            {onOpenTcpaShield && (
+              <button
+                type="button"
+                onClick={onOpenTcpaShield}
+                className="px-3 py-1.5 rounded-lg glass-subtle hover:bg-white/[0.06] text-amber-300 hover:text-amber-200 font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Robocall Shield
+              </button>
+            )}
             {onOpenDeindexCenter && (
               <button
                 type="button"
@@ -741,6 +778,14 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
         onCaptureSnapshot={onCaptureSnapshot}
       />
 
+      {/* D3 US Geographic Exposure Distribution Map */}
+      <ExposureGeoMap
+        results={results}
+        profile={profile}
+        selectedStateCode={selectedStateFilter}
+        onSelectStateCode={setSelectedStateFilter}
+      />
+
       {/* Quick Fix Profile Discrepancy & Match Accuracy Helper */}
       <ProfileQuickFixPanel
         profile={profile}
@@ -764,6 +809,16 @@ export const ExposureReport: React.FC<ExposureReportProps> = ({
               className="w-full glass-input rounded-xl pl-9 pr-3 py-2 text-white placeholder-slate-500"
             />
           </div>
+
+          {selectedStateFilter && (
+            <button
+              type="button"
+              onClick={() => setSelectedStateFilter(null)}
+              className="px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-400/35 text-emerald-300 hover:bg-emerald-500/25 font-medium cursor-pointer whitespace-nowrap shrink-0"
+            >
+              State: {selectedStateFilter} ×
+            </button>
+          )}
 
           {filteredItems.length > 0 && (
             <button

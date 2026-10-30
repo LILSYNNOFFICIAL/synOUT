@@ -240,6 +240,22 @@ function emitChange() {
 
 export async function probeEmailBackendAvailability(force = false): Promise<boolean> {
   if (typeof window === 'undefined') return true;
+  const host = (window.location.hostname || '').toLowerCase();
+  const proto = (window.location.protocol || '').toLowerCase();
+  const path = (window.location.pathname || '').toLowerCase();
+  if (proto === 'file:' || host.endsWith('.github.io') || path.startsWith('/synout/')) {
+    const nextMode: ConnectionMode =
+      state.mode === 'smtp' && !state.smtp?.verified && (state.oauthConfigured || state.oauthUser)
+        ? 'oauth'
+        : state.mode === 'smtp' && !state.smtp?.verified
+        ? 'webmail'
+        : state.mode;
+    if (state.backendAvailable !== false || state.mode !== nextMode) {
+      state = { ...state, backendAvailable: false, mode: nextMode };
+      emitChange();
+    }
+    return false;
+  }
   if (!force && state.backendAvailable !== null) {
     return state.backendAvailable;
   }
@@ -432,7 +448,7 @@ export async function verifyAndConnectSmtpAccount(
 ): Promise<SmtpSessionConnection> {
   const cleanEmail = params.userEmail.trim().toLowerCase();
   if (!isValidEmailSyntax(cleanEmail)) {
-    throw new SmtpVerificationError('Enter a valid sender email address (e.g. you@gmail.com).');
+    throw new SmtpVerificationError('Enter a valid sender email address (e.g. yourname@email.com).');
   }
   const normalizedPass = normalizeAppPassword(params.provider, params.appPassword);
   if (!normalizedPass || normalizedPass.length < 4) {
@@ -617,7 +633,7 @@ export function connectWebmailSenderAccount(
 ): WebmailSenderConnection {
   const cleanEmail = (params.userEmail || '').trim().toLowerCase();
   if (!isValidEmailSyntax(cleanEmail)) {
-    throw new Error('Enter a valid sender email address (e.g. you@gmail.com).');
+    throw new Error('Enter a valid sender email address (e.g. yourname@email.com).');
   }
 
   const preferredLauncher =
@@ -724,7 +740,7 @@ export function buildStatutoryNoticeForBroker(
     senderEmailOverride ||
     resolveActiveConnectedEmailFromState(state) ||
     profile.emails.find((e) => Boolean(e && e.trim())) ||
-    'consumer@example.com';
+    'yourname@email.com';
   const primaryPhone = profile.phoneNumbers[0] || 'On file';
   const previousLocs =
     profile.previousLocations.length > 0 ? profile.previousLocations.join('; ') : 'None listed';
@@ -737,7 +753,10 @@ export function buildStatutoryNoticeForBroker(
     : '';
 
   const resolvedContact = resolveBrokerContactProfile(broker);
-  const targetEmail = resolvedContact.effectivePrimaryEmail || broker.privacyEmail || 'privacy@broker';
+  const targetEmail =
+    resolvedContact.effectivePrimaryEmail ||
+    broker.privacyEmail ||
+    `Web Opt-Out Portal (${broker.optOutUrl})`;
 
   const body = `DATE: ${dateStr}
 TO: Privacy Officer & Legal Compliance, ${broker.name} (${targetEmail})
@@ -805,9 +824,17 @@ export async function sendEmailViaConnectedAccount(
     if (matchedBroker) {
       const contactProfile = resolveBrokerContactProfile(matchedBroker);
       fallbackList = contactProfile.allValidCandidates.filter(
-        (addr) => addr.toLowerCase() !== input.recipientEmail.trim().toLowerCase()
+        (addr) => addr.toLowerCase() !== (input.recipientEmail || '').trim().toLowerCase()
       );
     }
+  }
+
+  const effectiveInitialRecipient =
+    (input.recipientEmail || '').trim().toLowerCase() || fallbackList[0] || '';
+  if (!effectiveInitialRecipient) {
+    throw new Error(
+      `${input.brokerName || 'This broker'} does not operate a public compliance email inbox (MX unavailable). Use Auto-Remove to fill criteria and check consent boxes on its online opt-out form.`
+    );
   }
 
   const activeOAuthToken = state.oauthAccessToken || (await getAccessToken());

@@ -1732,22 +1732,22 @@ export function classifyBrokerChannelStrategy(broker: DataBroker): {
     };
   }
 
-  if (
-    broker.removalMethod === 'Online Form' ||
-    broker.emailDeliverability === 'portal_primary' ||
-    !broker.privacyEmail
-  ) {
-    if (broker.privacyEmail) {
-      return {
-        strategy: 'dual_channel_recommended',
-        shortBadge: 'Web Form + Email',
-        explanation: `${broker.name} uses an online opt-out form for automated database suppression while accepting statutory CCPA/CPRA emails (${broker.privacyEmail}) to start the 45-day legal clock.`,
-      };
-    }
+  if (broker.emailDeliverability === 'web_form_only' || !broker.privacyEmail) {
     return {
       strategy: 'web_form_required',
       shortBadge: 'Web Form Required',
-      explanation: `${broker.name} processes removals exclusively through its web opt-out form.`,
+      explanation: `${broker.name} has no public compliance email inbox and processes removals exclusively through its online opt-out form.`,
+    };
+  }
+
+  if (
+    broker.removalMethod === 'Online Form' ||
+    broker.emailDeliverability === 'portal_primary'
+  ) {
+    return {
+      strategy: 'dual_channel_recommended',
+      shortBadge: 'Web Form + Email',
+      explanation: `${broker.name} uses an online opt-out form for automated database suppression while accepting statutory CCPA/CPRA emails (${broker.privacyEmail}) to start the 45-day legal clock.`,
     };
   }
 

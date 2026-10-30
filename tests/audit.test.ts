@@ -3287,6 +3287,991 @@ test('38. 45-Day Expected Removal Mini-Timeline & Broker-Specific Privacy Tactic
   }
 });
 
+const repoRoot = process.cwd();
+
+test('39. Contact Form Cloud Run Reverse-Proxy Origin Fix & Serverless Delivery UX', async () => {
+  const serverSrc = fs.readFileSync(path.join(repoRoot, 'server.ts'), 'utf8');
+  const contactPageSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ContactPage.tsx'),
+    'utf8'
+  );
+  const contactClientSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'services', 'contactClient.ts'),
+    'utf8'
+  );
+  const gmailApiSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'services', 'gmailApi.ts'),
+    'utf8'
+  );
+
+  // 1. Cloud Run X-Forwarded-Host origin check in server.ts
+  assert(
+    serverSrc.includes("req.headers['x-forwarded-host']"),
+    'POST /api/contact must honor X-Forwarded-Host behind Cloud Run reverse proxies'
+  );
+
+  // 2. ContactPage.tsx must never expose developer env var names to end users
+  assert.strictEqual(
+    contactPageSrc.includes('CONTACT_SMTP_'),
+    false,
+    'ContactPage.tsx must not display developer CONTACT_SMTP_* variable names'
+  );
+  assert.strictEqual(
+    contactPageSrc.includes('CONTACT_RESEND_API_KEY'),
+    false,
+    'ContactPage.tsx must not display developer CONTACT_RESEND_API_KEY variable names'
+  );
+  const normalizedContactPageSrc = contactPageSrc.replace(/\s+/g, ' ');
+  assert(
+    normalizedContactPageSrc.includes('Message sent successfully!') &&
+      normalizedContactPageSrc.includes(
+        'We&apos;ve received your message and will reach out within 72 hours of your submission.'
+      ),
+    'ContactPage.tsx must preserve exact post-submission confirmation copy'
+  );
+  assert(
+    contactPageSrc.includes('Sign in with Google &amp; Send Now') &&
+      contactPageSrc.includes('Open in Gmail'),
+    'ContactPage.tsx must offer 1-click Google Sign-In & Send and Webmail compose fallbacks for serverless hosting'
+  );
+
+  // 3. Reply-To support in browser Gmail API and formatting in contactClient.ts
+  assert(
+    gmailApiSrc.includes('Reply-To:'),
+    'sendGmailMessage must include Reply-To header support for direct browser contact submissions'
+  );
+  assert(
+    contactClientSrc.includes('synovamedia@gmail.com') &&
+      contactClientSrc.includes('synOUT MESSAGE') &&
+      contactClientSrc.includes('sendContactViaGooglePopupClient'),
+    'contactClient.ts must target synovamedia@gmail.com with subject synOUT MESSAGE'
+  );
+
+  const { formatOperatorContactBody } = await import('../src/services/contactClient');
+  const body = formatOperatorContactBody({
+    name: 'Alex Rivera',
+    email: 'alex@example.com',
+    message: 'Testing serverless GitHub Pages contact submission.',
+  });
+  assert(
+    body.includes('Sender Name: Alex Rivera') &&
+      body.includes('Reply-To Email: alex@example.com') &&
+      body.includes('Testing serverless GitHub Pages contact submission.'),
+    'formatOperatorContactBody must include sender name, Reply-To email, and message body'
+  );
+});
+
+test('40. D3 US Geographic Exposure Visualization & State Attribution Engine', async () => {
+  const d3 = await import('d3');
+  const { US_STATES_GEOJSON, US_STATE_METADATA } = await import('../src/data/usStatesGeoJson');
+  const {
+    computeGeographicExposureDistribution,
+    extractUsStateCodesFromLocation,
+    resultMatchesUsState,
+  } = await import('../src/utils/geoExposureEngine');
+
+  // 1. All 50 US states + DC must be present and spherically wound clockwise for D3
+  assert.strictEqual(
+    US_STATE_METADATA.length,
+    51,
+    'US_STATE_METADATA must contain all 50 US states plus DC (51 total)'
+  );
+  assert.strictEqual(
+    US_STATES_GEOJSON.features.length,
+    51,
+    'US_STATES_GEOJSON must contain 51 state polygon features'
+  );
+
+  const projection = d3.geoAlbersUsa().fitSize([880, 420], US_STATES_GEOJSON);
+  const pathGen = d3.geoPath().projection(projection);
+
+  for (const feat of US_STATES_GEOJSON.features) {
+    const sphericalArea = d3.geoArea(feat);
+    assert(
+      sphericalArea > 0 && sphericalArea < 0.25,
+      `State ${feat.properties.code} must be wound clockwise in [lon, lat] for D3 (got spherical area ${sphericalArea})`
+    );
+    const svgPath = pathGen(feat);
+    assert(
+      typeof svgPath === 'string' && svgPath.startsWith('M') && svgPath.length > 10,
+      `d3.geoAlbersUsa() must project a valid SVG path for ${feat.properties.code}`
+    );
+  }
+
+  // 2. State code extraction & multi-state attribution
+  assert.deepStrictEqual(extractUsStateCodesFromLocation('Sacramento, CA 95814'), ['CA']);
+  assert.deepStrictEqual(extractUsStateCodesFromLocation('Austin, TX'), ['TX']);
+  assert.deepStrictEqual(extractUsStateCodesFromLocation('District of Columbia'), ['DC']);
+
+  const sampleProfile = {
+    firstName: 'Jordan',
+    lastName: 'Taylor',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1989',
+    phoneNumbers: ['(916) 555-0192'],
+    emails: ['jordan@example.com'],
+    relatives: ['Casey Taylor'],
+    previousLocations: ['Austin, TX', 'Seattle, WA'],
+  };
+
+  const sampleResults: ScanResult[] = [
+    {
+      id: 'geo-1',
+      brokerId: 'spokeo',
+      status: 'exposed',
+      removalStatus: 'found',
+      mockListingData: {
+        fullName: 'Jordan Taylor',
+        age: 37,
+        locations: ['Sacramento, CA', 'Austin, TX'],
+        crossStateEvidence: 'Historical deed record in Seattle, WA',
+        phones: ['(916) 555-0192'],
+        emails: ['jordan@example.com'],
+        relatives: ['Casey Taylor'],
+        recordsCount: 4,
+        riskLevel: 'Critical',
+        leakTypes: ['Current Address', 'Phone Numbers'],
+        profiles: ['https://spokeo.com/Jordan-Taylor'],
+        matchConfidence: 'HIGH_CONFIDENCE_MATCH',
+      },
+    },
+    {
+      id: 'geo-2',
+      brokerId: 'whitepages',
+      status: 'exposed',
+      removalStatus: 'submitted',
+      mockListingData: {
+        fullName: 'Jordan Taylor',
+        age: 37,
+        locations: ['Sacramento, CA'],
+        phones: ['(916) 555-0192'],
+        emails: ['jordan@example.com'],
+        relatives: [],
+        recordsCount: 2,
+        riskLevel: 'High',
+        leakTypes: ['Current Address'],
+        profiles: ['https://whitepages.com/name/Jordan-Taylor'],
+        matchConfidence: 'HIGH_CONFIDENCE_MATCH',
+      },
+    },
+  ];
+
+  const dist = computeGeographicExposureDistribution(sampleResults, sampleProfile);
+  assert(dist.affectedStatesCount >= 3, 'Must attribute CA, TX, and WA from multi-state records');
+  assert.strictEqual(dist.statesByCode.CA.exposedBrokerCount, 2);
+  assert.strictEqual(dist.statesByCode.CA.exposedRecordsCount, 6);
+  assert.strictEqual(dist.statesByCode.TX.exposedBrokerCount, 1);
+  assert.strictEqual(dist.statesByCode.WA.exposedBrokerCount, 1);
+  assert.strictEqual(resultMatchesUsState(sampleResults[0], sampleProfile, 'TX'), true);
+  assert.strictEqual(resultMatchesUsState(sampleResults[1], sampleProfile, 'TX'), false);
+
+  // 3. Component integration & zero inline style check
+  const geoMapSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ExposureGeoMap.tsx'),
+    'utf8'
+  );
+  const reportSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ExposureReport.tsx'),
+    'utf8'
+  );
+  assert(
+    geoMapSrc.includes("import * as d3 from 'd3'") && geoMapSrc.includes('geoAlbersUsa'),
+    'ExposureGeoMap.tsx must render US states with d3.geoAlbersUsa'
+  );
+  assert.strictEqual(
+    geoMapSrc.includes('style={'),
+    false,
+    'ExposureGeoMap.tsx must have zero inline style={} attributes'
+  );
+  assert(
+    reportSrc.includes('<ExposureGeoMap'),
+    'ExposureReport.tsx must mount <ExposureGeoMap />'
+  );
+});
+
+test('41. New Exposure Alert Store, Clean-Broker Transition Detection & Persistent Toast Bar', async () => {
+  const {
+    acknowledgeNewExposureAlert,
+    clearAllNewExposureAlerts,
+    dismissAllNewExposureAlerts,
+    getNewExposureAlertState,
+    ingestMonitoringDiffsForNewExposures,
+    syncScanResultsForNewExposureAlerts,
+    triggerNewExposureAlert,
+  } = await import('../src/utils/newExposureAlertStore');
+
+  clearAllNewExposureAlerts();
+
+  const baseListing = {
+    fullName: 'Sam Lee',
+    age: 34,
+    locations: ['Denver, CO'],
+    phones: [] as string[],
+    emails: [] as string[],
+    relatives: [] as string[],
+    recordsCount: 2,
+    riskLevel: 'High' as const,
+    leakTypes: ['Address'],
+    profiles: [] as string[],
+    matchConfidence: 'HIGH_CONFIDENCE_MATCH' as const,
+  };
+
+  // Initial scan recordsspokeo as clean
+  const initialAlerts = await syncScanResultsForNewExposureAlerts([
+    {
+      id: 'r-clean',
+      brokerId: 'spokeo',
+      status: 'clean',
+      removalStatus: 'found',
+      mockListingData: baseListing,
+    },
+  ]);
+  assert.strictEqual(initialAlerts.length, 0, 'First clean baseline must not fire a false alert');
+  assert(
+    getNewExposureAlertState().cleanBrokerBaselineIds.includes('spokeo'),
+    'Clean broker must be recorded in baseline watchlist'
+  );
+
+  // Subsequent scan detects spokeo transitioned clean -> exposed
+  const transitionAlerts = await syncScanResultsForNewExposureAlerts([
+    {
+      id: 'r-leaked',
+      brokerId: 'spokeo',
+      status: 'exposed',
+      removalStatus: 'found',
+      mockListingData: baseListing,
+    },
+  ]);
+  assert.strictEqual(
+    transitionAlerts.length,
+    1,
+    'Clean -> exposed transition must immediately fire a New Exposure Alert'
+  );
+  assert.strictEqual(transitionAlerts[0].acknowledged, false);
+
+  // Monitoring sweep diff with new_exposure_detected also fires persistent alert
+  const sweepAlerts = await ingestMonitoringDiffsForNewExposures([
+    {
+      brokerId: 'radaris',
+      brokerName: 'Radaris',
+      brokerDomain: 'radaris.com',
+      probeUrl: 'https://radaris.com',
+      httpStatus: 200,
+      snapshotSha256: 'abc123def456',
+      previousSha256: null,
+      outcome: 'new_exposure_detected',
+      checkedAtIso: new Date().toISOString(),
+      summary: 'NEW EXPOSURE ALERT: Previously clean broker radaris.com now indexes matching personal record tokens!',
+    },
+  ]);
+  assert.strictEqual(sweepAlerts.length, 1);
+
+  acknowledgeNewExposureAlert(transitionAlerts[0].id);
+  const remainingUnack = getNewExposureAlertState().alerts.filter((a) => !a.acknowledged);
+  assert.strictEqual(remainingUnack.length, 1);
+
+  await triggerNewExposureAlert({
+    brokerId: 'whitepages',
+    source: 'alert_verification_drill',
+  });
+  dismissAllNewExposureAlerts();
+  assert.strictEqual(
+    getNewExposureAlertState().alerts.filter((a) => !a.acknowledged).length,
+    0,
+    'dismissAllNewExposureAlerts must acknowledge all active alerts'
+  );
+  clearAllNewExposureAlerts();
+
+  const toastSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'NewExposureAlertToastBar.tsx'),
+    'utf8'
+  );
+  const monitorSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ContinuousMonitoringAutomator.tsx'),
+    'utf8'
+  );
+  const appSrc = fs.readFileSync(path.join(repoRoot, 'src', 'App.tsx'), 'utf8');
+
+  assert.strictEqual(
+    toastSrc.includes('style={'),
+    false,
+    'NewExposureAlertToastBar.tsx must have zero inline style={} attributes'
+  );
+  assert.strictEqual(
+    monitorSrc.includes('style={'),
+    false,
+    'ContinuousMonitoringAutomator.tsx must have zero inline style={} attributes'
+  );
+  assert(
+    appSrc.includes('<NewExposureAlertToastBar'),
+    'App.tsx must mount persistent <NewExposureAlertToastBar />'
+  );
+  assert(
+    monitorSrc.includes('New Exposure Alert Watchdog') &&
+      monitorSrc.includes('Enable Push Notifications'),
+    'ContinuousMonitoringAutomator.tsx must expose push notification and watchdog controls'
+  );
+});
+
+test('42. Serverless GitHub Pages Runtime Fallbacks & Static Build Configuration', async () => {
+  const {
+    buildClientAssistedWorkflowJob,
+    buildLocalBrokerIntelSummary,
+    buildLocalPrivacyAdvisorReply,
+    completeClientAssistedHandoff,
+    sha256HexBrowser,
+  } = await import('../src/utils/serverlessRuntime');
+
+  const digest = await sha256HexBrowser('synout-github-pages-test');
+  assert.strictEqual(digest.length, 64, 'sha256HexBrowser must return a 64-char hex digest');
+
+  const advisorReply = buildLocalPrivacyAdvisorReply({
+    message: 'Spokeo is demanding a copy of my driver license ID',
+    roleId: 'statutory_counsel',
+    speedMode: 'grounded_standard',
+    useSearchGrounding: true,
+    scanContext: {
+      jurisdictionState: 'CA',
+      exposureScore: 68,
+      exposedCount: 5,
+    },
+  });
+  assert(
+    advisorReply.replyText.includes('Spokeo') && advisorReply.citations.length >= 2,
+    'Serverless Privacy Advisor fallback must return broker-specific guidance and official citations'
+  );
+
+  const intel = buildLocalBrokerIntelSummary({
+    brokerName: 'Whitepages',
+    brokerDomain: 'whitepages.com',
+    jurisdictionState: 'TX',
+  });
+  assert(
+    intel.summaryText.includes('Whitepages') && intel.citations.length >= 2,
+    'Serverless Broker Intel fallback must summarize opt-out playbook and state SLA'
+  );
+
+  const profile = {
+    firstName: 'Morgan',
+    lastName: 'Chen',
+    currentCity: 'Sacramento',
+    currentState: 'CA',
+    birthYear: '1991',
+    phoneNumbers: ['(916) 555-0100'],
+    emails: ['morgan@example.com'],
+    relatives: [],
+    previousLocations: [],
+  };
+
+  const assistedJob = await buildClientAssistedWorkflowJob({
+    brokerId: 'spokeo',
+    profile,
+    mode: 'inspect_and_preview',
+  });
+  assert.strictEqual(assistedJob.state, 'ready_to_submit');
+  assert.strictEqual(assistedJob.blocker, null);
+  assert(assistedJob.mappedFields.length >= 15);
+
+  const completedJob = await completeClientAssistedHandoff(assistedJob, {
+    userProvidedConfirmationCode: 'SPK-99201',
+  });
+  assert.strictEqual(completedJob.state, 'awaiting_broker_processing');
+  assert.strictEqual(completedJob.brokerConfirmationCode, 'SPK-99201');
+  assert(completedJob.evidence?.evidenceManifestSha256.length === 64);
+
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  assert(
+    typeof pkgJson.scripts['build:pages'] === 'string' &&
+      pkgJson.scripts['build:pages'].includes('GITHUB_PAGES=true'),
+    'package.json must include build:pages script for static GitHub Pages builds'
+  );
+
+  const pagesWorkflow = fs.readFileSync(
+    path.join(repoRoot, '.github', 'workflows', 'deploy-pages.yml'),
+    'utf8'
+  );
+  assert(
+    pagesWorkflow.includes('dist/404.html') && pagesWorkflow.includes('.nojekyll'),
+    'deploy-pages.yml must generate 404.html and .nojekyll for GitHub Pages SPA routing'
+  );
+});
+
+test('43. User Email Input Privacy (yourname@email.com) & Operator Support Contact Boundary', () => {
+  const scanFormSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ScanForm.tsx'),
+    'utf8'
+  );
+  assert(
+    scanFormSrc.includes('yourname@email.com') &&
+      scanFormSrc.includes('useEmailConnection') &&
+      !scanFormSrc.includes('synovamedia@gmail.com'),
+    'ScanForm.tsx must default placeholder to yourname@email.com, sync connected user email, and never pre-fill synovamedia@gmail.com'
+  );
+
+  const userInputFiles = [
+    path.join(repoRoot, 'src', 'components', 'GmailDispatchCenter.tsx'),
+    path.join(repoRoot, 'src', 'components', 'RemovalQueueModal.tsx'),
+    path.join(repoRoot, 'src', 'components', 'ProfileQuickFixPanel.tsx'),
+    path.join(repoRoot, 'src', 'components', 'DarkWebRemovalCenter.tsx'),
+    path.join(repoRoot, 'src', 'utils', 'darkWebEngine.ts'),
+    path.join(repoRoot, 'src', 'services', 'emailConnectionStore.ts'),
+  ];
+
+  for (const filePath of userInputFiles) {
+    const content = fs.readFileSync(filePath, 'utf8');
+    assert.strictEqual(
+      content.includes('synovamedia@gmail.com'),
+      false,
+      `${path.basename(filePath)} must not expose synovamedia@gmail.com in user search/connect/profile fields`
+    );
+    assert(
+      content.includes('yourname@email.com'),
+      `${path.basename(filePath)} must use yourname@email.com as generic user email placeholder/fallback`
+    );
+  }
+
+  // Operator support & legal contact recipient must strictly remain synovamedia@gmail.com
+  const contactPageSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'ContactPage.tsx'),
+    'utf8'
+  );
+  const contactClientSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'services', 'contactClient.ts'),
+    'utf8'
+  );
+  assert(
+    contactPageSrc.includes('placeholder="yourname@email.com"') &&
+      contactPageSrc.includes('synovamedia@gmail.com'),
+    'ContactPage.tsx must use yourname@email.com for visitor Reply-To placeholder while preserving synovamedia@gmail.com as operator recipient'
+  );
+  assert(
+    contactClientSrc.includes("OPERATOR_CONTACT_EMAIL = 'synovamedia@gmail.com'") &&
+      contactClientSrc.includes("CONTACT_SUBJECT = 'synOUT MESSAGE'"),
+    'contactClient.ts must preserve OPERATOR_CONTACT_EMAIL = synovamedia@gmail.com and synOUT MESSAGE subject'
+  );
+});
+
+test('44. Serverless Auto-Remove Engine: Populates Criteria, Checks Consent Boxes & Submits Without a Server', async () => {
+  const {
+    approveAndSubmitServerlessWorkflowJob,
+    buildClientAssistedWorkflowJob,
+    buildPreFilledBrokerPortalUrl,
+    buildServerlessOptOutInspection,
+    executeVerificationLinkServerless,
+    submitServerlessOptOutWebForm,
+  } = await import('../src/utils/serverlessRuntime');
+
+  const poaProfile: UserProfile = {
+    firstName: 'Jordan',
+    lastName: 'Reyes',
+    currentCity: 'Austin',
+    currentState: 'TX',
+    currentZip: '78701',
+    birthYear: '1989',
+    phoneNumbers: ['(512) 555-0192'],
+    emails: ['jordan.reyes@example.org'],
+    relatives: ['Elena Reyes'],
+    previousLocations: ['Dallas, TX'],
+    powerOfAttorney: {
+      fullName: 'Jordan Reyes',
+      address: 'Austin, TX 78701',
+      state: 'TX',
+      signedDate: '2026-10-28',
+      isSigned: true,
+      authCode: 'POA-TX-8821',
+      agentName: 'synOUT Statutory Agent',
+      scopeOfAuthority: 'CCPA/CPRA Deletion & Suppression',
+    },
+  };
+
+  const previewJob = await buildClientAssistedWorkflowJob({
+    brokerId: 'spokeo',
+    profile: poaProfile,
+    mode: 'inspect_and_preview',
+  });
+  assert.strictEqual(previewJob.state, 'ready_to_submit');
+  assert.strictEqual(previewJob.safetyEvaluation.safeForAutoSubmit, true);
+
+  const consentBoxes = previewJob.mappedFields.filter(
+    (f) =>
+      (f.semanticRole === 'consent_checkbox' || f.semanticRole === 'authorized_agent') &&
+      f.disclosureAllowed
+  );
+  assert(consentBoxes.length >= 5, 'Must populate 4 statutory consent boxes + authorized agent box');
+  for (const box of consentBoxes) {
+    assert.strictEqual(box.plannedValue, 'true', `Required consent box ${box.fieldKey} must be checked`);
+  }
+
+  const spamTrap = previewJob.mappedFields.find((f) => f.semanticRole === 'marketing_opt_in');
+  assert(spamTrap && spamTrap.disclosureAllowed === false && spamTrap.plannedValue === 'false');
+
+  const ssnTrap = previewJob.mappedFields.find((f) => f.semanticRole === 'sensitive_id_field');
+  assert(ssnTrap && ssnTrap.disclosureAllowed === false && ssnTrap.plannedValue === '');
+
+  // Autonomous auto-submit on email-verified broker -> awaiting_email_verification
+  const autoEmailVerifyJob = await buildClientAssistedWorkflowJob({
+    brokerId: 'spokeo',
+    profile: poaProfile,
+    mode: 'autonomous_auto_submit',
+  });
+  assert.strictEqual(autoEmailVerifyJob.state, 'awaiting_email_verification');
+  assert.strictEqual(autoEmailVerifyJob.evidence?.evidenceManifestSha256.length, 64);
+
+  // Direct serverless approval without email verification -> awaiting_broker_processing
+  const directProcessingJob = await approveAndSubmitServerlessWorkflowJob(previewJob, {
+    requiresEmailVerification: false,
+  });
+  assert.strictEqual(directProcessingJob.state, 'awaiting_broker_processing');
+  assert(directProcessingJob.evidence?.outcomeSummary.includes('checked'));
+
+  // Pre-filled portal URL helper
+  const prefilled = buildPreFilledBrokerPortalUrl({
+    targetUrl: 'https://www.spokeo.com/optout',
+    profile: poaProfile,
+  });
+  assert(
+    prefilled.includes('first_name=Jordan') &&
+      prefilled.includes('last_name=Reyes') &&
+      prefilled.includes('state=TX'),
+    'buildPreFilledBrokerPortalUrl must pre-populate consumer criteria query params'
+  );
+
+  // Serverless OptOutFormWorkbench inspection & submission
+  const inspection = buildServerlessOptOutInspection({
+    url: 'https://clustrmaps.com/bl/opt-out',
+    profile: poaProfile,
+  });
+  assert.strictEqual(inspection.forms.length, 1);
+  const inspectedBoxes = inspection.forms[0].fields.filter(
+    (f) => f.semanticRole === 'consent_checkbox' && f.suggestedValue === 'true'
+  );
+  assert(inspectedBoxes.length >= 2, 'Serverless form inspection must pre-check required consent boxes');
+
+  const webSubmit = await submitServerlessOptOutWebForm({
+    actionUrl: 'https://clustrmaps.com/bl/opt-out',
+    method: 'POST',
+    fields: {
+      fullName: 'Jordan Reyes',
+      email: 'jordan.reyes@example.org',
+      confirmConsumerConsent: 'true',
+      doNotSellOrShareConsent: 'true',
+    },
+    brokerId: 'clustrmaps',
+    brokerName: 'ClustrMaps',
+  });
+  assert.strictEqual(webSubmit.success, true);
+  assert(webSubmit.confirmationTicket.startsWith('SUB-WEB-'));
+
+  // Serverless one-time email verification link execution
+  const linkVerify = await executeVerificationLinkServerless({
+    verificationUrl: 'https://www.spokeo.com/optout/confirm?ticket=SPK-77412',
+    brokerId: 'spokeo',
+    brokerName: 'Spokeo',
+  });
+  assert.strictEqual(linkVerify.verified, true);
+  assert.strictEqual(linkVerify.brokerConfirmationCode, 'SPK-77412');
+  assert.strictEqual(linkVerify.evidenceSha256.length, 64);
+
+  const navSrc = fs.readFileSync(
+    path.join(repoRoot, 'src', 'components', 'AutomatedRemovalNavigator.tsx'),
+    'utf8'
+  );
+  assert.strictEqual(navSrc.includes('style={'), false);
+  assert(
+    navSrc.includes('Open Pre-Filled Portal') &&
+      navSrc.includes('Copy 1-Click Auto-Fill & Checkbox Script'),
+    'AutomatedRemovalNavigator must provide 1-Click Pre-Filled Portal and Auto-Fill & Checkbox Script controls'
+  );
+});
+
+test('45. Broker Opt-Out Email Deliverability Hygiene & Serverless Firebase Optionality', async () => {
+  const {
+    resolveBrokerContactProfile,
+    verifyRecipientDeliverabilityClient,
+  } = await import('../src/utils/brokerContactResolver');
+  const { classifyBrokerChannelStrategy } = await import('../src/utils/optOutFormEngine');
+  const { isFirebaseConfigured } = await import('../src/services/firebaseClient');
+
+  while (triggerAutonomousRegistryExpansion().newlyDiscoveredCount > 0) {
+    // Expand full verified broker catalog so every broker entry is audited
+  }
+  const allBrokers = getExhaustiveBrokerRegistry();
+  const retiredOrDeadAddresses = new Set([
+    'consumerrelations@chexsystems.com',
+    'privacy@addresses.com',
+    'privacy@publicrecordsnow.com',
+    'support@clustrmaps.com',
+    'support@officialusa.com',
+    'optout@thatsthem.com',
+    'privacy@usphonebook.com',
+  ]);
+
+  for (const broker of allBrokers) {
+    const candidates = [broker.privacyEmail, ...(broker.fallbackEmails || [])]
+      .filter(Boolean)
+      .map((e) => e.toLowerCase());
+    for (const addr of candidates) {
+      assert.strictEqual(
+        retiredOrDeadAddresses.has(addr),
+        false,
+        `Broker ${broker.id} must not use rejected/unavailable address ${addr}`
+      );
+    }
+  }
+
+  for (const webOnlyId of ['clustrmaps', 'officialusa']) {
+    const b = allBrokers.find((item) => item.id === webOnlyId);
+    assert(b, `Expected ${webOnlyId} in broker registry`);
+    assert.strictEqual(b.emailDeliverability, 'web_form_only');
+    assert.strictEqual(b.privacyEmail, '');
+    const resolved = resolveBrokerContactProfile(b, {});
+    assert.strictEqual(resolved.effectivePrimaryEmail, '');
+    assert.strictEqual(resolved.deliverabilityTier, 'web_form_only');
+    assert.strictEqual(classifyBrokerChannelStrategy(b).strategy, 'web_form_required');
+  }
+
+  const emptyCheck = await verifyRecipientDeliverabilityClient('', []);
+  assert.strictEqual(emptyCheck.valid, false);
+  assert.strictEqual(emptyCheck.recommendedEmail, null);
+
+  const usPhonebook = allBrokers.find((b) => b.id === 'usphonebook')!;
+  assert.strictEqual(usPhonebook.privacyEmail, 'privacy@peopleconnect.us');
+  assert.strictEqual(usPhonebook.emailDeliverability, 'parent_dpo');
+
+  const thatsThem = allBrokers.find((b) => b.id === 'thatsthem')!;
+  assert.strictEqual(thatsThem.privacyEmail, 'privacy@thatsthem.com');
+
+  const peopleByName = allBrokers.find((b) => b.id === 'peoplebyname')!;
+  assert.strictEqual(peopleByName.privacyEmail, 'support@peoplebyname.com');
+
+  const peekYou = allBrokers.find((b) => b.id === 'peekyou')!;
+  assert.strictEqual(peekYou.privacyEmail, 'privacy@peekyou.com');
+
+  assert.strictEqual(typeof isFirebaseConfigured, 'boolean');
+});
+
+test('46. Upstream Supply-Chain & Cascade Suppression Graph Engine + D3 Component', async () => {
+  const {
+    buildSupplyChainGraph,
+    exportSupplyChainPlanMarkdown,
+  } = await import('../src/utils/supplyChainGraphEngine');
+
+  const sampleProfile: UserProfile = {
+    firstName: 'Jordan',
+    lastName: 'Mercer',
+    currentCity: 'Denver',
+    currentState: 'CO',
+    birthYear: '1986',
+    phoneNumbers: ['(303) 555-0148'],
+    emails: ['jordan.mercer@example.com'],
+    relatives: ['Taylor Mercer'],
+    previousLocations: ['Austin, TX'],
+  };
+
+  const scanResults = runBrokerScan(sampleProfile);
+  const graph = buildSupplyChainGraph(scanResults);
+
+  assert(graph.nodes.length >= 16, 'Expected Tier 0, Tier 1, and Tier 2 nodes in supply-chain graph');
+  assert(graph.links.length >= 10, 'Expected upstream-to-downstream syndication links');
+
+  const tier0 = graph.nodes.filter((n) => n.tier === 'clearinghouse');
+  const tier1 = graph.nodes.filter((n) => n.tier === 'parent_network');
+  const tier2 = graph.nodes.filter((n) => n.tier === 'downstream_broker');
+  assert(tier0.length >= 4, 'Expected at least 4 Tier 0 wholesale clearinghouses');
+  assert(tier1.length >= 4, 'Expected at least 4 Tier 1 parent networks');
+  assert(tier2.length >= 8, 'Expected downstream people-search mirror nodes');
+
+  assert(graph.suppressionPlan.length > 0, 'Expected ordered Root-to-Leaf suppression sequence');
+  assert(
+    graph.suppressionPlan[0].keystonePriorityScore > 0,
+    'Expected positive keystone priority score on primary root target'
+  );
+  // Verify Root-to-Leaf tier ordering (tier 0 clearinghouses appear before tier 2 downstream mirrors)
+  const firstStepNode = graph.nodes.find((n) => n.id === graph.suppressionPlan[0].nodeId)!;
+  assert.strictEqual(firstStepNode.tierIndex, 0, 'First step in cascade plan must be a Tier 0 clearinghouse');
+
+  const markdown = exportSupplyChainPlanMarkdown(graph, 'Jordan Mercer');
+  assert(markdown.includes('# synOUT Upstream Supply-Chain & Cascade Suppression Plan'));
+  assert(markdown.includes('Jordan Mercer'));
+  assert(markdown.includes('LexisNexis Accurint'));
+
+  const componentSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src/components/SupplyChainNetworkCenter.tsx'),
+    'utf8'
+  );
+  assert(componentSrc.includes("from 'd3'"), 'SupplyChainNetworkCenter must use d3 for topology layout');
+  assert(!componentSrc.includes('style={'), 'SupplyChainNetworkCenter must have zero inline style={} props');
+  assert(!componentSrc.includes('window.alert'), 'SupplyChainNetworkCenter must not invoke window.alert');
+  assert(!componentSrc.includes('window.open'), 'SupplyChainNetworkCenter must not invoke window.open');
+});
+
+test('47. FCRA § 605A Credit Freeze, Fraud Alert & Identity Lockout Center', async () => {
+  const {
+    CREDIT_FREEZE_RAILS,
+    computeCreditLockoutSummary,
+    buildStatutoryFreezeLetter,
+  } = await import('../src/utils/creditFreezeEngine');
+
+  assert.strictEqual(CREDIT_FREEZE_RAILS.length, 9, 'Expected all 9 credit, specialty & federal lockout rails');
+  for (const rail of CREDIT_FREEZE_RAILS) {
+    assert.strictEqual(rail.freeByLaw, true, `Rail ${rail.id} must be free by federal law`);
+    assert(rail.portalUrl.startsWith('https://'), `Rail ${rail.id} must use official HTTPS portal`);
+  }
+
+  const summary = computeCreditLockoutSummary(
+    {
+      equifax: {
+        railId: 'equifax',
+        status: 'frozen',
+        fraudAlert: 'initial_1yr',
+        referenceCode: 'EQ-99102',
+        updatedAtIso: '2026-10-29T00:00:00.000Z',
+      },
+      experian: {
+        railId: 'experian',
+        status: 'temporarily_thawed',
+        fraudAlert: 'none',
+        thawExpiresDate: '2026-10-15',
+        updatedAtIso: '2026-10-10T00:00:00.000Z',
+      },
+      'irs-ip-pin': {
+        railId: 'irs-ip-pin',
+        status: 'frozen',
+        fraudAlert: 'none',
+        updatedAtIso: '2026-10-29T00:00:00.000Z',
+      },
+    },
+    '2026-10-29'
+  );
+
+  assert.strictEqual(summary.totalRails, 9);
+  assert.strictEqual(summary.frozenCount, 2);
+  assert.strictEqual(summary.majorBureausFrozen, 1);
+  assert.strictEqual(summary.majorBureausTotal, 4);
+  assert.strictEqual(summary.activeFraudAlertsCount, 1);
+  assert.deepStrictEqual(summary.expiringOrExpiredThaws, ['Experian Security Freeze Center']);
+
+  const blankEmailProfile: UserProfile = {
+    firstName: 'Casey',
+    lastName: 'Vance',
+    currentStreet: '742 Evergreen Terrace',
+    currentCity: 'Seattle',
+    currentState: 'WA',
+    currentZip: '98101',
+    birthYear: '1991',
+    phoneNumbers: ['(206) 555-0177'],
+    emails: [],
+    relatives: [],
+    previousLocations: ['Portland, OR'],
+  };
+
+  const templateTypes = [
+    'fcra_security_freeze',
+    'initial_fraud_alert_1yr',
+    'extended_fraud_alert_7yr',
+    'temporary_thaw_lift',
+  ] as const;
+
+  for (const tpl of templateTypes) {
+    const letter = buildStatutoryFreezeLetter({
+      rail: CREDIT_FREEZE_RAILS[0],
+      profile: blankEmailProfile,
+      templateType: tpl,
+      thawStartDate: '2026-11-01',
+      thawEndDate: '2026-11-07',
+    });
+    assert(letter.subject.includes('Casey Vance'));
+    assert(letter.body.includes('yourname@email.com'), `Template ${tpl} should fallback to yourname@email.com`);
+    assert(
+      !letter.body.includes('synovamedia@gmail.com'),
+      `Template ${tpl} must never leak operator email into user letter`
+    );
+  }
+
+  const freezeLetter = buildStatutoryFreezeLetter({
+    rail: CREDIT_FREEZE_RAILS[0],
+    profile: blankEmailProfile,
+    templateType: 'fcra_security_freeze',
+  });
+  assert(
+    freezeLetter.body.includes('NEVER SEND SSN VIA EMAIL'),
+    'Security freeze letter must include explicit SSN email safety guard'
+  );
+
+  const componentSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src/components/CreditFreezeCenter.tsx'),
+    'utf8'
+  );
+  assert(!componentSrc.includes('style={'), 'CreditFreezeCenter must have zero inline style={} props');
+  assert(!componentSrc.includes('window.alert'), 'CreditFreezeCenter must not invoke window.alert');
+  assert(!componentSrc.includes('window.open'), 'CreditFreezeCenter must not invoke window.open');
+  assert(!componentSrc.includes('synovamedia@gmail.com'), 'CreditFreezeCenter must not contain operator email');
+});
+
+test('48. TCPA § 227 Robocall, Spam Text & Do-Not-Contact Shield', async () => {
+  const {
+    DO_NOT_CONTACT_RAILS,
+    calculateTcpaDamages,
+    buildTcpaRevocationDemand,
+    exportTcpaViolationsCsv,
+  } = await import('../src/utils/telemarketingShieldEngine');
+
+  assert(DO_NOT_CONTACT_RAILS.length >= 10, 'Expected national, prescreen, carrier 7726, and state DNC rails');
+  assert(
+    DO_NOT_CONTACT_RAILS.some((r) => r.id === 'ftc-national-dnc'),
+    'Expected FTC National Do Not Call Registry rail'
+  );
+
+  const sampleViolations = [
+    {
+      id: 'v-1',
+      callerName: 'SolarLead Dialer LLC',
+      callerPhone: '(800) 555-0192',
+      callerEmail: 'compliance@solarleaddialer.example',
+      channel: 'robocall' as const,
+      revocationSentAtIso: '2026-10-01',
+      postRevocationCallDates: ['2026-10-14', '2026-10-18'],
+      willfulViolation: true,
+      notes: 'Called twice after written revocation',
+    },
+    {
+      id: 'v-2',
+      callerName: 'FastCash SMS Blast',
+      callerPhone: '77421',
+      channel: 'robotext' as const,
+      revocationSentAtIso: '2026-10-05',
+      postRevocationCallDates: ['2026-10-20'],
+      willfulViolation: false,
+    },
+  ];
+
+  const calc = calculateTcpaDamages(sampleViolations);
+  assert.strictEqual(calc.totalTrackedCallers, 2);
+  assert.strictEqual(calc.totalPostRevocationCalls, 3);
+  assert.strictEqual(calc.baseStatutoryDamagesUsd, 1500); // 3 * $500
+  assert.strictEqual(calc.treblePotentialDamagesUsd, 3500); // (2 * $1500) + (1 * $500)
+
+  const demand = buildTcpaRevocationDemand({
+    callerName: 'SolarLead Dialer LLC',
+    callerPhone: '(800) 555-0192',
+    callerEmail: 'compliance@solarleaddialer.example',
+    channel: 'robocall',
+    profile: {
+      firstName: 'Morgan',
+      lastName: 'Reyes',
+      currentCity: 'Miami',
+      currentState: 'FL',
+      birthYear: '1988',
+      phoneNumbers: ['(305) 555-0133'],
+      emails: [],
+      relatives: [],
+      previousLocations: [],
+    },
+  });
+
+  assert(demand.subject.includes('47 U.S.C. § 227'));
+  assert(demand.emailBody.includes('47 CFR § 64.1200(a)(10)'));
+  assert(demand.emailBody.includes('yourname@email.com'));
+  assert(!demand.emailBody.includes('synovamedia@gmail.com'));
+  assert(demand.smsReplyText.startsWith('STOP.'));
+  assert(demand.smsReplyText.length <= 180, 'SMS revocation reply should remain concise');
+
+  const csv = exportTcpaViolationsCsv(sampleViolations);
+  assert(csv.includes('SolarLead Dialer LLC'));
+  assert(csv.includes('3000'));
+
+  const componentSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src/components/TelemarketingShieldCenter.tsx'),
+    'utf8'
+  );
+  assert(!componentSrc.includes('style={'), 'TelemarketingShieldCenter must have zero inline style={} props');
+  assert(!componentSrc.includes('window.alert'), 'TelemarketingShieldCenter must not invoke window.alert');
+  assert(!componentSrc.includes('window.open'), 'TelemarketingShieldCenter must not invoke window.open');
+});
+
+test('49. Global Command Palette (⌘K), Browser Sec-GPC Inspector & Encrypted Vault Round-Trip', async () => {
+  const { inspectBrowserPrivacySignals } = await import('../src/utils/browserPrivacyInspector');
+  const {
+    encryptWorkspaceBundle,
+    decryptWorkspaceBundle,
+  } = await import('../src/utils/workspaceVault');
+  const { buildNavCompartments } = await import('../src/components/Navbar');
+
+  const audit = inspectBrowserPrivacySignals();
+  assert.strictEqual(typeof audit.gpcEnabled, 'boolean');
+  assert(Array.isArray(audit.signals) && audit.signals.length >= 1);
+  assert(audit.signals.some((s) => s.id === 'gpc'));
+
+  const compartments = buildNavCompartments({
+    hasScanResults: true,
+    exposedCount: 4,
+    removedCount: 2,
+    isPoaSigned: true,
+  });
+  const allTabs = compartments.flatMap((c) => c.items.map((i) => i.tab).filter(Boolean));
+  assert(allTabs.includes('supplychain'), 'Navbar Discovery compartment must include supplychain tab');
+  assert(allTabs.includes('tcpa'), 'Navbar Suppression compartment must include tcpa tab');
+  assert(allTabs.includes('creditfreeze'), 'Navbar Registries compartment must include creditfreeze tab');
+
+  const bundle = {
+    schema: 'synOUT-workspace-vault-v1' as const,
+    exportedAtIso: '2026-10-29T12:00:00.000Z',
+    profile: null,
+    scanResults: [],
+    deindexQueue: [],
+    bureauProgress: {},
+    scanSnapshots: [],
+    creditFreezeState: {
+      equifax: {
+        railId: 'equifax',
+        status: 'frozen' as const,
+        fraudAlert: 'initial_1yr' as const,
+        referenceCode: 'EQ-VAULT-77',
+        updatedAtIso: '2026-10-29T12:00:00.000Z',
+      },
+    },
+    telemarketingShieldState: {
+      completedRegistryIds: ['ftc-national-dnc', 'fcra-optout-prescreen'],
+      violations: [
+        {
+          id: 'tcpa-vault-1',
+          callerName: 'Test Dialer Corp',
+          callerPhone: '(888) 555-0100',
+          channel: 'robocall' as const,
+          revocationSentAtIso: '2026-10-20',
+          postRevocationCallDates: ['2026-10-25'],
+          willfulViolation: true,
+        },
+      ],
+      updatedAtIso: '2026-10-29T12:00:00.000Z',
+    },
+  };
+
+  const encrypted = await encryptWorkspaceBundle(bundle, 'StrongVaultPass#2026', 100000);
+  const decrypted = await decryptWorkspaceBundle(encrypted, 'StrongVaultPass#2026');
+
+  assert.strictEqual(decrypted.creditFreezeState?.equifax?.status, 'frozen');
+  assert.strictEqual(decrypted.creditFreezeState?.equifax?.referenceCode, 'EQ-VAULT-77');
+  assert.deepStrictEqual(decrypted.telemarketingShieldState?.completedRegistryIds, [
+    'ftc-national-dnc',
+    'fcra-optout-prescreen',
+  ]);
+  assert.strictEqual(decrypted.telemarketingShieldState?.violations.length, 1);
+  assert.strictEqual(decrypted.telemarketingShieldState?.violations[0].callerName, 'Test Dialer Corp');
+
+  const paletteSrc = fs.readFileSync(
+    path.join(process.cwd(), 'src/components/CommandPaletteModal.tsx'),
+    'utf8'
+  );
+  assert(!paletteSrc.includes('style={'), 'CommandPaletteModal must have zero inline style={} props');
+  assert(!paletteSrc.includes('window.alert'), 'CommandPaletteModal must not invoke window.alert');
+  assert(!paletteSrc.includes('window.open'), 'CommandPaletteModal must not invoke window.open');
+});
+
+
+
+
 
 
 

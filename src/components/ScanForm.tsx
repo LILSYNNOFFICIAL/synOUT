@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile } from '../types';
 import { SearchTypeCategory, SEARCH_TYPES } from '../utils/searchProfiles';
 import { parsePriorLocationsList } from '../utils/profileQuickFixEngine';
+import { useEmailConnection } from '../services/emailConnectionStore';
 import {
   Search,
   ChevronDown,
@@ -14,6 +15,7 @@ interface ScanFormProps {
 }
 
 export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
+  const { activeConnectedEmail } = useEmailConnection();
   const [searchType, setSearchType] = useState<SearchTypeCategory>('STANDARD_IDENTITY');
   const [firstName, setFirstName] = useState('Jane');
   const [lastName, setLastName] = useState('Doe');
@@ -21,11 +23,18 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
   const [currentState, setCurrentState] = useState('CA');
   const [birthYear, setBirthYear] = useState('1988');
   const [phone, setPhone] = useState('(916) 555-0144');
-  const [email, setEmail] = useState('synovamedia@gmail.com');
+  const [email, setEmail] = useState(() => activeConnectedEmail || '');
+  const emailTouchedRef = useRef(false);
   const [priorLocations, setPriorLocations] = useState('Austin, TX');
   const [vinNumber, setVinNumber] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    if (!emailTouchedRef.current && !email && activeConnectedEmail) {
+      setEmail(activeConnectedEmail);
+    }
+  }, [activeConnectedEmail, email]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -177,8 +186,11 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
+              onChange={(e) => {
+                emailTouchedRef.current = true;
+                setEmail(e.target.value);
+              }}
+              placeholder="yourname@email.com"
               className="w-full glass-input rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500"
             />
           </div>

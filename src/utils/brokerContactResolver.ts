@@ -325,13 +325,20 @@ export function resolveBrokerContactProfile(
     explicitCc.length > 0 ? explicitCc : fallbackEmails.slice(0, 1);
 
   const deliverabilityTier: EmailDeliverabilityTier =
-    broker.emailDeliverability || 'verified_dpo';
+    broker.emailDeliverability || (broker.privacyEmail ? 'verified_dpo' : 'web_form_only');
+
+  const finalPrimaryEmail =
+    deliverabilityTier === 'web_form_only' && !hasCustomOverride
+      ? ''
+      : effectivePrimaryEmail;
 
   let deliverabilityLabel = 'Verified Compliance Desk';
   if (hasCustomOverride) {
     deliverabilityLabel = 'Custom DPO Override';
   } else if (reroutedFromBounced) {
     deliverabilityLabel = 'Auto-Rerouted Backup DPO';
+  } else if (deliverabilityTier === 'web_form_only' || !finalPrimaryEmail) {
+    deliverabilityLabel = 'Web-Form Only · Auto-Fill Active';
   } else if (deliverabilityTier === 'parent_dpo') {
     deliverabilityLabel = broker.parentEntity
       ? `Parent DPO · ${broker.parentEntity}`
@@ -348,18 +355,21 @@ export function resolveBrokerContactProfile(
 
   return {
     brokerId: broker.id,
-    effectivePrimaryEmail,
+    effectivePrimaryEmail: finalPrimaryEmail,
     defaultCatalogEmail: broker.privacyEmail,
-    fallbackEmails,
-    allValidCandidates: effectiveCandidates,
-    recommendedCcEmails,
+    fallbackEmails: finalPrimaryEmail ? fallbackEmails : [],
+    allValidCandidates: finalPrimaryEmail ? effectiveCandidates : [],
+    recommendedCcEmails: finalPrimaryEmail ? recommendedCcEmails : [],
     bouncedEmails,
     hasCustomOverride,
     reroutedFromBounced,
     parentEntity: broker.parentEntity,
     deliverabilityTier,
     deliverabilityLabel,
-    requiresPortalWarning: deliverabilityTier === 'portal_primary',
+    requiresPortalWarning:
+      deliverabilityTier === 'portal_primary' ||
+      deliverabilityTier === 'web_form_only' ||
+      !finalPrimaryEmail,
     optOutUrl: effectiveOptOutUrl,
     defaultCatalogOptOutUrl: broker.optOutUrl,
     hasCustomOptOutUrl: Boolean(customOptOutUrl),
@@ -518,15 +528,43 @@ export async function verifyRecipientDeliverabilityClient(
   recipientEmail: string,
   fallbackEmails: string[] = []
 ): Promise<RecipientDeliverabilityVerification> {
-  const cleanPrimary = recipientEmail.trim().toLowerCase();
+  const cleanPrimary = (recipientEmail || '').trim().toLowerCase();
   const cleanFallbacks = fallbackEmails
     .map((e) => e.trim().toLowerCase())
     .filter((e) => isValidEmailSyntax(e) && e !== cleanPrimary);
 
-  const cacheKey = [cleanPrimary, ...cleanFallbacks].join('|');
+  if (!cleanPrimary && cleanFallbacks.length === 0) {
+    return {
+      valid: false,
+      mxVerified: false,
+      originalEmail: '',
+      recommendedEmail: null,
+      usedFallback: false,
+      mxHosts: [],
+      reason:
+        'This data broker does not operate a public compliance email inbox; synOUT routes your removal directly through its Automated Web-Form Engine.',
+      candidateResults: [],
+    };
+  }
+
+  const primaryOrFirst = cleanPrimary || cleanFallbacks[0];
+  const remainingFallbacks = cleanPrimary ? cleanFallbacks : cleanFallbacks.slice(1);
+
+  const cacheKey = [primaryOrFirst, ...remainingFallbacks].join('|');
   const cached = clientMxCache.get(cacheKey);
   if (cached) {
     return cached;
+  }
+
+  const isStaticHost =
+    typeof window !== 'undefined' &&
+    ((window.location.protocol || '').toLowerCase() === 'file:' ||
+      (window.location.hostname || '').toLowerCase().endsWith('.github.io'));
+
+  if (isStaticHost) {
+    const dohResult = await verifyCandidatesViaDohFallback(primaryOrFirst, remainingFallbacks);
+    clientMxCache.set(cacheKey, dohResult);
+    return dohResult;
   }
 
   try {
@@ -534,8 +572,8 @@ export async function verifyRecipientDeliverabilityClient(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        recipientEmail: cleanPrimary,
-        fallbackEmails: cleanFallbacks,
+        recipientEmail: primaryOrFirst,
+        fallbackEmails: remainingFallbacks,
       }),
     });
 
@@ -558,7 +596,7 @@ export async function verifyRecipientDeliverabilityClient(
 
     // If static host returns 404/405 or HTML instead of JSON, fall back to client-side DoH
     if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
-      const dohResult = await verifyCandidatesViaDohFallback(cleanPrimary, cleanFallbacks);
+      const dohResult = await verifyCandidatesViaDohFallback(primaryOrFirst, remainingFallbacks);
       clientMxCache.set(cacheKey, dohResult);
       return dohResult;
     }
@@ -568,7 +606,7 @@ export async function verifyRecipientDeliverabilityClient(
   } catch (err) {
     // Attempt client-side DNS-over-HTTPS fallback when backend server is unreachable
     try {
-      const dohResult = await verifyCandidatesViaDohFallback(cleanPrimary, cleanFallbacks);
+      const dohResult = await verifyCandidatesViaDohFallback(primaryOrFirst, remainingFallbacks);
       clientMxCache.set(cacheKey, dohResult);
       return dohResult;
     } catch {

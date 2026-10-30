@@ -25,6 +25,10 @@ import {
   Globe,
   Cloud,
   MessageSquare,
+  Network,
+  Lock,
+  PhoneOff,
+  Command,
 } from 'lucide-react';
 import { useEmailConnection } from '../services/emailConnectionStore';
 import { useCloudVaultState } from '../services/cloudVaultSync';
@@ -34,16 +38,19 @@ export type AppTab =
   | 'home'
   | 'scanner'
   | 'report'
+  | 'supplychain'
   | 'tracker'
   | 'directory'
   | 'guide'
   | 'darkweb'
   | 'deindex'
+  | 'tcpa'
   | 'monitoring'
   | 'profiles'
   | 'gmail'
   | 'webforms'
   | 'bureaus'
+  | 'creditfreeze'
   | 'firewall'
   | 'inbox'
   | 'registries'
@@ -88,6 +95,7 @@ interface NavbarProps {
   onOpenVault?: () => void;
   onOpenNukeAll?: () => void;
   onOpenTutorial?: () => void;
+  onOpenCommandPalette?: () => void;
 }
 
 export function buildNavCompartments(params: {
@@ -145,6 +153,14 @@ export function buildNavCompartments(params: {
           icon: Layers,
         },
         {
+          id: 'supplychain',
+          label: 'Supply-Chain Graph',
+          shortLabel: 'Supply Chain',
+          description: 'D3 clearinghouse-to-mirror topology & cascade plan',
+          tab: 'supplychain',
+          icon: Network,
+        },
+        {
           id: 'darkweb',
           label: 'Dark Web & Leaks',
           shortLabel: 'Dark Web',
@@ -184,6 +200,14 @@ export function buildNavCompartments(params: {
           description: 'Clear old search results from Google, Bing & DuckDuckGo',
           tab: 'deindex',
           icon: SearchCode,
+        },
+        {
+          id: 'tcpa',
+          label: 'Robocall & TCPA Shield',
+          shortLabel: 'Robocall Shield',
+          description: 'DNC lists, 47 CFR § 64.1200 revocation & $500/$1,500 ledger',
+          tab: 'tcpa',
+          icon: PhoneOff,
         },
         ...(hasScanResults
           ? [
@@ -261,6 +285,14 @@ export function buildNavCompartments(params: {
           icon: Building2,
         },
         {
+          id: 'creditfreeze',
+          label: 'Credit Freeze & Lockout',
+          shortLabel: 'Credit Freeze',
+          description: 'FCRA § 605A freezes across bureaus, ChexSystems, NCTUE & IRS',
+          tab: 'creditfreeze',
+          icon: Lock,
+        },
+        {
           id: 'firewall',
           label: 'Records Firewall',
           shortLabel: 'Firewall',
@@ -317,12 +349,14 @@ export function resolveCategoryForTab(tab: AppTab): NavCategoryId {
     case 'home':
     case 'scanner':
     case 'report':
+    case 'supplychain':
     case 'profiles':
     case 'darkweb':
       return 'discovery';
     case 'webforms':
     case 'gmail':
     case 'deindex':
+    case 'tcpa':
       return 'suppression';
     case 'inbox':
     case 'tracker':
@@ -331,6 +365,7 @@ export function resolveCategoryForTab(tab: AppTab): NavCategoryId {
     case 'directory':
     case 'registries':
     case 'bureaus':
+    case 'creditfreeze':
     case 'firewall':
       return 'registries';
     case 'advisor':
@@ -353,6 +388,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenVault,
   onOpenNukeAll,
   onOpenTutorial,
+  onOpenCommandPalette,
 }) => {
   const [openCategory, setOpenCategory] = useState<NavCategoryId | null>(null);
   const [pinnedCategory, setPinnedCategory] = useState<NavCategoryId | null>(null);
@@ -734,6 +770,26 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Minimalist Workspace Utility Shortcuts */}
           <div className="flex items-center gap-3 text-[11px] text-slate-400 shrink-0">
+            {onOpenCommandPalette && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinnedCategory(null);
+                    setOpenCategory(null);
+                    onOpenCommandPalette();
+                  }}
+                  className="inline-flex items-center gap-1.5 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Command className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Quick Jump</span>
+                  <span className="font-mono text-[10px] text-slate-500">⌘K</span>
+                </button>
+                <span aria-hidden="true" className="text-slate-700">
+                  ·
+                </span>
+              </>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -853,8 +909,19 @@ export const Navbar: React.FC<NavbarProps> = ({
       {mobileMenuOpen && (
         <div className="relative z-20 lg:hidden glass-popover border-x-0 border-t-0 max-h-[80vh] overflow-y-auto px-4 py-5 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-white/[0.08]">
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400">Install App</span>
+            <div className="flex items-center gap-2">
+              {onOpenCommandPalette && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onOpenCommandPalette();
+                  }}
+                  className="px-2.5 py-1 rounded-lg glass-subtle text-xs text-slate-200 hover:text-white cursor-pointer"
+                >
+                  Quick Jump
+                </button>
+              )}
               {onOpenTutorial && (
                 <button
                   type="button"

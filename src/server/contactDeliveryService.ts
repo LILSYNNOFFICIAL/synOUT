@@ -121,7 +121,7 @@ export function validateContactSubmission(input: ContactSubmissionInput): Contac
   if (!rawEmail) {
     errors.email = 'Please enter your email address.';
   } else if (rawEmail.length > 160 || !CONTACT_EMAIL_REGEX.test(rawEmail)) {
-    errors.email = 'Please enter a valid email address (for example, name@example.com).';
+    errors.email = 'Please enter a valid email address (for example, yourname@email.com).';
   }
 
   if (!rawMessage) {

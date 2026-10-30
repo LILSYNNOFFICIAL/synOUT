@@ -7,7 +7,7 @@ export interface BrokerRelistingScheduleItem {
   brokerId: string;
   brokerName: string;
   brokerDomain: string;
-  baselineStatus: 'removed' | 'submitted';
+  baselineStatus: 'clean' | 'removed' | 'submitted';
   lastVerifiedOrSubmittedIso: string;
   nextSweepDueIso: string;
   daysUntilNextSweep: number;
@@ -26,6 +26,7 @@ export interface LiveRelistingProbeDiff {
   outcome:
     | 'confirmed_absent'
     | 'resurfaced_regression'
+    | 'new_exposure_detected'
     | 'still_present_within_sla'
     | 'anti_bot_gated'
     | 'unreachable';

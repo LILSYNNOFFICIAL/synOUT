@@ -1157,7 +1157,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                         required
                         value={smtpEmail}
                         onChange={(e) => handleEmailInputChange(e.target.value)}
-                        placeholder="you@gmail.com"
+                        placeholder="yourname@email.com"
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
                       />
                     </div>
@@ -1711,7 +1711,7 @@ export const GmailDispatchCenter: React.FC<GmailDispatchCenterProps> = ({
                             setWebmailLauncher(detectWebmailLauncherFromEmail(e.target.value));
                           }
                         }}
-                        placeholder="you@gmail.com"
+                        placeholder="yourname@email.com"
                         className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/60"
                       />
                     </div>

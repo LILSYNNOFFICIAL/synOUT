@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { DataBroker, ScanResult, UserProfile } from '../types';
 import { getBrokerRecordSearchUrl } from '../utils/scanEngine';
-import { buildUniversalAutoFillScript } from '../utils/optOutFormEngine';
+import {
+  buildAutoFillBookmarkletHref,
+  buildUniversalAutoFillScript,
+} from '../utils/optOutFormEngine';
+import { buildPreFilledBrokerPortalUrl } from '../utils/serverlessRuntime';
+import { useEmailConnection } from '../services/emailConnectionStore';
 import { copyTextToClipboard } from '../utils/exportEngines';
 import {
   type ClientRemovalWorkflowJob,
@@ -27,6 +32,7 @@ import {
   Send,
   Link2,
   Mail,
+  Bookmark,
 } from 'lucide-react';
 
 interface AutomatedRemovalNavigatorProps {
@@ -139,9 +145,22 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
   const [copiedScript, setCopiedScript] = useState(false);
   const hasAutoStartedRef = useRef(false);
 
+  const { activeConnectedEmail } = useEmailConnection();
   const poa = profile.powerOfAttorney;
   const entryOfRecordsUrl = getBrokerRecordSearchUrl(broker, profile);
-  const senderEmail = profile.emails.find((e) => Boolean(e && e.trim())) || '';
+  const senderEmail =
+    activeConnectedEmail || profile.emails.find((e) => Boolean(e && e.trim())) || '';
+  const preFilledOptOutUrl = buildPreFilledBrokerPortalUrl({
+    targetUrl: broker.optOutUrl,
+    profile,
+    senderEmail: senderEmail || undefined,
+    recordUrl: entryOfRecordsUrl,
+  });
+  const bookmarkletHref = buildAutoFillBookmarkletHref(
+    profile,
+    senderEmail || undefined,
+    broker
+  );
 
   const applyJobUpdate = (updated: ClientRemovalWorkflowJob) => {
     setJob(updated);
@@ -295,6 +314,18 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
   const visibleMappedFields = job
     ? job.mappedFields.filter((f) => !f.preserveOriginalHidden && f.disclosureAllowed)
     : [];
+  const checkedBoxesCount = visibleMappedFields.filter((f) => {
+    const isCheck = f.inputType === 'checkbox' || f.tag === 'custom_checkbox';
+    if (!isCheck) return false;
+    const val = fieldOverrides[f.fieldKey] ?? f.plannedValue;
+    return Boolean(val) && !/^(false|0|no|off|__unchecked__)$/i.test(val);
+  }).length;
+  const filledCriteriaCount = visibleMappedFields.filter((f) => {
+    const isCheck = f.inputType === 'checkbox' || f.tag === 'custom_checkbox';
+    if (isCheck) return false;
+    const val = fieldOverrides[f.fieldKey] ?? f.plannedValue;
+    return Boolean(val && val.trim());
+  }).length;
   const eligibleCandidates = job
     ? job.candidateRecords.filter((c) => !c.disqualifiedHomonym)
     : [];
@@ -686,11 +717,63 @@ export const AutomatedRemovalNavigator: React.FC<AutomatedRemovalNavigatorProps>
                 <span>{formatWorkflowStateLabel(job.state)}</span>
               </span>
             </div>
-            <div className="text-slate-200">
-              Confirmation Code:{' '}
-              <strong className="font-mono">
-                {job.brokerConfirmationCode || 'Submitted (no code shown by broker)'}
-              </strong>
+            <div className="text-slate-200 tabular-nums">
+              {filledCriteriaCount > 0 || checkedBoxesCount > 0 ? (
+                <span>
+                  Auto-Populated <strong className="text-white">{filledCriteriaCount}</strong>{' '}
+                  Criteria Fields · Checked{' '}
+                  <strong className="text-emerald-300">{checkedBoxesCount}</strong> Required Consent
+                  Boxes · Spam &amp; SSN Traps Blocked
+                </span>
+              ) : (
+                <span>
+                  Confirmation Code:{' '}
+                  <strong className="font-mono">
+                    {job.brokerConfirmationCode || 'Submitted (tracked via synOUT receipt)'}
+                  </strong>
+                </span>
+              )}
+            </div>
+            {job.brokerConfirmationCode && (
+              <div className="text-slate-300">
+                Broker Confirmation Code:{' '}
+                <strong className="font-mono text-white">{job.brokerConfirmationCode}</strong>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <a
+                href={preFilledOptOutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-emerald-300 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <span>Open Pre-Filled Portal</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+              <button
+                type="button"
+                onClick={handleCopyBookmarkletScript}
+                className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-white font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>
+                  {copiedScript
+                    ? 'Copied Auto-Fill & Checkbox Script'
+                    : 'Copy 1-Click Auto-Fill & Checkbox Script'}
+                </span>
+              </button>
+              <a
+                href={bookmarkletHref}
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleCopyBookmarkletScript();
+                }}
+                title="Drag this button to your browser Bookmarks Bar to fill criteria & check consent boxes on any live broker page in 1 click"
+                className="px-3 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Bookmark className="w-3.5 h-3.5" />
+                <span>synOUT Auto-Fill Bookmarklet</span>
+              </a>
             </div>
             <details className="text-[11px] text-slate-400 pt-0.5">
               <summary className="cursor-pointer hover:text-slate-200 select-none">

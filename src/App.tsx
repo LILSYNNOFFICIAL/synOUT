@@ -20,6 +20,7 @@ import {
 } from './utils/scanEngine';
 import { mergeRescanPreservingProgress } from './utils/profileQuickFixEngine';
 import { rotateClientSessionToken, sessionFetch } from './services/sessionClient';
+import { isStaticServerlessRuntime } from './utils/serverlessRuntime';
 import {
   runLivePortalProbeClient,
   startWorkflowClient,
@@ -129,6 +130,28 @@ import {
   signOutCloudVault,
   useCloudVaultState,
 } from './services/cloudVaultSync';
+import { NewExposureAlertToastBar } from './components/NewExposureAlertToastBar';
+import {
+  clearAllNewExposureAlerts,
+  ingestMonitoringDiffsForNewExposures,
+  syncScanResultsForNewExposureAlerts,
+} from './utils/newExposureAlertStore';
+import {
+  CreditFreezeStateMap,
+  clearCreditFreezeState,
+  loadCreditFreezeState,
+  saveCreditFreezeState,
+} from './utils/creditFreezeEngine';
+import {
+  TelemarketingShieldState,
+  clearTelemarketingShieldState,
+  loadTelemarketingShieldState,
+  saveTelemarketingShieldState,
+} from './utils/telemarketingShieldEngine';
+import { SupplyChainNetworkCenter } from './components/SupplyChainNetworkCenter';
+import { CreditFreezeCenter } from './components/CreditFreezeCenter';
+import { TelemarketingShieldCenter } from './components/TelemarketingShieldCenter';
+import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { CheckCircle2 } from 'lucide-react';
 
 const DEFAULT_FALLBACK_PROFILE: UserProfile = {
@@ -215,6 +238,11 @@ export default function App() {
   const [publicRecordProgress, setPublicRecordProgress] = useState<
     Record<string, PublicRecordChecklistState>
   >(() => loadPublicRecordProgress());
+  const [creditFreezeState, setCreditFreezeState] = useState<CreditFreezeStateMap>(() =>
+    loadCreditFreezeState()
+  );
+  const [telemarketingShieldState, setTelemarketingShieldState] =
+    useState<TelemarketingShieldState>(() => loadTelemarketingShieldState());
   const [firewallSubTab, setFirewallSubTab] = useState<'records' | 'canary' | 'hygiene'>('records');
 
   // Scanning states
@@ -233,6 +261,7 @@ export default function App() {
   const [isPowerOfAttorneyOpen, setIsPowerOfAttorneyOpen] = useState(false);
   const [isVaultModalOpen, setIsVaultModalOpen] = useState(false);
   const [isNukeAllModalOpen, setIsNukeAllModalOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [emailDispatchQueue, setEmailDispatchQueue] = useState<ScanResult[] | null>(null);
   const [webFormTargetBroker, setWebFormTargetBroker] = useState<DataBroker | null>(null);
   const [activeNavigatorModal, setActiveNavigatorModal] = useState<{
@@ -315,6 +344,25 @@ export default function App() {
     savePublicRecordProgress(publicRecordProgress);
   }, [publicRecordProgress]);
 
+  useEffect(() => {
+    saveCreditFreezeState(creditFreezeState);
+  }, [creditFreezeState]);
+
+  useEffect(() => {
+    saveTelemarketingShieldState(telemarketingShieldState);
+  }, [telemarketingShieldState]);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
+
   const hasCompletedScan = scanResults.some(
     (r) => !r.id.startsWith('dir-') && !r.id.startsWith('webform-')
   );
@@ -372,6 +420,7 @@ export default function App() {
     }
 
     setScanResults(completedResults);
+    void syncScanResultsForNewExposureAlerts(completedResults);
     setIsScanning(false);
     setActiveTab('report');
     const exposed = completedResults.filter((r) => r.status === 'exposed').length;
@@ -391,6 +440,7 @@ export default function App() {
       const freshScan = runBrokerScan(nextProfile);
       const mergedResults = mergeRescanPreservingProgress(scanResults, freshScan);
       setScanResults(mergedResults);
+      void syncScanResultsForNewExposureAlerts(mergedResults);
 
       // Update the most recent saved search slot in place so quota is preserved
       const existingSaved = getSavedSearches();
@@ -1019,6 +1069,12 @@ export default function App() {
     setScanSnapshots(bundle.scanSnapshots);
     setCanaryAliases(bundle.canaryAliases || []);
     setPublicRecordProgress(bundle.publicRecordProgress || {});
+    if (bundle.creditFreezeState) {
+      setCreditFreezeState(bundle.creditFreezeState);
+    }
+    if (bundle.telemarketingShieldState) {
+      setTelemarketingShieldState(bundle.telemarketingShieldState);
+    }
     restoreBrokerContactOverrides(bundle.brokerContactOverrides || {});
     if (bundle.savedSearches) {
       restoreSavedSearches(bundle.savedSearches);
@@ -1058,6 +1114,8 @@ export default function App() {
         scanSnapshots,
         canaryAliases,
         publicRecordProgress,
+        creditFreezeState,
+        telemarketingShieldState,
         brokerContactOverrides: getBrokerContactOverrides(),
         savedSearches: getSavedSearches(),
       };
@@ -1078,6 +1136,8 @@ export default function App() {
     scanSnapshots,
     canaryAliases,
     publicRecordProgress,
+    creditFreezeState,
+    telemarketingShieldState,
   ]);
 
   const handlePurgeSession = async () => {
@@ -1085,7 +1145,9 @@ export default function App() {
     await disconnectGoogleOAuthAccount().catch(() => null);
     await purgeAllEmailConnections();
     await signOutCloudVault().catch(() => null);
-    await sessionFetch('/api/user/purge-session', { method: 'POST' }).catch(() => null);
+    if (!isStaticServerlessRuntime()) {
+      await sessionFetch('/api/user/purge-session', { method: 'POST' }).catch(() => null);
+    }
     rotateClientSessionToken();
     clearAllSavedSearches();
     clearDeindexQueue();
@@ -1093,10 +1155,13 @@ export default function App() {
     clearScanSnapshots();
     clearCanaryAliases();
     clearPublicRecordProgress();
+    clearCreditFreezeState();
+    clearTelemarketingShieldState();
     clearBrokerContactOverrides();
     clearClientMxCache();
     clearCustomDiscoveredBrokers();
     clearAdvisorThreadHistory();
+    clearAllNewExposureAlerts();
     purgeAllClientStorage();
     setUserProfile(null);
     setScanResults([]);
@@ -1105,8 +1170,15 @@ export default function App() {
     setScanSnapshots([]);
     setCanaryAliases([]);
     setPublicRecordProgress({});
+    setCreditFreezeState({});
+    setTelemarketingShieldState({
+      completedRegistryIds: [],
+      violations: [],
+      updatedAtIso: new Date().toISOString(),
+    });
     setEmailDispatchQueue(null);
     setActiveNavigatorModal(null);
+    setIsCommandPaletteOpen(false);
     setIsAdvisorDrawerOpen(false);
     setAdvisorInitialPrompt(null);
     setActiveTab('home');
@@ -1193,13 +1265,27 @@ export default function App() {
     const resurfacedIds = diffs
       .filter((d) => d.outcome === 'resurfaced_regression')
       .map((d) => d.brokerId);
+    const newExposureIds = diffs
+      .filter((d) => d.outcome === 'new_exposure_detected')
+      .map((d) => d.brokerId);
     const absentIds = diffs
       .filter((d) => d.outcome === 'confirmed_absent')
       .map((d) => d.brokerId);
     const nowIso = new Date().toISOString();
 
+    void ingestMonitoringDiffsForNewExposures(diffs);
+
     setScanResults((prev) =>
       prev.map((item) => {
+        if (newExposureIds.includes(item.brokerId)) {
+          return {
+            ...item,
+            status: 'exposed',
+            removalStatus: 'found',
+            isRegression: false,
+            liveProbeCheckedAtIso: nowIso,
+          };
+        }
         if (resurfacedIds.includes(item.brokerId)) {
           return {
             ...item,
@@ -1228,7 +1314,11 @@ export default function App() {
       })
     );
 
-    if (resurfacedIds.length > 0) {
+    if (newExposureIds.length > 0) {
+      showToast(
+        `New exposure alert: ${newExposureIds.length} previously clean broker(s) now expose personal records.`
+      );
+    } else if (resurfacedIds.length > 0) {
       showToast(
         `Re-listing alert: ${resurfacedIds.length} previously purged broker(s) resurfaced and queued for re-suppression.`
       );
@@ -1255,6 +1345,30 @@ export default function App() {
         onOpenVault={() => setIsVaultModalOpen(true)}
         onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
         onOpenTutorial={() => reopenOnboardingTutorial(0)}
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+      />
+
+      {/* Persistent New Exposure Alert Bar (renders null when no unacknowledged clean-broker leaks) */}
+      <NewExposureAlertToastBar
+        onRemoveBrokerNow={(brokerId) => {
+          const existing = scanResults.find((r) => r.brokerId === brokerId);
+          if (existing && existing.status !== 'exposed') {
+            setScanResults((prev) =>
+              prev.map((item) =>
+                item.brokerId === brokerId
+                  ? { ...item, status: 'exposed', removalStatus: 'found' }
+                  : item
+              )
+            );
+          }
+          const broker = findBrokerById(brokerId);
+          if (broker && !existing) {
+            handleDirectBrokerOptOut(broker);
+          } else {
+            handleSingleBrokerOptOutRequest(brokerId);
+          }
+        }}
+        onOpenMonitor={() => navigateToTab('monitoring')}
       />
 
       {/* Main Container */}
@@ -1269,6 +1383,9 @@ export default function App() {
               onOpenWebForms={() => handleOpenWebFormWorkbench()}
               onOpenInboxHarvester={() => setActiveTab('inbox')}
               onOpenStateRegistries={() => setActiveTab('registries')}
+              onOpenSupplyChain={() => setActiveTab('supplychain')}
+              onOpenCreditFreeze={() => setActiveTab('creditfreeze')}
+              onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
             />
             <div className="max-w-7xl mx-auto px-4">
               <ScanForm onScan={handleStartScan} isScanning={isScanning} />
@@ -1331,6 +1448,9 @@ export default function App() {
               onOpenAutomatedNavigator={(b, r) => setActiveNavigatorModal({ broker: b, result: r })}
               onOpenInboxHarvester={() => setActiveTab('inbox')}
               onOpenStateRegistries={() => setActiveTab('registries')}
+              onOpenSupplyChain={() => setActiveTab('supplychain')}
+              onOpenCreditFreeze={() => setActiveTab('creditfreeze')}
+              onOpenTcpaShield={() => setActiveTab('tcpa')}
             />
           ) : (
             <div className="max-w-xl mx-auto py-16 px-4">
@@ -1350,6 +1470,20 @@ export default function App() {
           )
         )}
 
+        {activeTab === 'supplychain' && (
+          <SupplyChainNetworkCenter
+            profile={userProfile || DEFAULT_FALLBACK_PROFILE}
+            results={scanResults}
+            onStartScan={() => setActiveTab('scanner')}
+            onSendBrokerOptOut={handleDirectBrokerOptOut}
+            onOpenWebFormWorkbench={handleOpenWebFormWorkbench}
+            onOpenAutomatedNavigator={(b, r) => {
+              ensureActiveProfile();
+              setActiveNavigatorModal({ broker: b, result: r });
+            }}
+          />
+        )}
+
         {activeTab === 'darkweb' && (
           <DarkWebRemovalCenter
             profile={userProfile || DEFAULT_FALLBACK_PROFILE}
@@ -1366,6 +1500,15 @@ export default function App() {
             onUpdateDeindexQueue={setDeindexQueue}
             onOpenConnectEmail={() => setActiveTab('gmail')}
             onStartScan={() => setActiveTab('scanner')}
+          />
+        )}
+
+        {activeTab === 'tcpa' && (
+          <TelemarketingShieldCenter
+            profile={userProfile || DEFAULT_FALLBACK_PROFILE}
+            shieldState={telemarketingShieldState}
+            onUpdateShieldState={setTelemarketingShieldState}
+            onOpenConnectEmail={() => setActiveTab('gmail')}
           />
         )}
 
@@ -1450,6 +1593,15 @@ export default function App() {
             profile={userProfile || DEFAULT_FALLBACK_PROFILE}
             bureauProgress={bureauProgress}
             onUpdateBureauProgress={handleUpdateBureauProgress}
+            onOpenConnectEmail={() => setActiveTab('gmail')}
+          />
+        )}
+
+        {activeTab === 'creditfreeze' && (
+          <CreditFreezeCenter
+            profile={userProfile || DEFAULT_FALLBACK_PROFILE}
+            freezeState={creditFreezeState}
+            onUpdateFreezeState={setCreditFreezeState}
             onOpenConnectEmail={() => setActiveTab('gmail')}
           />
         )}
@@ -1810,11 +1962,26 @@ export default function App() {
           scanSnapshots={scanSnapshots}
           canaryAliases={canaryAliases}
           publicRecordProgress={publicRecordProgress}
+          creditFreezeState={creditFreezeState}
+          telemarketingShieldState={telemarketingShieldState}
           onRestoreWorkspace={handleRestoreWorkspace}
           onCaptureManualSnapshot={handleCaptureManualSnapshot}
           onClose={() => setIsVaultModalOpen(false)}
         />
       )}
+
+      <CommandPaletteModal
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        scanResults={scanResults}
+        hasScanResults={hasCompletedScan}
+        onNavigateTab={navigateToTab}
+        onOpenWebFormBroker={(broker) => handleOpenWebFormWorkbench(broker)}
+        onSendBrokerOptOut={handleDirectBrokerOptOut}
+        onOpenVault={() => setIsVaultModalOpen(true)}
+        onOpenPowerOfAttorney={() => setIsPowerOfAttorneyOpen(true)}
+        onOpenNukeAll={hasCompletedScan ? () => setIsNukeAllModalOpen(true) : undefined}
+      />
 
       {isNukeAllModalOpen && (
         <NukeAllModal

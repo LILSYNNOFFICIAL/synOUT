@@ -12,7 +12,7 @@ export type RiskLevel = 'Critical' | 'High' | 'Medium';
 
 export type RemovalMethod = 'Online Form' | 'Email CCPA Demand' | 'Mail-In' | 'Phone' | 'Automated Opt-Out API';
 
-export type EmailDeliverabilityTier = 'verified_dpo' | 'parent_dpo' | 'portal_primary';
+export type EmailDeliverabilityTier = 'verified_dpo' | 'parent_dpo' | 'portal_primary' | 'web_form_only';
 
 export type RemovalWorkflowState =
   | 'queued'

@@ -155,7 +155,7 @@ export function generateDarkWebFindingsForProfile(
   profile: UserProfile,
   results: ScanResult[]
 ): DarkWebFinding[] {
-  const primaryEmail = profile.emails[0] || `${profile.firstName.toLowerCase()}.${profile.lastName.toLowerCase()}@example.com`;
+  const primaryEmail = profile.emails[0] || 'yourname@email.com';
   const emailHandle = primaryEmail.split('@')[0] || profile.lastName.toLowerCase();
   const primaryPhone = profile.phoneNumbers[0] || 'On file';
   const fullName = `${profile.firstName} ${profile.lastName}`.trim();

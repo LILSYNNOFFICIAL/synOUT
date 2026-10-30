@@ -18,6 +18,11 @@ import {
   generateRegulatorComplaintPdf,
 } from '../utils/pdfPacketGenerator';
 import {
+  auditBrokerGpcServerless,
+  isJsonApiResponse,
+  isStaticServerlessRuntime,
+} from '../utils/serverlessRuntime';
+import {
   Scale,
   Search,
   Download,
@@ -92,6 +97,18 @@ export const StateRegistryComplianceCenter: React.FC<StateRegistryComplianceCent
   const handleAuditBrokerGpc = async (broker: DataBroker) => {
     setGpcAudits((prev) => ({ ...prev, [broker.id]: { loading: true } }));
     try {
+      if (isStaticServerlessRuntime()) {
+        const serverlessAudit = await auditBrokerGpcServerless(broker.domain, broker.optOutUrl);
+        setGpcAudits((prev) => ({
+          ...prev,
+          [broker.id]: {
+            loading: false,
+            ...serverlessAudit,
+          },
+        }));
+        return;
+      }
+
       const res = await sessionFetch('/api/registries/audit-broker-gpc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -100,6 +117,19 @@ export const StateRegistryComplianceCenter: React.FC<StateRegistryComplianceCent
           optOutUrl: broker.optOutUrl,
         }),
       });
+
+      if (!isJsonApiResponse(res)) {
+        const serverlessAudit = await auditBrokerGpcServerless(broker.domain, broker.optOutUrl);
+        setGpcAudits((prev) => ({
+          ...prev,
+          [broker.id]: {
+            loading: false,
+            ...serverlessAudit,
+          },
+        }));
+        return;
+      }
+
       const data = await res.json().catch(() => ({}));
       setGpcAudits((prev) => ({
         ...prev,
@@ -112,11 +142,13 @@ export const StateRegistryComplianceCenter: React.FC<StateRegistryComplianceCent
         },
       }));
     } catch {
+      const { auditBrokerGpcServerless } = await import('../utils/serverlessRuntime');
+      const serverlessAudit = await auditBrokerGpcServerless(broker.domain, broker.optOutUrl);
       setGpcAudits((prev) => ({
         ...prev,
         [broker.id]: {
           loading: false,
-          complianceSummary: 'Live compliance probe failed.',
+          ...serverlessAudit,
         },
       }));
     }

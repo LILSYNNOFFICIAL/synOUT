@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, Flame, Inbox, Scale, Bot } from 'lucide-react';
+import { ArrowRight, Flame, Inbox, Scale, Bot, Network, Lock, Command } from 'lucide-react';
 import { getExhaustiveBrokerRegistry } from '../utils/dynamicBrokerRegistry';
 import { listAllBrokerPlaybooks } from '../utils/brokerAdapterCatalog';
 
@@ -11,6 +11,9 @@ interface HeroSectionProps {
   onOpenWebForms?: () => void;
   onOpenInboxHarvester?: () => void;
   onOpenStateRegistries?: () => void;
+  onOpenSupplyChain?: () => void;
+  onOpenCreditFreeze?: () => void;
+  onOpenCommandPalette?: () => void;
 }
 
 export const HeroSection: React.FC<HeroSectionProps> = ({
@@ -21,6 +24,9 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
   onOpenWebForms,
   onOpenInboxHarvester,
   onOpenStateRegistries,
+  onOpenSupplyChain,
+  onOpenCreditFreeze,
+  onOpenCommandPalette,
 }) => {
   const verifiedBrokerCount = getExhaustiveBrokerRegistry().length;
   const playbookCount = listAllBrokerPlaybooks().length;
@@ -84,6 +90,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
             >
               Browse {verifiedBrokerCount} Brokers
             </button>
+
+            {onOpenCommandPalette && (
+              <button
+                type="button"
+                onClick={onOpenCommandPalette}
+                className="w-full sm:w-auto px-5 py-3.5 rounded-2xl glass-subtle hover:border-white/20 text-slate-300 hover:text-white text-sm font-medium transition-colors inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+              >
+                <Command className="w-4 h-4 text-emerald-400" />
+                <span>Quick Jump (⌘K)</span>
+              </button>
+            )}
           </div>
 
           {/* Minimalist 3-Compartment Quick Launch Strip */}
@@ -129,6 +146,38 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
                 Syncs official CA, TX, OR &amp; VT broker registries and builds ready-to-send complaint packets.
               </p>
             </button>
+
+            {onOpenSupplyChain && (
+              <button
+                type="button"
+                onClick={onOpenSupplyChain}
+                className="glass-card rounded-2xl p-4 space-y-1 cursor-pointer"
+              >
+                <div className="flex items-center justify-between text-xs font-semibold text-white">
+                  <span>Upstream Supply-Chain Graph</span>
+                  <Network className="w-4 h-4 text-emerald-400 shrink-0" />
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Maps wholesale clearinghouses feeding downstream people-search sites so deleted records stay gone.
+                </p>
+              </button>
+            )}
+
+            {onOpenCreditFreeze && (
+              <button
+                type="button"
+                onClick={onOpenCreditFreeze}
+                className="glass-card rounded-2xl p-4 space-y-1 cursor-pointer sm:col-span-2"
+              >
+                <div className="flex items-center justify-between text-xs font-semibold text-white">
+                  <span>FCRA § 605A Credit Freeze, Fraud Alert &amp; Identity Lockout Center</span>
+                  <Lock className="w-4 h-4 text-sky-400 shrink-0" />
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Track free federal freezes across Equifax, Experian, TransUnion, Innovis, ChexSystems, NCTUE, IRS IP PIN &amp; DHS E-Verify.
+                </p>
+              </button>
+            )}
           </div>
         </div>
       </div>

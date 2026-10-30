@@ -1,6 +1,12 @@
 import { ScanResult, ScanStats, UserProfile } from '../types';
 import { findBrokerById } from './emailConnectionStore';
 import { sessionFetch } from './sessionClient';
+import {
+  buildLocalBrokerIntelSummary,
+  buildLocalPrivacyAdvisorReply,
+  isJsonApiResponse,
+  isStaticServerlessRuntime,
+} from '../utils/serverlessRuntime';
 
 export type AdvisorRoleId = 'statutory_counsel' | 'broker_researcher' | 'rapid_triage';
 export type AdvisorSpeedMode = 'grounded_standard' | 'fast_lite';
@@ -141,19 +147,37 @@ export async function sendPrivacyAdvisorMessageClient(params: {
   groundedWithSearch: boolean;
   timestampIso: string;
 }> {
-  const res = await sessionFetch('/api/advisor/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(
-      data?.error || 'Could not reach the Privacy Advisor service. Please try again.'
-    );
+  if (isStaticServerlessRuntime()) {
+    return buildLocalPrivacyAdvisorReply(params);
   }
-  return data;
+
+  try {
+    const res = await sessionFetch('/api/advisor/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    if (!isJsonApiResponse(res)) {
+      return buildLocalPrivacyAdvisorReply(params);
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 503 || res.status === 502 || res.status === 404) {
+        return buildLocalPrivacyAdvisorReply(params);
+      }
+      throw new Error(
+        data?.error || 'Could not reach the Privacy Advisor service. Please try again.'
+      );
+    }
+    return data;
+  } catch (err) {
+    if (err instanceof Error && /rate limit|too many/i.test(err.message)) {
+      throw err;
+    }
+    return buildLocalPrivacyAdvisorReply(params);
+  }
 }
 
 export async function lookupBrokerLiveIntelClient(params: {
@@ -162,17 +186,32 @@ export async function lookupBrokerLiveIntelClient(params: {
   optOutUrl?: string;
   jurisdictionState?: string;
 }): Promise<BrokerLiveIntelResponse> {
-  const res = await sessionFetch('/api/advisor/broker-intel', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(
-      data?.error || `Could not retrieve live web intelligence for ${params.brokerName}.`
-    );
+  if (isStaticServerlessRuntime()) {
+    return buildLocalBrokerIntelSummary(params);
   }
-  return data;
+
+  try {
+    const res = await sessionFetch('/api/advisor/broker-intel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    if (!isJsonApiResponse(res)) {
+      return buildLocalBrokerIntelSummary(params);
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 503 || res.status === 502 || res.status === 404) {
+        return buildLocalBrokerIntelSummary(params);
+      }
+      throw new Error(
+        data?.error || `Could not retrieve live web intelligence for ${params.brokerName}.`
+      );
+    }
+    return data;
+  } catch {
+    return buildLocalBrokerIntelSummary(params);
+  }
 }
