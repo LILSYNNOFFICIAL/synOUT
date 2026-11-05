@@ -155,15 +155,15 @@ import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { CheckCircle2 } from 'lucide-react';
 
 const DEFAULT_FALLBACK_PROFILE: UserProfile = {
-  firstName: 'Jane',
-  lastName: 'Doe',
-  currentCity: 'Sacramento',
-  currentState: 'CA',
-  birthYear: '1988',
-  phoneNumbers: ['(916) 555-0144'],
-  emails: [''],
+  firstName: '',
+  lastName: '',
+  currentCity: '',
+  currentState: '',
+  birthYear: '',
+  phoneNumbers: [],
+  emails: [],
   relatives: [],
-  previousLocations: ['Austin, TX'],
+  previousLocations: [],
 };
 
 export default function App() {
@@ -379,12 +379,11 @@ export default function App() {
     if (userProfile) return userProfile;
     const connState = getEmailConnectionState();
     const connectedEmail = resolveActiveConnectedEmailFromState(connState) || '';
-    const seeded: UserProfile = {
+    const emptyProfile: UserProfile = {
       ...DEFAULT_FALLBACK_PROFILE,
       emails: connectedEmail ? [connectedEmail] : [],
     };
-    setUserProfile(seeded);
-    return seeded;
+    return emptyProfile;
   };
 
   const handleStartScan = (profile: UserProfile, searchType: SearchTypeCategory) => {
@@ -862,17 +861,17 @@ export default function App() {
       saveStateToStorage('profile', updated);
     } else {
       const parts = (fallbackIdentity?.fullName || poa.fullName).trim().split(/\s+/);
-      const firstName = parts[0] || 'Jane';
-      const lastName = parts.slice(1).join(' ') || 'Doe';
+      const firstName = parts[0] || '';
+      const lastName = parts.slice(1).join(' ') || '';
       const connState = getEmailConnectionState();
       const connectedEmail =
         connState.smtp?.userEmail || connState.oauthUser?.email || '';
       const created: UserProfile = {
         firstName,
         lastName,
-        currentCity: fallbackIdentity?.city || 'Sacramento',
-        currentState: fallbackIdentity?.state || poa.state || 'CA',
-        birthYear: '1988',
+        currentCity: fallbackIdentity?.city || '',
+        currentState: fallbackIdentity?.state || poa.state || '',
+        birthYear: '',
         phoneNumbers: [],
         emails: connectedEmail ? [connectedEmail] : [],
         relatives: [],

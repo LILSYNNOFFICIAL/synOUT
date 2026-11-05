@@ -131,7 +131,7 @@ export const PublicRecordsFirewallCenter: React.FC<PublicRecordsFirewallCenterPr
   const [vendorDomain, setVendorDomain] = useState<string>('');
   const [vendorPrivacyEmail, setVendorPrivacyEmail] = useState<string>('');
   const [baseAliasEmail, setBaseAliasEmail] = useState<string>(
-    activeConnectedEmail || profile.emails[0] || 'jane.doe@gmail.com'
+    activeConnectedEmail || profile.emails[0] || 'yourname@email.com'
   );
   const [customAliasDomain, setCustomAliasDomain] = useState<string>('');
   const [compartmentPhone, setCompartmentPhone] = useState<string>('');
@@ -960,7 +960,7 @@ export const PublicRecordsFirewallCenter: React.FC<PublicRecordsFirewallCenterPr
                 rows={4}
                 value={rawLeakHeader}
                 onChange={(e) => setRawLeakHeader(e.target.value)}
-                placeholder="Delivered-To: jane.doe+cvs-8f3a@gmail.com&#10;From: promo@unknown-list-broker.com"
+                placeholder="Delivered-To: yourname+cvs-8f3a@gmail.com&#10;From: promo@unknown-list-broker.com"
                 className="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 resize-y"
               />
 

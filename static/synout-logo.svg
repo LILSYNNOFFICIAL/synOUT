@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 676 184" fill="none" role="img" aria-label="synOUT Logo">
+  <defs>
+    <!-- Upper Folded S-Ribbon Gradient (Electric Cobalt -> Bright Cyan) -->
+    <linearGradient id="synRibbonTop" x1="20" y1="84" x2="128" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0B63FF" />
+      <stop offset="52%" stop-color="#00B8FF" />
+      <stop offset="100%" stop-color="#14E4FF" />
+    </linearGradient>
+
+    <!-- Lower Folded S-Ribbon Gradient (Icy Cyan -> Cobalt Blue) -->
+    <linearGradient id="synRibbonBottom" x1="128" y1="108" x2="22" y2="156" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#BAFAFF" />
+      <stop offset="48%" stop-color="#0EC8FF" />
+      <stop offset="100%" stop-color="#0B5EFF" />
+    </linearGradient>
+
+    <!-- Center Diagonal Fold Specular Ribbon Gradient (Cobalt -> Luminous White Sheen -> Ice Cyan) -->
+    <linearGradient id="synRibbonMid" x1="18" y1="64" x2="130" y2="122" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0A66FF" />
+      <stop offset="34%" stop-color="#58CBFF" />
+      <stop offset="68%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#A6F2FF" />
+    </linearGradient>
+
+    <!-- Subtle Crease Shadow for 3D Ribbon Depth -->
+    <linearGradient id="synFoldShadow" x1="42" y1="54" x2="72" y2="76" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#021338" stop-opacity="0.46" />
+      <stop offset="100%" stop-color="#021338" stop-opacity="0" />
+    </linearGradient>
+
+    <!-- OUT Wordmark Horizontal Gradient (Royal Electric Blue -> Luminous Cyan) -->
+    <linearGradient id="synWordOut" x1="398" y1="88" x2="660" y2="88" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0C6FFF" />
+      <stop offset="50%" stop-color="#00C0FF" />
+      <stop offset="100%" stop-color="#14E4FF" />
+    </linearGradient>
+  </defs>
+
+  <!-- 1. S-Ribbon Mark -->
+  <g>
+    <!-- Upper S Arm -->
+    <path
+      d="M 52 78 C 66 58, 90 46, 124 46 C 131 46, 133 39, 127 34 L 99 14 C 90 8, 78 8, 69 14 L 27 46 C 13 57, 13 78, 28 89 Z"
+      fill="url(#synRibbonTop)"
+    />
+    <!-- Subtle Crease Under Fold -->
+    <path
+      d="M 28 52 C 36 46, 48 48, 64 56 L 52 78 L 28 89 C 16 80, 16 62, 28 52 Z"
+      fill="url(#synFoldShadow)"
+    />
+
+    <!-- Lower S Arm -->
+    <path
+      d="M 96 106 L 120 94 C 135 105, 135 126, 121 137 L 79 169 C 70 176, 58 176, 49 169 L 21 149 C 15 144, 17 137, 25 137 C 56 137, 78 125, 96 106 Z"
+      fill="url(#synRibbonBottom)"
+    />
+
+    <!-- Center Specular Diagonal Ribbon -->
+    <path
+      d="M 25 53 C 31 45, 42 44, 53 50 L 117 85 C 131 93, 135 109, 127 122 C 120 134, 106 136, 93 129 L 29 94 C 15 86, 16 65, 25 53 Z"
+      fill="url(#synRibbonMid)"
+    />
+
+    <!-- 7 Dissolving Data Pixels (1 + 1 + 2 + 2 + 1 Constellation) -->
+    <rect x="96" y="69" width="11" height="11" rx="1.6" fill="#22A7FF" />
+    <rect x="111" y="80" width="13" height="13" rx="1.8" fill="#B9F1FF" />
+    <rect x="121" y="57" width="11" height="11" rx="1.6" fill="#46D6FF" />
+    <rect x="126" y="96" width="11" height="11" rx="1.6" fill="#2EC6FF" />
+    <rect x="137" y="70" width="12.5" height="12.5" rx="1.8" fill="#E0FAFF" />
+    <rect x="138" y="111" width="11" height="11" rx="1.6" fill="#12C7FF" />
+    <rect x="151" y="91" width="12" height="12" rx="1.8" fill="#14E4FF" />
+  </g>
+
+  <!-- 2. "syn" Geometric Lowercase Wordmark (Crisp White) -->
+  <g>
+    <!-- s -->
+    <path
+      d="M 242 75 C 234 66, 199 66, 198 80 C 197 94, 241 96, 240 112 C 239 126, 203 126, 193 116"
+      stroke="#F8FAFC"
+      stroke-width="15.5"
+      stroke-linecap="butt"
+      stroke-linejoin="round"
+    />
+    <!-- y -->
+    <path
+      d="M 257 65 L 274 65 L 290.5 110 L 306.5 65 L 323.5 65 L 296.5 140 C 292.5 150, 285 154, 272 154 L 262 154 L 262 140 L 270 140 C 276 140, 279 138, 281 132 L 282.5 127 Z"
+      fill="#F8FAFC"
+    />
+    <!-- n -->
+    <rect x="334" y="65" width="16" height="64" rx="1" fill="#F8FAFC" />
+    <path
+      d="M 342 88 C 342 68, 386 67, 386 91 L 386 129"
+      stroke="#F8FAFC"
+      stroke-width="16"
+      stroke-linecap="butt"
+    />
+  </g>
+
+  <!-- 3. "OUT" Geometric Uppercase Wordmark (Electric Blue -> Cyan Gradient) -->
+  <g>
+    <!-- O -->
+    <path
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M 447 43.5 C 471.5 43.5, 490 62.5, 490 87 C 490 111.5, 471.5 130.5, 447 130.5 C 422.5 130.5, 404 111.5, 404 87 C 404 62.5, 422.5 43.5, 447 43.5 Z M 447 61.5 C 433.5 61.5, 423.5 72.2, 423.5 87 C 423.5 101.8, 433.5 112.5, 447 112.5 C 460.5 112.5, 470.5 101.8, 470.5 87 C 470.5 72.2, 460.5 61.5, 447 61.5 Z"
+      fill="url(#synWordOut)"
+    />
+    <!-- U -->
+    <path
+      d="M 513.5 45 L 513.5 94 C 513.5 114, 526 121.5, 541 121.5 C 556 121.5, 568.5 114, 568.5 94 L 568.5 45"
+      stroke="url(#synWordOut)"
+      stroke-width="19"
+      stroke-linecap="butt"
+    />
+    <!-- T -->
+    <path
+      d="M 589 45 H 663 V 63 H 635.5 V 129 H 616.5 V 63 H 589 Z"
+      fill="url(#synWordOut)"
+    />
+  </g>
+</svg>

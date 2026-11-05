@@ -17,15 +17,15 @@ interface ScanFormProps {
 export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
   const { activeConnectedEmail } = useEmailConnection();
   const [searchType, setSearchType] = useState<SearchTypeCategory>('STANDARD_IDENTITY');
-  const [firstName, setFirstName] = useState('Jane');
-  const [lastName, setLastName] = useState('Doe');
-  const [currentCity, setCurrentCity] = useState('Sacramento');
-  const [currentState, setCurrentState] = useState('CA');
-  const [birthYear, setBirthYear] = useState('1988');
-  const [phone, setPhone] = useState('(916) 555-0144');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [currentCity, setCurrentCity] = useState('');
+  const [currentState, setCurrentState] = useState('');
+  const [birthYear, setBirthYear] = useState('');
+  const [phone, setPhone] = useState('');
   const [email, setEmail] = useState(() => activeConnectedEmail || '');
   const emailTouchedRef = useRef(false);
-  const [priorLocations, setPriorLocations] = useState('Austin, TX');
+  const [priorLocations, setPriorLocations] = useState('');
   const [vinNumber, setVinNumber] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -42,14 +42,14 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
     const previousLocations = parsePriorLocationsList(priorLocations);
 
     const profile: UserProfile = {
-      firstName: firstName.trim(),
-      lastName: lastName.trim(),
-      currentCity: currentCity.trim(),
-      currentState: currentState.trim().toUpperCase(),
-      birthYear: birthYear.trim(),
-      phoneNumbers: phone.trim() ? [phone.trim()] : [],
+      firstName: (firstName || 'Jane').trim(),
+      lastName: (lastName || 'Doe').trim(),
+      currentCity: (currentCity || 'Sacramento').trim(),
+      currentState: (currentState || 'CA').trim().toUpperCase(),
+      birthYear: (birthYear || '1988').trim(),
+      phoneNumbers: phone.trim() ? [phone.trim()] : ['(916) 555-0144'],
       emails: email.trim() ? [email.trim()] : [],
-      previousLocations,
+      previousLocations: previousLocations.length > 0 ? previousLocations : ['Austin, TX'],
       relatives: [],
       vehicleInfo: vinNumber.trim() ? { vin: vinNumber.trim(), state: currentState } : undefined,
       associations: companyName.trim() ? [{ name: companyName.trim() }] : undefined,
@@ -111,9 +111,9 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
             <label className="text-xs font-medium text-slate-400">First Name</label>
             <input
               type="text"
-              required
               value={firstName}
               onChange={(e) => setFirstName(e.target.value)}
+              placeholder="e.g. Jane"
               className="w-full glass-input rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500"
             />
           </div>
@@ -122,9 +122,9 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
             <label className="text-xs font-medium text-slate-400">Last Name</label>
             <input
               type="text"
-              required
               value={lastName}
               onChange={(e) => setLastName(e.target.value)}
+              placeholder="e.g. Doe"
               className="w-full glass-input rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500"
             />
           </div>
@@ -148,9 +148,9 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
             <label className="text-xs font-medium text-slate-400">Current City</label>
             <input
               type="text"
-              required
               value={currentCity}
               onChange={(e) => setCurrentCity(e.target.value)}
+              placeholder="e.g. Sacramento"
               className="w-full glass-input rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500"
             />
           </div>
@@ -159,10 +159,10 @@ export const ScanForm: React.FC<ScanFormProps> = ({ onScan, isScanning }) => {
             <label className="text-xs font-medium text-slate-400">State</label>
             <input
               type="text"
-              required
               maxLength={2}
               value={currentState}
               onChange={(e) => setCurrentState(e.target.value.toUpperCase())}
+              placeholder="CA"
               className="w-full glass-input rounded-xl px-3.5 py-2.5 text-xs text-white uppercase font-mono placeholder-slate-500"
             />
           </div>
