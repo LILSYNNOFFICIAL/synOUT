@@ -20,7 +20,7 @@ function silentHmrClientPlugin(): Plugin {
       // Vite 8 moved the WebSocket factory into shared/moduleRunnerTransport.
       // Replace the factory itself, leaving Vite's transport normalizer and CSS APIs intact.
       const updated = code.replace(
-        /export\s+const\s+createWebSocketModuleRunnerTransport\s*=\s*\(options\)\s*=>\s*\{[\s\S]*?^\};/m,
+        /(?:export\s+)?const\s+createWebSocketModuleRunnerTransport\s*=\s*\(options\)\s*=>\s*\{[\s\S]*?\n[ \t]*\};/m,
         'export const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });'
       );
 
