@@ -13,15 +13,20 @@ function silentHmrClientPlugin(): Plugin {
   return {
     name: 'synout-silent-hmr-client',
     enforce: 'post',
-    transform(code, id) {
+    transform(code) {
       if (process.env.ENABLE_HMR === 'true') return null;
-      if (!id.includes('vite/dist/client/')) return null;
+      if (
+        !code.includes('createWebSocketModuleRunnerTransport') ||
+        !code.includes('normalizeModuleRunnerTransport')
+      ) {
+        return null;
+      }
 
       // Vite 8 moved the WebSocket transport into shared/moduleRunnerTransport.
-      // Replace the client import with a local no-op so no WebSocket is constructed.
+      // Keep Vite's normalizer and replace only its browser WebSocket factory.
       const updated = code
         .replace(
-          /import\s*\{\s*createWebSocketModuleRunnerTransport,\s*normalizeModuleRunnerTransport,?\s*\}\s*from\s*(['"]\.\.\/shared\/moduleRunnerTransport(?:\.js)?['"]);?/,
+          /import\s*\{[^}]*createWebSocketModuleRunnerTransport[^}]*\}\s*from\s*(['"][^'"]*moduleRunnerTransport(?:\.js)?['"]);?/,
           "import { normalizeModuleRunnerTransport } from '../shared/moduleRunnerTransport.js';\nconst createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });"
         )
         .replace(
