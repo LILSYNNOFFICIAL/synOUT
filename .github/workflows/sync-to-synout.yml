@@ -1,0 +1,47 @@
+name: Mirror synOUT2 to synOUT
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synout2-to-synout-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Exact one-way mirror to synOUT
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out synOUT2 (source of truth)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check out synOUT destination
+        env:
+          SYNOUT_SYNC_TOKEN: ${{ secrets.SYNOUT_SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNOUT_SYNC_TOKEN" ]; then
+            echo "::error::Missing SYNOUT_SYNC_TOKEN secret in synOUT2."
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${SYNOUT_SYNC_TOKEN}@github.com/LILSYNNOFFICIAL/synOUT.git" destination
+
+      - name: Replace destination contents with source contents
+        run: |
+          rsync -a --delete --exclude='.git/' --exclude='destination/' ./ destination/
+          cd destination
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          if git diff --cached --quiet; then
+            echo "synOUT already matches synOUT2."
+          else
+            git commit -m "chore: mirror synOUT2 source of truth"
+            git push origin HEAD:main
+          fi
