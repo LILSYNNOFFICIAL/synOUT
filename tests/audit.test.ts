@@ -679,7 +679,7 @@ test('16. Vite Dev Client HMR WebSocket Suppression (Zero Unhandled @vite/client
       transformedClient.code.includes(
         'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });'
       ),
-      '/@vite/client must replace createWebSocketModuleRunnerTransport with a silent no-op transport when HMR is disabled'
+      '/@vite/client must replace createWebSocketModuleRunnerTransport with a silent no-op transport when HMR is disabled. Actual client prefix: ' + transformedClient.code.slice(0, 2500)
     );
     assert(
       transformedClient.code.includes('updateStyle') &&
