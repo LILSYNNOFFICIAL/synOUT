@@ -13,27 +13,16 @@ function silentHmrClientPlugin(): Plugin {
   return {
     name: 'synout-silent-hmr-client',
     enforce: 'post',
-    transform(code) {
+    transform(code, id) {
       if (process.env.ENABLE_HMR === 'true') return null;
-      if (
-        !code.includes('createWebSocketModuleRunnerTransport') ||
-        !code.includes('normalizeModuleRunnerTransport')
-      ) {
-        return null;
-      }
+      if (!id.includes('moduleRunnerTransport')) return null;
 
-      // Vite 8 moved the WebSocket transport into shared/moduleRunnerTransport.
-      // Keep Vite's normalizer and replace only its browser WebSocket factory.
-      const updated = code
-        .replace(
-          /import\s*\{[^}]*createWebSocketModuleRunnerTransport[^}]*\}\s*from\s*(['"][^'"]*moduleRunnerTransport(?:\.js)?['"]);?/,
-          "import { normalizeModuleRunnerTransport } from '../shared/moduleRunnerTransport.js';\nconst createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });"
-        )
-        .replace(
-          /const createWebSocketModuleRunnerTransport\s*=\s*\(options\)\s*=>\s*\{[\s\S]*?\n\};\n\/\/#endregion/,
-          'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\n//#endregion'
-        )
-        .replace('console.debug("[vite] connecting...");', '');
+      // Vite 8 moved the WebSocket factory into shared/moduleRunnerTransport.
+      // Replace the factory itself, leaving Vite's transport normalizer and CSS APIs intact.
+      const updated = code.replace(
+        /export\s+const\s+createWebSocketModuleRunnerTransport\s*=\s*\(options\)\s*=>\s*\{[\s\S]*?^\};/m,
+        'export const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });'
+      );
 
       return updated !== code ? { code: updated, map: null } : null;
     },
