@@ -21,12 +21,12 @@ function silentHmrClientPlugin(): Plugin {
       // Replace the client import with a local no-op so no WebSocket is constructed.
       const updated = code
         .replace(
-          /import\\s*\\{\\s*createWebSocketModuleRunnerTransport,\\s*normalizeModuleRunnerTransport,?\\s*\\}\\s*from\\s*(['"]\\.\\.\\/shared\\/moduleRunnerTransport(?:\\.js)?['"]);?/,
-          "import { normalizeModuleRunnerTransport } from '../shared/moduleRunnerTransport.js';\\nconst createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });"
+          /import\s*\{\s*createWebSocketModuleRunnerTransport,\s*normalizeModuleRunnerTransport,?\s*\}\s*from\s*(['"]\.\.\/shared\/moduleRunnerTransport(?:\.js)?['"]);?/,
+          "import { normalizeModuleRunnerTransport } from '../shared/moduleRunnerTransport.js';\nconst createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });"
         )
         .replace(
-          /const createWebSocketModuleRunnerTransport\\s*=\\s*\\(options\\)\\s*=>\\s*\\{[\\s\\S]*?\\n\\};\\n\\/\\/#endregion/,
-          'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\\n//#endregion'
+          /const createWebSocketModuleRunnerTransport\s*=\s*\(options\)\s*=>\s*\{[\s\S]*?\n\};\n\/\/#endregion/,
+          'const createWebSocketModuleRunnerTransport = () => ({ async connect() {}, disconnect() {}, send() {} });\n//#endregion'
         )
         .replace('console.debug("[vite] connecting...");', '');
 
