@@ -15,7 +15,7 @@ function silentHmrClientPlugin(): Plugin {
     enforce: 'post',
     transform(code, id) {
       if (process.env.ENABLE_HMR === 'true') return null;
-      if (!id.includes('moduleRunnerTransport')) return null;
+      if (!code.includes('createWebSocketModuleRunnerTransport')) return null;
 
       // Vite 8 moved the WebSocket factory into shared/moduleRunnerTransport.
       // Replace the factory itself, leaving Vite's transport normalizer and CSS APIs intact.
