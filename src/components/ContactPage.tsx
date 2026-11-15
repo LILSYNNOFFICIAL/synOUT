@@ -528,7 +528,7 @@ export const ContactPage: React.FC<ContactPageProps> = ({
             </p>
             <div className="pt-2 border-t border-white/[0.06] space-y-1.5 text-xs">
               <div className="text-slate-400">Destination Mailbox</div>
-              <div className="font-mono text-emerald-300 break-all">synovamedia@gmail.com</div>
+              <div className="font-mono text-emerald-300 break-all">contact@lilsynn.com</div>
             </div>
             <div className="pt-2 border-t border-white/[0.06] space-y-1.5 text-xs">
               <div className="text-slate-400">Expected Response Time</div>
