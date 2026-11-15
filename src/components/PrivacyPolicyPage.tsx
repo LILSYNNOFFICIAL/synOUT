@@ -378,7 +378,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
                 <strong className="text-white">Transactional Email Provider (Contact Form):</strong>{' '}
                 Used by the backend (via configured SMTP, Resend, SendGrid, or your active
                 direct-send session) to deliver Contact page submissions to{' '}
-                <code className="text-slate-200">contact@lilsynn.com</code>.
+                <code className="text-slate-200">synovamedia@gmail.com</code>.
               </li>
               <li>
                 <strong className="text-white">External Data Brokers &amp; Search Engines:</strong>{' '}
@@ -426,7 +426,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
               memory (within 12 hours or upon server restart) or immediately when you purge your
               session. Encrypted Cloud Vault snapshots remain in Firestore until overwritten or
               deleted through your account. Formal automated deletion timelines for operator inbox
-              messages sent to <code className="text-slate-200">contact@lilsynn.com</code> and
+              messages sent to <code className="text-slate-200">synovamedia@gmail.com</code> and
               hosting infrastructure logs have not yet been established; you may request deletion of
               prior Contact submissions at any time via the Contact page.
             </p>
