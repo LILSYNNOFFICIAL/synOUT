@@ -7,7 +7,7 @@ import { getAccessToken } from './googleAuth';
 import { sessionFetch } from './sessionClient';
 import { isJsonApiResponse, isStaticServerlessRuntime } from '../utils/serverlessRuntime';
 
-export const OPERATOR_CONTACT_EMAIL = 'synovamedia@gmail.com';
+export const OPERATOR_CONTACT_EMAIL = 'contact@lilsynn.com';
 export const OPERATOR_CONTACT_SUBJECT = 'synOUT MESSAGE';
 
 export interface ContactFieldErrors {
@@ -91,13 +91,13 @@ export function formatOperatorContactBody(input: {
 
 function sanitizeContactErrorForUser(rawMessage: unknown, errorCode?: string): string {
   if (errorCode === 'EMAIL_PROVIDER_NOT_CONFIGURED' || errorCode === 'DIRECT_RELAY_REQUIRED') {
-    return 'Select Sign in with Google & Send below or open your preferred email app to deliver your message directly to synovamedia@gmail.com.';
+    return 'Select Sign in with Google & Send below or open your preferred email app to deliver your message directly to contact@lilsynn.com.';
   }
   if (typeof rawMessage !== 'string' || !rawMessage.trim()) {
     return 'Your message could not be sent automatically right now. Use one of the instant send options below.';
   }
   if (/CONTACT_SMTP_|CONTACT_RESEND_API_KEY|deployment secrets/i.test(rawMessage)) {
-    return 'Select Sign in with Google & Send below or open your preferred email app to deliver your message directly to synovamedia@gmail.com.';
+    return 'Select Sign in with Google & Send below or open your preferred email app to deliver your message directly to contact@lilsynn.com.';
   }
   return rawMessage;
 }
@@ -145,7 +145,7 @@ async function sendContactDirectlyViaBrowserGmail(
 
 /**
  * Authenticates via Google OAuth popup and immediately transmits the validated contact
- * inquiry to `synovamedia@gmail.com` with subject `synOUT MESSAGE` and `Reply-To` set.
+ * inquiry to `contact@lilsynn.com` with subject `synOUT MESSAGE` and `Reply-To` set.
  * Works 100% serverlessly on GitHub Pages as well as full-stack deployments.
  */
 export async function sendContactViaGooglePopupClient(params: {
@@ -288,6 +288,6 @@ export async function submitContactMessageClient(params: {
     accepted: false,
     errorCode: 'DIRECT_RELAY_REQUIRED',
     userMessage:
-      'Choose Sign in with Google & Send below or open your preferred email client to send your message directly to synovamedia@gmail.com.',
+      'Choose Sign in with Google & Send below or open your preferred email client to send your message directly to contact@lilsynn.com.',
   };
 }
