@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 
-export const OPERATOR_CONTACT_RECIPIENT = 'synovamedia@gmail.com';
+export const OPERATOR_CONTACT_RECIPIENT = 'contact@lilsynn.com';
 export const OPERATOR_CONTACT_SUBJECT = 'synOUT MESSAGE';
 
 export interface ContactSubmissionInput {
@@ -262,7 +262,7 @@ export function inspectConfiguredOperatorEmailProvider(): {
 
 /**
  * Validates, rate-limits, deduplicates, and delivers a real email to
- * synovamedia@gmail.com with exact subject "synOUT MESSAGE".
+ * contact@lilsynn.com with exact subject "synOUT MESSAGE".
  * Never fabricates delivery or exposes server secrets/stack traces.
  */
 export async function processAndDeliverContactSubmission(
